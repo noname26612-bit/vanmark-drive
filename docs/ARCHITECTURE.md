@@ -1,6 +1,6 @@
 # ARCHITECTURE — vanmark-drive
 
-Версия 1.0 · июнь 2026. Решения зафиксированы с Артёмом: монолит Next.js, PostgreSQL, PWA для водителей (Android), 1С — фаза 2.
+Версия 1.0 · июнь 2026. Решения зафиксированы с Артёмом: монолит Next.js, PostgreSQL, PWA для водителей (Android). Сервис полностью автономен; интеграция с 1С отложена (наработки — в `docs/archive/`).
 
 ## 1. Принципы
 
@@ -115,7 +115,6 @@ model Task {
   createdBy     User       @relation("creator", fields: [createdById], references: [id])
   cancelReason  String?
   holdReason    String?
-  externalId1C  String?    @unique        // Ref_Key из 1С, фаза 2
   events        TaskEvent[]
   attachments   Attachment[]
   createdAt     DateTime   @default(now())
