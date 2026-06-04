@@ -35,6 +35,21 @@ const USERS: SeedUser[] = [
   { login: "sultan", name: "Султан (внешний перевозчик)", role: "DRIVER", canLogin: false },
 ];
 
+// Типы задач (PRD §3). requiresPhoto — по PRD §5 (фото обязательно для аренды, забора/возврата
+// из ремонта, гарантийной замены, выездного ремонта; для ТК/СДЭК — нет). Иконки — имена lucide.
+const TASK_TYPES: { name: string; icon: string; requiresPhoto: boolean }[] = [
+  { name: "Доставка в аренду", icon: "truck", requiresPhoto: true },
+  { name: "Забор в ремонт", icon: "package-minus", requiresPhoto: true },
+  { name: "Доставка/возврат из ремонта", icon: "package-check", requiresPhoto: true },
+  { name: "Отвезти в ТК", icon: "warehouse", requiresPhoto: false },
+  { name: "Забрать СДЭК/посылку", icon: "package", requiresPhoto: false },
+  { name: "Выездной ремонт / диагностика", icon: "wrench", requiresPhoto: true },
+  { name: "Гарантийная замена", icon: "replace", requiresPhoto: true },
+  { name: "Доставка проданного", icon: "package-plus", requiresPhoto: true },
+  { name: "Закупка/выкуп станка", icon: "shopping-cart", requiresPhoto: true },
+  { name: "Прочее", icon: "ellipsis", requiresPhoto: false },
+];
+
 async function main(password: string): Promise<void> {
   // Все сид-учётки получают один dev-пароль из SEED_PASSWORD (это осознанно для локалки).
   const passwordHash = await hashPassword(password);
@@ -48,6 +63,15 @@ async function main(password: string): Promise<void> {
     });
     console.log(`  ✓ ${u.login} — ${u.name} (${u.role}${canLogin ? "" : ", без входа"})`);
   }
+
+  for (const [i, t] of TASK_TYPES.entries()) {
+    await prisma.taskType.upsert({
+      where: { name: t.name },
+      update: { icon: t.icon, requiresPhoto: t.requiresPhoto, sortOrder: i + 1, isActive: true },
+      create: { name: t.name, icon: t.icon, requiresPhoto: t.requiresPhoto, sortOrder: i + 1 },
+    });
+  }
+  console.log(`  ✓ типы задач: ${TASK_TYPES.length}`);
 }
 
 main(seedPassword)

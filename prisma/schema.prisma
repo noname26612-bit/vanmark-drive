@@ -19,9 +19,33 @@ enum Role {
   DRIVER
 }
 
-// Этап 1: пользователи и вход. Полная модель данных (Task/TaskType/TaskEvent/Attachment/
-// PushSubscription) добавляется на этапах 2+ — тогда же у User появятся обратные связи
-// (tasks, createdTasks, events, pushSubs). Сейчас держим модель минимальной.
+// Статусы задачи (ARCHITECTURE §5). Переходы — только через матрицу в src/domain/task-status.ts.
+enum TaskStatus {
+  NEW
+  ASSIGNED
+  ACCEPTED
+  EN_ROUTE
+  ON_SITE
+  DONE
+  ON_HOLD
+  RESCHEDULED
+  CANCELLED
+}
+
+// Статус пропуска на объект (PRD §6).
+enum PassStatus {
+  NOT_NEEDED
+  NEEDED
+  ORDERED
+}
+
+// Оплата (PRD §4): нет / через офис / на месте.
+enum PaymentType {
+  NONE
+  OFFICE
+  ON_SITE
+}
+
 model User {
   id           String   @id @default(uuid())
   login        String   @unique // латиница, вводится при входе
@@ -32,4 +56,85 @@ model User {
   isActive     Boolean  @default(true)
   canLogin     Boolean  @default(true) // false — внешний исполнитель (Султан): входа нет, задачи на него ведёт диспетчер
   createdAt    DateTime @default(now())
+
+  tasks        Task[]      @relation("assignee")
+  createdTasks Task[]      @relation("creator")
+  events       TaskEvent[]
+  // pushSubs — этап 5 (web-push)
+}
+
+// Справочник типов задач (PRD §3). Новые типы заводит админ без правки кода.
+model TaskType {
+  id            String  @id @default(uuid())
+  name          String  @unique // «Доставка в аренду», «Забор в ремонт»...
+  icon          String? // имя иконки lucide
+  requiresPhoto Boolean @default(true) // обязательное фото при DONE (проверка на сервере — этап 4)
+  sortOrder     Int     @default(0)
+  isActive      Boolean @default(true)
+  tasks         Task[]
+}
+
+model Task {
+  id     String @id @default(uuid())
+  // Сквозной номер: Postgres sequence task_number_seq (START 476 — миграция). См. ARCHITECTURE §4.
+  number Int    @unique @default(dbgenerated("nextval('task_number_seq'::regclass)"))
+
+  typeId String
+  type   TaskType @relation(fields: [typeId], references: [id])
+
+  title         String // «ЛБМ 200 + нож + дог. маш, 0,7 мм»
+  description   String?     @db.Text
+  equipment     String? // «ЛБМ 250», «Sorex 2 м»
+  orgName       String? // «ДОМОСТРОЙ ЛОГИСТИК ООО»
+  contactName   String?
+  contactPhone  String?
+  address       String
+  addressLink   String? // deeplink Яндекс/2ГИС
+  invoiceNumber String? // «948», «261»
+  paymentType   PaymentType @default(NONE)
+  paymentAmount Int? // «доставка 5000 водителю»
+  paymentNote   String?
+  scheduledDate DateTime?   @db.Date // null — пул «Без даты»
+  timeFrom      String? // «09:00»
+  timeTo        String? // «17:00»
+  timeNote      String? // «после обеда»
+  passStatus    PassStatus  @default(NOT_NEEDED)
+  priority      Boolean     @default(false) // срочная
+  status        TaskStatus  @default(NEW)
+
+  assigneeId  String?
+  assignee    User?   @relation("assignee", fields: [assigneeId], references: [id])
+  createdById String
+  createdBy   User    @relation("creator", fields: [createdById], references: [id])
+
+  cancelReason String?
+  holdReason   String?
+
+  events      TaskEvent[]
+  // attachments — этап 4 (фото-отчёты)
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  @@index([assigneeId, scheduledDate])
+  @@index([status, scheduledDate])
+}
+
+// Неизменяемый журнал событий (CLAUDE.md правило 3): только на запись, не редактируется и не удаляется.
+model TaskEvent {
+  id         String      @id @default(uuid())
+  taskId     String
+  task       Task        @relation(fields: [taskId], references: [id])
+  actorId    String
+  actor      User        @relation(fields: [actorId], references: [id])
+  kind       String // status_change | comment | edit | assign | reschedule | created
+  fromStatus TaskStatus?
+  toStatus   TaskStatus?
+  comment    String?
+  lat        Float?
+  lng        Float?
+  at         DateTime    @default(now())
+
+  @@index([taskId, at])
 }

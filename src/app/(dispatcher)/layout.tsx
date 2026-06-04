@@ -1,13 +1,15 @@
 import type { ReactNode } from "react";
-import { requireRole } from "@/lib/session";
+import { requireAnyRole } from "@/lib/session";
 import { AppHeader } from "@/components/app-header";
+import { DispatcherNav } from "./_components/dispatcher-nav";
 
-// Все маршруты диспетчера за этим guard'ом: чужая роль уходит на свой экран, гость — на вход.
+// Экраны диспетчера доступны диспетчеру и админу (PRD §2: админ = всё + управление).
 export default async function DispatcherLayout({ children }: { children: ReactNode }) {
-  const user = await requireRole("DISPATCHER");
+  const user = await requireAnyRole("DISPATCHER", "ADMIN");
   return (
     <div className="min-h-screen bg-neutral-50">
       <AppHeader name={user.name} role={user.role} />
+      <DispatcherNav showAdmin={user.role === "ADMIN"} />
       {children}
     </div>
   );

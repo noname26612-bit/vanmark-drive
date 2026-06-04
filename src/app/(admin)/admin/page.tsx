@@ -1,12 +1,28 @@
-// Заглушка этапа 1. Управление пользователями и справочник типов задач — этапы 2+.
+import Link from "next/link";
+
+// Хаб администрирования (Артём). Отсюда — на доску, все задачи и справочник типов.
 export default function AdminPage() {
   return (
-    <main className="mx-auto max-w-5xl p-6">
+    <main className="mx-auto max-w-3xl p-6">
       <h1 className="text-2xl font-semibold text-neutral-900">Администрирование</h1>
-      <p className="mt-2 max-w-prose text-neutral-500">
-        Здесь появятся управление пользователями и справочник типов задач. Сейчас это заглушка —
-        админские экраны наполняем на следующих этапах.
-      </p>
+      <p className="mt-1 text-sm text-neutral-500">Управление сервисом и быстрый переход к работе.</p>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <AdminLink href="/board" title="Доска «Сегодня»" desc="Задачи дня по водителям" />
+        <AdminLink href="/tasks" title="Все задачи" desc="Таблица с фильтрами и поиском" />
+        <AdminLink href="/admin/task-types" title="Типы задач" desc="Справочник: названия, фото, порядок" />
+      </div>
     </main>
+  );
+}
+
+function AdminLink({ href, title, desc }: { href: string; title: string; desc: string }) {
+  return (
+    <Link
+      href={href}
+      className="rounded-xl border border-neutral-200 bg-white p-4 transition-colors hover:border-neutral-300 hover:bg-neutral-50"
+    >
+      <div className="font-medium text-neutral-900">{title}</div>
+      <div className="text-sm text-neutral-500">{desc}</div>
+    </Link>
   );
 }

@@ -32,3 +32,10 @@ export async function requireRole(role: Role): Promise<SessionUser> {
   if (user.role !== role) redirect(homeForRole(user.role));
   return user;
 }
+
+/** Требует одной из ролей (например, экраны диспетчера доступны и админу). */
+export async function requireAnyRole(...roles: Role[]): Promise<SessionUser> {
+  const user = await requireUser();
+  if (!roles.includes(user.role)) redirect(homeForRole(user.role));
+  return user;
+}
