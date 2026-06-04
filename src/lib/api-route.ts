@@ -28,6 +28,13 @@ export async function requireAdmin(): Promise<ApiUser> {
   return user;
 }
 
+/** Только водитель: «мои задачи» — это задачи назначенного исполнителя из сессии. */
+export async function requireDriver(): Promise<ApiUser> {
+  const user = await requireApiUser();
+  if (user.role !== "DRIVER") throw Errors.forbidden();
+  return user;
+}
+
 /** Единый маппинг ошибок: доменные — со своим кодом/статусом, прочие — 500 без утечек. */
 export function errorResponse(e: unknown): NextResponse {
   if (e instanceof DomainError) {

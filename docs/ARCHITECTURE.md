@@ -205,7 +205,7 @@ model PushSubscription {
 | GET /api/tasks?date&status&assigneeId&q | Д | список с фильтрами |
 | POST /api/tasks | Д | создать (номер выдаёт сервер) |
 | PATCH /api/tasks/:id | Д | редактирование полей, назначение, перенос |
-| GET /api/my/tasks?date | В | только свои |
+| GET /api/my/tasks?date&scope=today\|upcoming | В | только свои (assigneeId из сессии). today: на сегодня + просроченные открытые + без даты; upcoming: завтра+ |
 | GET /api/tasks/:id | Д, В(своя) | карточка + события + вложения |
 | POST /api/tasks/:id/transition {toStatus, comment?, lat?, lng?} | по матрице | смена статуса + событие + пуш |
 | POST /api/tasks/:id/comments | Д, В(своя) | комментарий |

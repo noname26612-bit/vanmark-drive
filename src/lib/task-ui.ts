@@ -98,6 +98,14 @@ export function formatDateTime(value: string | Date): string {
   return `${pad(d.getDate())}.${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** Ссылка для кнопки «Навигатор»: готовый deeplink из задачи (Яндекс/2ГИС) или, если его нет,
+ *  поиск по тексту адреса в Яндекс.Картах — чтобы кнопка работала всегда. */
+export function navUrl(addressLink: string | null | undefined, address: string): string {
+  const link = addressLink?.trim();
+  if (link) return link;
+  return `https://yandex.ru/maps/?text=${encodeURIComponent(address)}`;
+}
+
 /** Сегодня в формате YYYY-MM-DD (местная зона) — для фильтра доски. */
 export function todayISO(): string {
   const d = new Date();

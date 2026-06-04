@@ -6,6 +6,7 @@ import { Prisma } from "@/generated/prisma/client";
 import type { PassStatus, PaymentType, Role, TaskStatus } from "@/generated/prisma/enums";
 import { checkTransition, isDispatcherRole } from "./task-status";
 import { canViewTask } from "./authz";
+import { myTasksWhere, type MyTasksScope } from "./my-tasks";
 import { Errors } from "./errors";
 
 export type Actor = { id: string; role: Role };
@@ -126,6 +127,29 @@ export async function listTasks(filters: ListFilters): Promise<TaskListItem[]> {
     where: and.length ? { AND: and } : {},
     include: taskInclude,
     orderBy: [{ priority: "desc" }, { scheduledDate: "asc" }, { number: "asc" }],
+  });
+}
+
+/**
+ * Список задач водителя для PWA (ARCHITECTURE §6, §7). ЖЁСТКАЯ изоляция: where прибит к
+ * actor.id через myTasksWhere — другого пути выборки нет. Личность приходит из сессии
+ * (route handler), `today` — локальная дата клиента «YYYY-MM-DD».
+ */
+export async function listMyTasks(
+  actor: Actor,
+  opts: { today: string; scope?: MyTasksScope },
+): Promise<TaskListItem[]> {
+  const today = parseDate(opts.today);
+  if (!today) throw Errors.validation("Некорректная дата");
+  return prisma.task.findMany({
+    where: myTasksWhere(actor.id, today, opts.scope ?? "today"),
+    include: taskInclude,
+    orderBy: [
+      { priority: "desc" },
+      { scheduledDate: "asc" },
+      { timeFrom: "asc" },
+      { number: "asc" },
+    ],
   });
 }
 
