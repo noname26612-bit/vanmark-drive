@@ -1,10 +1,9 @@
-export default function Home() {
-  return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-3 p-8 text-center">
-      <h1 className="text-2xl font-semibold">VanMark Drive</h1>
-      <p className="text-neutral-500">
-        Сервис задач водителей. Этап 0 — каркас проекта.
-      </p>
-    </main>
-  );
+import { redirect } from "next/navigation";
+import { getSessionUser } from "@/lib/session";
+import { homeForRole } from "@/domain/roles";
+
+// Корень разводит по ролям: вошедшего — на его экран, гостя — на вход.
+export default async function RootPage() {
+  const user = await getSessionUser();
+  redirect(user ? homeForRole(user.role) : "/login");
 }

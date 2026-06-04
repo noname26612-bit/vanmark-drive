@@ -1,7 +1,10 @@
-# Какие postinstall-скрипты зависимостей разрешены (pnpm 11 требует явного решения).
-# Prisma-движки нужны для migrate/generate; sharp/unrs-resolver — необязательны (бинарники готовы).
+# Какие build-скрипты зависимостей разрешено выполнять (pnpm 11 требует явного решения true/false).
+#   - esbuild                  — нужен tsx (запуск TS-сидов/скриптов)
+#   - prisma / @prisma/engines — генерация Prisma Client и миграции
+# Нативные модули с готовыми бинарниками (@node-rs/argon2, @tailwindcss/oxide) build-скрипта не требуют.
 allowBuilds:
   '@prisma/engines': true
+  esbuild: true
   prisma: true
   sharp: false
   unrs-resolver: false

@@ -11,3 +11,25 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+// Роли (ARCHITECTURE §4). Источник правды по правам — только сессия, см. §6.
+enum Role {
+  ADMIN
+  DISPATCHER
+  DRIVER
+}
+
+// Этап 1: пользователи и вход. Полная модель данных (Task/TaskType/TaskEvent/Attachment/
+// PushSubscription) добавляется на этапах 2+ — тогда же у User появятся обратные связи
+// (tasks, createdTasks, events, pushSubs). Сейчас держим модель минимальной.
+model User {
+  id           String   @id @default(uuid())
+  login        String   @unique // латиница, вводится при входе
+  passwordHash String // argon2id, см. src/lib/password.ts
+  name         String // «Милена», «Алексей Писарев»
+  phone        String?
+  role         Role
+  isActive     Boolean  @default(true)
+  canLogin     Boolean  @default(true) // false — внешний исполнитель (Султан): входа нет, задачи на него ведёт диспетчер
+  createdAt    DateTime @default(now())
+}
