@@ -21,5 +21,8 @@ export const Errors = {
   dateRequired: () => new DomainError("DATE_REQUIRED", "Нужна новая дата", 422),
   photoRequired: () =>
     new DomainError("PHOTO_REQUIRED", "Для завершения нужно фото", 422),
+  paymentRequired: () =>
+    new DomainError("PAYMENT_REQUIRED", "Подтвердите получение денег", 422),
+  uploadInvalid: (message: string) => new DomainError("UPLOAD_INVALID", message, 422),
   validation: (message: string) => new DomainError("VALIDATION", message, 422),
 };

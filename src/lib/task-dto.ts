@@ -1,6 +1,6 @@
 // Формы данных задачи, как они приходят клиенту по JSON (даты — строки ISO).
 // Держим отдельно от Prisma-типов, чтобы не тащить серверный клиент в браузерный бандл.
-import type { PassStatus, PaymentType, TaskStatus } from "@/generated/prisma/enums";
+import type { AttachmentKind, PassStatus, PaymentType, TaskStatus } from "@/generated/prisma/enums";
 
 export type TaskTypeDTO = {
   id: string;
@@ -60,7 +60,18 @@ export type TaskEventDTO = {
   actor: { id: string; name: string };
 };
 
+export type AttachmentDTO = {
+  id: string;
+  kind: AttachmentKind;
+  mimeType: string;
+  createdById: string;
+  lat: number | null;
+  lng: number | null;
+  createdAt: string;
+};
+
 export type TaskDetailDTO = TaskDTO & {
   createdBy: { id: string; name: string };
   events: TaskEventDTO[];
+  attachments: AttachmentDTO[];
 };

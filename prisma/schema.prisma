@@ -46,6 +46,12 @@ enum PaymentType {
   ON_SITE
 }
 
+// Вид вложения (ARCHITECTURE §4). Фото — отчётные и приложенные при постановке.
+enum AttachmentKind {
+  PHOTO
+  DOCUMENT
+}
+
 model User {
   id           String   @id @default(uuid())
   login        String   @unique // латиница, вводится при входе
@@ -111,7 +117,7 @@ model Task {
   holdReason   String?
 
   events      TaskEvent[]
-  // attachments — этап 4 (фото-отчёты)
+  attachments Attachment[]
 
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -137,4 +143,24 @@ model TaskEvent {
   at         DateTime    @default(now())
 
   @@index([taskId, at])
+}
+
+// Вложения задачи (ARCHITECTURE §4, §6). Фото-отчёты исполнителя и вложения диспетчера при
+// постановке различаются по createdById. Файлы лежат в UPLOADS_DIR (vol), путь — серверный
+// uuid.ext (клиент имя не задаёт). Раздача — только через GET /api/attachments/:id с проверкой
+// прав, не из public/. Привязка к задаче определяет, кто имеет доступ (та же изоляция).
+model Attachment {
+  id          String         @id @default(uuid())
+  taskId      String
+  task        Task           @relation(fields: [taskId], references: [id])
+  kind        AttachmentKind @default(PHOTO)
+  filePath    String // относительный путь в UPLOADS_DIR (uuid.ext) — генерит сервер
+  mimeType    String
+  sizeBytes   Int
+  createdById String // кто загрузил: отчётные — исполнитель (assignee), при постановке — диспетчер
+  lat         Float?
+  lng         Float?
+  createdAt   DateTime       @default(now())
+
+  @@index([taskId, createdAt])
 }

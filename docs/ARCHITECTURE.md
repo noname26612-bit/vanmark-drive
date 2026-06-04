@@ -207,10 +207,11 @@ model PushSubscription {
 | PATCH /api/tasks/:id | Д | редактирование полей, назначение, перенос |
 | GET /api/my/tasks?date&scope=today\|upcoming | В | только свои (assigneeId из сессии). today: на сегодня + просроченные открытые + без даты; upcoming: завтра+ |
 | GET /api/tasks/:id | Д, В(своя) | карточка + события + вложения |
-| POST /api/tasks/:id/transition {toStatus, comment?, lat?, lng?} | по матрице | смена статуса + событие + пуш |
+| POST /api/tasks/:id/transition {toStatus, comment?, lat?, lng?, paymentConfirmed?, paymentAmount?} | по матрице | смена статуса + событие + пуш; DONE: фото (requiresPhoto) и «деньги получены» (ON_SITE) — серверные гейты |
 | POST /api/tasks/:id/comments | Д, В(своя) | комментарий |
 | POST /api/tasks/:id/attachments (multipart) | Д, В(своя) | фото (клиент сжимает до ~1920px) |
-| GET /api/attachments/:id | Д, В(своя) | файл с проверкой прав |
+| GET /api/attachments/:id | Д, В(своя) | файл с проверкой прав (nosniff, не из public/) |
+| DELETE /api/attachments/:id | Д, В(автор, до завершения) | удалить вложение |
 | POST /api/push/subscribe | Д, В | сохранить подписку |
 | GET/POST /api/admin/users, /api/admin/task-types | А | справочники |
 

@@ -7,6 +7,7 @@ import type { PassStatus, PaymentType, Role, TaskStatus } from "@/generated/pris
 import { checkTransition, isDispatcherRole } from "./task-status";
 import { canViewTask } from "./authz";
 import { myTasksWhere, type MyTasksScope } from "./my-tasks";
+import { isReportPhotoMissing } from "./attachments";
 import { Errors } from "./errors";
 
 export type Actor = { id: string; role: Role };
@@ -60,6 +61,19 @@ const taskDetailInclude = {
   events: {
     orderBy: { at: "asc" },
     include: { actor: { select: { id: true, name: true } } },
+  },
+  attachments: {
+    orderBy: { createdAt: "asc" },
+    // filePath/sizeBytes НЕ отдаём клиенту — файл берётся только через GET /api/attachments/:id.
+    select: {
+      id: true,
+      kind: true,
+      mimeType: true,
+      createdById: true,
+      lat: true,
+      lng: true,
+      createdAt: true,
+    },
   },
 } satisfies Prisma.TaskInclude;
 
@@ -321,6 +335,8 @@ export type TransitionOptions = {
   reason?: string | null;
   lat?: number | null;
   lng?: number | null;
+  paymentConfirmed?: boolean; // DONE при оплате «на месте»: подтверждение получения денег (PRD §5)
+  paymentAmount?: number | null; // фактически полученная сумма (по умолчанию — ожидаемая из задачи)
 };
 
 export async function transitionTask(
@@ -329,7 +345,7 @@ export async function transitionTask(
   actor: Actor,
   opts: TransitionOptions = {},
 ): Promise<TaskListItem> {
-  const task = await prisma.task.findUnique({ where: { id: taskId } });
+  const task = await prisma.task.findUnique({ where: { id: taskId }, include: { type: true } });
   if (!task) throw Errors.notFound();
   if (!canViewTask(actor, task)) throw Errors.notFound(); // изоляция: чужая → 404
 
@@ -340,8 +356,24 @@ export async function transitionTask(
   const reason = clean(opts.reason) ?? clean(opts.comment);
   if (verdict.reasonRequired && !reason) throw Errors.reasonRequired();
 
-  // Фото при DONE для type.requiresPhoto — серверная проверка появится на этапе 4
-  // (модель Attachment ещё не заведена; на этапах 2–3 DONE не блокируем фотографией).
+  // Завершение (DONE): серверные гейты ДО записи (CLAUDE.md правило 4, PRD §5).
+  if (toStatus === "DONE") {
+    if (task.type.requiresPhoto) {
+      // Отчётное фото — от исполнителя (assignee) или от того, кто завершает (диспетчер за внешнего).
+      const photoCount = await prisma.attachment.count({
+        where: {
+          taskId,
+          kind: "PHOTO",
+          createdById: task.assigneeId ? { in: [task.assigneeId, actor.id] } : actor.id,
+        },
+      });
+      if (isReportPhotoMissing(true, photoCount)) throw Errors.photoRequired();
+    }
+    // Оплата «на месте» — требуется подтверждение получения денег.
+    if (task.paymentType === "ON_SITE" && !opts.paymentConfirmed) {
+      throw Errors.paymentRequired();
+    }
+  }
 
   const data: Prisma.TaskUpdateInput = { status: toStatus };
   if (toStatus === "ON_HOLD") data.holdReason = reason;
@@ -363,6 +395,20 @@ export async function transitionTask(
         lng: opts.lng ?? null,
       },
     });
+    // Оплата на месте подтверждена — отдельная неизменяемая отметка в журнал (PRD §5).
+    if (toStatus === "DONE" && task.paymentType === "ON_SITE" && opts.paymentConfirmed) {
+      const amount = opts.paymentAmount ?? task.paymentAmount ?? null;
+      await tx.taskEvent.create({
+        data: {
+          taskId,
+          actorId: actor.id,
+          kind: "payment_received",
+          comment: amount != null ? `Деньги получены: ${amount} ₽` : "Деньги получены",
+          lat: opts.lat ?? null,
+          lng: opts.lng ?? null,
+        },
+      });
+    }
     return updated;
   });
 }

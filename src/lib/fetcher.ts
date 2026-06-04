@@ -55,3 +55,19 @@ export async function apiSend<T = unknown>(
   }
   return json.data as T;
 }
+
+/** Загрузка файла multipart (Content-Type ставит браузер сам — с boundary). Бросает ApiError. */
+export async function apiUpload<T = unknown>(url: string, form: FormData): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(url, { method: "POST", body: form });
+  } catch {
+    throw new ApiError("Нет соединения", 0, "NETWORK");
+  }
+  const json = await res.json().catch(() => null);
+  if (!res.ok || !json || "error" in json) {
+    const code = json?.error?.code ?? `HTTP_${res.status}`;
+    throw new ApiError(json?.error?.message ?? "Не удалось загрузить фото", res.status, code);
+  }
+  return json.data as T;
+}

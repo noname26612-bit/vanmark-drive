@@ -1,12 +1,15 @@
 "use client";
+/* eslint-disable @next/next/no-img-element -- фото отдаются через /api/attachments/:id с проверкой
+   прав по сессионной куке; next/image оптимизирует через свой прокси без куки и получил бы 404. */
 
 import { useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { Phone, Navigation, Loader2 } from "lucide-react";
-import { fetcher, apiSend, ApiError } from "@/lib/fetcher";
+import { Phone, Navigation, Loader2, Camera, X } from "lucide-react";
+import { fetcher, apiSend, apiUpload, ApiError } from "@/lib/fetcher";
 import { sendWithRetry } from "@/lib/retry";
 import { getPositionOnce } from "@/lib/geo";
+import { compressImage } from "@/lib/image-compress";
 import type { TaskDetailDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
 import {
@@ -21,8 +24,7 @@ import {
 import { TypeIcon } from "@/components/type-icon";
 import { Badge } from "@/components/ui/badge";
 
-// Следующий статус по «водительской» цепочке. Это лишь подсказка для UI — сервер всё равно
-// проверяет переход по матрице (src/domain/task-status.ts); в обход матрицы попасть нельзя.
+// Подсказка для UI: следующий статус по водительской цепочке. Сервер всё равно проверяет матрицу.
 const NEXT: Partial<Record<TaskStatus, { to: TaskStatus; label: string; cls: string }>> = {
   ASSIGNED: { to: "ACCEPTED", label: "Принял", cls: "bg-indigo-600 active:bg-indigo-700" },
   ACCEPTED: { to: "EN_ROUTE", label: "Выехал", cls: "bg-blue-600 active:bg-blue-700" },
@@ -30,7 +32,6 @@ const NEXT: Partial<Record<TaskStatus, { to: TaskStatus; label: string; cls: str
   ON_SITE: { to: "DONE", label: "Выполнено", cls: "bg-green-600 active:bg-green-700" },
 };
 
-// «Ждёт» водитель может поставить только из этих статусов (матрица, В*: с обязательной причиной).
 const CAN_HOLD: TaskStatus[] = ["ACCEPTED", "EN_ROUTE", "ON_SITE"];
 
 const KIND_LABEL: Record<string, string> = {
@@ -40,6 +41,14 @@ const KIND_LABEL: Record<string, string> = {
   edit: "Изменение",
   reschedule: "Перенос",
   comment: "Комментарий",
+  payment_received: "Оплата",
+};
+
+type StatusExtra = {
+  reason?: string;
+  comment?: string;
+  paymentConfirmed?: boolean;
+  paymentAmount?: number | null;
 };
 
 export function DriverTaskClient({ taskId }: { taskId: string }) {
@@ -50,11 +59,18 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
 
   const [retrying, setRetrying] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [photoBusy, setPhotoBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [holdOpen, setHoldOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [comment, setComment] = useState("");
+  // экран завершения
+  const [completionOpen, setCompletionOpen] = useState(false);
+  const [paid, setPaid] = useState(false);
+  const [amountInput, setAmountInput] = useState("");
+  const [doneComment, setDoneComment] = useState("");
   const abortRef = useRef<AbortController | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   if (isLoading) return <p className="p-6 text-base text-neutral-400">Загрузка…</p>;
   if (error || !task) {
@@ -67,9 +83,15 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
       </div>
     );
   }
-  const t = task; // зафиксировали для замыканий ниже
+  const t = task;
 
-  async function changeStatus(to: TaskStatus, holdReason?: string) {
+  const myPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && a.createdById === t.assigneeId);
+  const refPhotos = t.attachments.filter((a) => a.createdById !== t.assigneeId);
+  const requiresPhoto = t.type.requiresPhoto;
+  const onSite = t.paymentType === "ON_SITE";
+  const canComplete = (!requiresPhoto || myPhotos.length > 0) && (!onSite || paid);
+
+  async function changeStatus(to: TaskStatus, extra: StatusExtra = {}) {
     setActionError(null);
     setBusy(true);
     abortRef.current?.abort();
@@ -78,23 +100,24 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
     try {
       await mutate(
         (async (): Promise<TaskDetailDTO | undefined> => {
-          // Гео-метка best-effort: запрашиваем координаты в момент действия, не блокируем смену статуса.
-          const coords = await getPositionOnce();
+          const coords = await getPositionOnce(); // гео best-effort, не блокирует
           await sendWithRetry(
             () =>
               apiSend(`${key}/transition`, "POST", {
                 toStatus: to,
-                reason: holdReason,
+                reason: extra.reason,
+                comment: extra.comment,
+                paymentConfirmed: extra.paymentConfirmed,
+                paymentAmount: extra.paymentAmount,
                 lat: coords?.lat,
                 lng: coords?.lng,
               }),
             { onRetry: () => setRetrying(true), signal: ac.signal },
           );
           setRetrying(false);
-          return undefined; // populateCache:false — значение не используется, ревалидация ниже
+          return undefined;
         })(),
         {
-          // Оптимистично показываем новый статус сразу (применяется синхронно до сети).
           optimisticData: (cur?: TaskDetailDTO) => ({ ...(cur ?? t), status: to }),
           rollbackOnError: true,
           revalidate: true,
@@ -103,13 +126,66 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
       );
       setHoldOpen(false);
       setReason("");
+      setCompletionOpen(false);
     } catch (e) {
       setRetrying(false);
-      if ((e as Error)?.name === "AbortError") return; // действие вытеснено новым — молча
+      if ((e as Error)?.name === "AbortError") return;
       setActionError(e instanceof ApiError ? e.message : "Не удалось сменить статус");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function uploadPhotos(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setActionError(null);
+    setPhotoBusy(true);
+    try {
+      for (const file of Array.from(files)) {
+        const blob = await compressImage(file); // сжатие до ~1920px на клиенте
+        const form = new FormData();
+        form.append("file", blob, "photo.jpg");
+        await sendWithRetry(() => apiUpload(`${key}/attachments`, form), {
+          onRetry: () => setRetrying(true),
+        });
+        setRetrying(false);
+      }
+      await mutate();
+    } catch (e) {
+      setRetrying(false);
+      setActionError(e instanceof ApiError ? e.message : "Не удалось загрузить фото");
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
+  async function removePhoto(id: string) {
+    setActionError(null);
+    setPhotoBusy(true);
+    try {
+      await apiSend(`/api/attachments/${id}`, "DELETE");
+      await mutate();
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : "Не удалось удалить фото");
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
+  function openCompletion() {
+    setAmountInput(t.paymentAmount != null ? String(t.paymentAmount) : "");
+    setPaid(false);
+    setDoneComment("");
+    setActionError(null);
+    setCompletionOpen(true);
+  }
+
+  function submitCompletion() {
+    void changeStatus("DONE", {
+      comment: doneComment.trim() || undefined,
+      paymentConfirmed: onSite ? paid : undefined,
+      paymentAmount: onSite ? (Number(amountInput) || null) : undefined,
+    });
   }
 
   async function sendComment() {
@@ -201,7 +277,7 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
         ) : null}
 
         {/* Оплата — крупно при оплате на месте */}
-        {t.paymentType === "ON_SITE" ? (
+        {onSite ? (
           <section className="rounded-xl border-2 border-amber-300 bg-amber-50 p-3">
             <p className="text-sm font-medium text-amber-900">Взять оплату на месте</p>
             <p className="mt-0.5 text-2xl font-bold text-amber-900">
@@ -242,6 +318,42 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
                 <Row label="Описание">{t.description}</Row>
               </div>
             ) : null}
+          </section>
+        ) : null}
+
+        {/* Фото от диспетчера (что приложили при постановке — поломка и т.п.) */}
+        {refPhotos.length > 0 ? (
+          <section className="rounded-xl border border-neutral-200 p-3">
+            <p className="text-xs uppercase tracking-wide text-neutral-400">Фото от диспетчера</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {refPhotos.map((a) => (
+                <a key={a.id} href={`/api/attachments/${a.id}`} target="_blank" rel="noopener">
+                  <img
+                    src={`/api/attachments/${a.id}`}
+                    alt="фото от диспетчера"
+                    className="h-20 w-20 rounded-lg object-cover"
+                  />
+                </a>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {/* Отчётные фото (мои) — видны и вне экрана завершения */}
+        {myPhotos.length > 0 ? (
+          <section className="rounded-xl border border-neutral-200 p-3">
+            <p className="text-xs uppercase tracking-wide text-neutral-400">Моё фото отчёта</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {myPhotos.map((a) => (
+                <a key={a.id} href={`/api/attachments/${a.id}`} target="_blank" rel="noopener">
+                  <img
+                    src={`/api/attachments/${a.id}`}
+                    alt="фото отчёта"
+                    className="h-20 w-20 rounded-lg object-cover"
+                  />
+                </a>
+              ))}
+            </div>
           </section>
         ) : null}
 
@@ -286,7 +398,7 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
           <button
             type="button"
             disabled={busy || !comment.trim()}
-            onClick={sendComment}
+            onClick={() => void sendComment()}
             className="inline-flex h-12 items-center justify-center rounded-lg border border-neutral-300 text-base font-medium text-neutral-800 disabled:opacity-50"
           >
             Отправить комментарий
@@ -301,15 +413,13 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
             <Loader2 className="h-4 w-4 animate-spin" /> Не отправлено, повторяю…
           </p>
         ) : null}
-        {actionError ? (
-          <p className="mb-2 text-center text-sm text-red-600">{actionError}</p>
-        ) : null}
+        {actionError ? <p className="mb-2 text-center text-sm text-red-600">{actionError}</p> : null}
 
         {next ? (
           <button
             type="button"
             disabled={busy}
-            onClick={() => changeStatus(next.to)}
+            onClick={() => (t.status === "ON_SITE" ? openCompletion() : void changeStatus(next.to))}
             className={`flex h-14 w-full items-center justify-center rounded-xl text-lg font-semibold text-white transition-colors disabled:opacity-60 ${next.cls}`}
           >
             {next.label} →
@@ -334,12 +444,130 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
         ) : null}
       </div>
 
-      {/* Модалка причины паузы */}
-      {holdOpen ? (
+      {/* Скрытый input камеры */}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          void uploadPhotos(e.target.files);
+          e.target.value = "";
+        }}
+      />
+
+      {/* Экран завершения */}
+      {completionOpen ? (
         <div
           className="fixed inset-0 z-20 flex items-end bg-black/40"
-          onClick={() => setHoldOpen(false)}
+          onClick={() => !busy && setCompletionOpen(false)}
         >
+          <div
+            className="mx-auto max-h-[88vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <p className="text-lg font-semibold text-neutral-900">Завершение задачи</p>
+              <button type="button" onClick={() => setCompletionOpen(false)} className="p-1 text-neutral-400">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Фото отчёта */}
+            <p className="mt-3 text-sm font-medium text-neutral-700">
+              Фото отчёта{requiresPhoto ? <span className="text-red-600"> — обязательно</span> : " (по желанию)"}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {myPhotos.map((a) => (
+                <div key={a.id} className="relative">
+                  <img
+                    src={`/api/attachments/${a.id}`}
+                    alt="фото отчёта"
+                    className="h-24 w-24 rounded-lg object-cover"
+                  />
+                  <button
+                    type="button"
+                    disabled={photoBusy}
+                    onClick={() => void removePhoto(a.id)}
+                    aria-label="Удалить фото"
+                    className="absolute -right-2 -top-2 flex h-7 w-7 items-center justify-center rounded-full bg-neutral-900 text-white disabled:opacity-50"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                disabled={photoBusy}
+                onClick={() => fileRef.current?.click()}
+                className="flex h-24 w-24 flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-neutral-300 text-xs text-neutral-500 disabled:opacity-50"
+              >
+                {photoBusy ? <Loader2 className="h-6 w-6 animate-spin" /> : <Camera className="h-6 w-6" />}
+                {photoBusy ? "Загрузка…" : "Добавить"}
+              </button>
+            </div>
+            {requiresPhoto && myPhotos.length === 0 ? (
+              <p className="mt-1 text-xs text-amber-700">Для этого типа задачи нужно хотя бы одно фото.</p>
+            ) : null}
+
+            {/* Оплата на месте — деньги получены */}
+            {onSite ? (
+              <div className="mt-4 rounded-xl border-2 border-amber-300 bg-amber-50 p-3">
+                <label className="flex items-center gap-3 text-base font-medium text-amber-900">
+                  <input
+                    type="checkbox"
+                    checked={paid}
+                    onChange={(e) => setPaid(e.target.checked)}
+                    className="h-5 w-5"
+                  />
+                  Деньги получены
+                </label>
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-sm text-amber-900">Сумма, ₽</span>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    value={amountInput}
+                    onChange={(e) => setAmountInput(e.target.value)}
+                    className="h-11 w-32 rounded-lg border border-amber-300 bg-white px-3 text-base outline-none"
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {/* Комментарий */}
+            <textarea
+              rows={2}
+              value={doneComment}
+              onChange={(e) => setDoneComment(e.target.value)}
+              placeholder="Комментарий (по желанию)…"
+              className="mt-4 w-full rounded-lg border border-neutral-300 p-3 text-base outline-none focus:border-neutral-900"
+            />
+
+            {actionError ? <p className="mt-2 text-sm text-red-600">{actionError}</p> : null}
+            {retrying ? (
+              <p className="mt-2 flex items-center gap-2 text-sm text-amber-700">
+                <Loader2 className="h-4 w-4 animate-spin" /> Не отправлено, повторяю…
+              </p>
+            ) : null}
+
+            <button
+              type="button"
+              disabled={busy || photoBusy || !canComplete}
+              onClick={submitCompletion}
+              className="mt-4 flex h-14 w-full items-center justify-center rounded-xl bg-green-600 text-lg font-semibold text-white active:bg-green-700 disabled:opacity-50"
+            >
+              Завершить
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Модалка причины паузы */}
+      {holdOpen ? (
+        <div className="fixed inset-0 z-20 flex items-end bg-black/40" onClick={() => setHoldOpen(false)}>
           <div
             className="mx-auto w-full max-w-md rounded-t-2xl bg-white p-4"
             onClick={(e) => e.stopPropagation()}
@@ -367,7 +595,7 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
               <button
                 type="button"
                 disabled={busy || !reason.trim()}
-                onClick={() => changeStatus("ON_HOLD", reason.trim())}
+                onClick={() => void changeStatus("ON_HOLD", { reason: reason.trim() })}
                 className="h-12 flex-1 rounded-lg bg-amber-500 text-base font-semibold text-white disabled:opacity-50"
               >
                 На паузу

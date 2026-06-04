@@ -1,10 +1,13 @@
 "use client";
+/* eslint-disable @next/next/no-img-element -- фото отдаются через /api/attachments/:id с проверкой
+   прав по сессионной куке; next/image ходил бы через свой прокси без куки и получил бы 404. */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { Phone, Navigation } from "lucide-react";
-import { fetcher, apiSend } from "@/lib/fetcher";
+import { Phone, Navigation, Camera, X } from "lucide-react";
+import { fetcher, apiSend, apiUpload } from "@/lib/fetcher";
+import { compressImage } from "@/lib/image-compress";
 import type { DriverDTO, TaskDetailDTO, TaskTypeDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
 import {
@@ -64,6 +67,7 @@ export function TaskDetailClient({
   const [editOpen, setEditOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   if (isLoading) return <p className="p-6 text-sm text-neutral-400">Загрузка…</p>;
   if (error || !task)
@@ -91,6 +95,19 @@ export function TaskDetailClient({
       setBusy(false);
     }
   }
+
+  function uploadPhotos(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    void run(async () => {
+      for (const file of Array.from(files)) {
+        const blob = await compressImage(file);
+        const form = new FormData();
+        form.append("file", blob, "photo.jpg");
+        await apiUpload(`${key}/attachments`, form);
+      }
+    });
+  }
+  const removePhoto = (id: string) => run(() => apiSend(`/api/attachments/${id}`, "DELETE"));
 
   const transition = (toStatus: TaskStatus, r?: string) =>
     run(() => apiSend(key + "/transition", "POST", { toStatus, reason: r }));
@@ -213,6 +230,55 @@ export function TaskDetailClient({
         <p className="mt-4 text-sm text-neutral-400">Задача завершена — действий нет.</p>
       )}
       {actionError ? <p className="mt-2 text-sm text-red-600">{actionError}</p> : null}
+
+      {/* Фото — отчётные (от исполнителя) и приложенные при постановке (от диспетчера) */}
+      <section className="mt-6">
+        <h2 className="mb-2 text-sm font-semibold text-neutral-700">Фото</h2>
+        <div className="flex flex-wrap gap-2">
+          {task.attachments.map((a) => (
+            <div key={a.id} className="relative">
+              <a href={`/api/attachments/${a.id}`} target="_blank" rel="noopener">
+                <img
+                  src={`/api/attachments/${a.id}`}
+                  alt="фото"
+                  className="h-24 w-24 rounded-lg object-cover"
+                />
+              </a>
+              <span className="absolute inset-x-0 bottom-0 rounded-b-lg bg-black/50 py-0.5 text-center text-[10px] text-white">
+                {a.createdById === task.assigneeId ? "исполнитель" : "диспетчер"}
+              </span>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => removePhoto(a.id)}
+                aria-label="Удалить фото"
+                className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full bg-neutral-900 text-white disabled:opacity-50"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => fileRef.current?.click()}
+            className="flex h-24 w-24 flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-neutral-300 text-xs text-neutral-500 disabled:opacity-50"
+          >
+            <Camera className="h-6 w-6" /> Добавить
+          </button>
+        </div>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            uploadPhotos(e.target.files);
+            e.target.value = "";
+          }}
+        />
+      </section>
 
       {/* История */}
       <h2 className="mt-6 mb-2 text-sm font-semibold text-neutral-700">История</h2>

@@ -22,7 +22,17 @@ export async function POST(req: Request, { params }: Ctx) {
     const reason = typeof body.reason === "string" ? body.reason : undefined;
     const lat = typeof body.lat === "number" ? body.lat : undefined;
     const lng = typeof body.lng === "number" ? body.lng : undefined;
-    const task = await transitionTask(id, toStatus, user, { comment, reason, lat, lng });
+    // DONE при оплате «на месте»: подтверждение получения денег (PRD §5).
+    const paymentConfirmed = body.paymentConfirmed === true;
+    const paymentAmount = typeof body.paymentAmount === "number" ? body.paymentAmount : undefined;
+    const task = await transitionTask(id, toStatus, user, {
+      comment,
+      reason,
+      lat,
+      lng,
+      paymentConfirmed,
+      paymentAmount,
+    });
     return NextResponse.json(ok(task));
   } catch (e) {
     return errorResponse(e);
