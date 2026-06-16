@@ -40,6 +40,8 @@ src/
     task-status.ts              # допустимые переходы + кто может
     authz.ts                    # canView / canTransition / assertOwnership
     task-service.ts             # создание, назначение, смена статуса (+события, +пуши)
+    kpi.ts                      # KPI (Фаза 1.5): детекторы нарушений + прогрессивный расчёт (чистые функции, юнит-тесты)
+    kpi-service.ts              # KPI: кандидаты, подтверждение/отклонение, ручные отметки, закрытие месяца, расчёт водителя (с изоляцией)
   lib/                          # prisma client, auth, push, upload, утилиты
   components/                   # ui-компоненты
 prisma/schema.prisma
@@ -77,12 +79,13 @@ model User {
 
 model TaskType {
   id            String  @id @default(uuid())
-  name          String  @unique          // «Доставка в аренду», «Забор в ремонт»...
-  icon          String?                  // имя иконки lucide
-  requiresPhoto Boolean @default(true)   // обязательное фото при DONE
-  sortOrder     Int     @default(0)
-  isActive      Boolean @default(true)
-  tasks         Task[]
+  name             String  @unique       // «Доставка в аренду», «Забор в ремонт»...
+  icon             String?                // имя иконки lucide
+  requiresPhoto    Boolean @default(true) // обязательное фото при DONE (гейт)
+  requiresSignedDoc Boolean @default(false) // ремонтный тип: ожидается подписанный акт. НЕ гейт — отсутствие = нарушение KPI (Фаза 1.5)
+  sortOrder        Int     @default(0)
+  isActive         Boolean @default(true)
+  tasks            Task[]
 }
 
 model Task {
@@ -170,6 +173,81 @@ model PushSubscription {
 
 Номер задачи: PostgreSQL sequence; стартовое значение задаётся в сиде (последний номер из Telegram-чата + 1 — уточнить у Артёма при запуске).
 
+## 4а. Модель данных KPI и зарплаты (Фаза 1.5)
+
+Добавляется аддитивной миграцией поверх §4 (никаких изменений существующих таблиц, кроме нового поля `TaskType.requiresSignedDoc`). Принципы PRD §12: KPI = нарушения, расчёт = оклад + (премия − прогрессивные штрафы) + поощрения, закрытый месяц неизменен.
+
+```prisma
+enum KpiMarkKind   { LATE UNSIGNED_DOCS MISSED_STOP MANUAL } // 3 авто-метрики + ручная отметка
+enum KpiMarkStatus { CANDIDATE CONFIRMED DISMISSED }         // предложено системой → решение Милены
+
+// Отметка KPI. Авто-кандидаты создаёт детектор (cron), решение принимает диспетчер.
+// Корректируемый реестр (не «журнал только на запись», как TaskEvent): пока месяц открыт,
+// статус можно менять — каждое решение пишет resolvedById/resolvedAt. Закрытый месяц фиксируется
+// снимком в PayrollStatement и больше не зависит от правок отметок.
+model KpiMark {
+  id           String        @id @default(uuid())
+  driverId     String                                  // чей KPI; изоляция водителя — по нему
+  driver       User          @relation("kpiDriver", fields: [driverId], references: [id])
+  taskId       String?                                 // привязка к задаче (LATE/UNSIGNED_DOCS/MISSED_STOP); null — ручная общая
+  task         Task?         @relation(fields: [taskId], references: [id])
+  period       String                                  // месяц начисления «YYYY-MM» (по occurredAt)
+  kind         KpiMarkKind
+  status       KpiMarkStatus @default(CANDIDATE)
+  occurredAt   DateTime                                // когда произошло — для прогрессии (порядок ошибок)
+  note         String?                                 // автоописание / пояснение Милены
+  manualAmount Int?                                    // только MANUAL: знаковая сумма ₽ (− штраф, + поощрение)
+  createdById  String?                                 // null — авто-кандидат от системы; иначе диспетчер (ручная)
+  createdBy    User?         @relation("kpiCreatedBy", fields: [createdById], references: [id])
+  resolvedById String?                                 // кто подтвердил/отклонил
+  resolvedAt   DateTime?
+  createdAt    DateTime      @default(now())
+
+  @@unique([taskId, kind])                             // идемпотентность детектора: одна авто-отметка вида на задачу
+  @@index([driverId, period])
+  @@index([status, period])
+}
+
+// Денежный профиль водителя (правила задаёт админ). Веса штрафов — глобальные (KpiRule).
+model DriverPayProfile {
+  id          String   @id @default(uuid())
+  driverId    String   @unique
+  driver      User     @relation("payProfile", fields: [driverId], references: [id])
+  baseSalary  Int      @default(0)   // оклад ₽/мес
+  premiumBase Int      @default(0)   // премия ₽ при нуле ошибок (полная «прибавка»)
+  isActive    Boolean  @default(true)
+  updatedAt   DateTime @updatedAt
+}
+
+// Глобальный вес штрафа по виду нарушения (3 строки). Шаг прогрессии — константа KPI_CONFIG в src/domain/kpi.ts.
+model KpiRule {
+  id       String      @id @default(uuid())
+  kind     KpiMarkKind @unique
+  weight   Int                         // базовый штраф ₽ за ошибку этого вида
+  isActive Boolean     @default(true)
+}
+
+// Снимок расчёта за закрытый месяц (неизменяем). До закрытия расчёт считается на лету из KpiMark + правил.
+model PayrollStatement {
+  id          String   @id @default(uuid())
+  driverId    String
+  driver      User     @relation("payStatements", fields: [driverId], references: [id])
+  period      String                       // «YYYY-MM»
+  baseSalary  Int                          // снимок оклада
+  premiumBase Int                          // снимок премии
+  penalty     Int                          // сумма штрафов (положительное число)
+  bonus       Int                          // сумма ручных поощрений
+  total       Int                          // итог к выплате (не ниже 0)
+  breakdown   Json                         // детализация по отметкам на момент закрытия
+  closedById  String
+  closedAt    DateTime @default(now())
+
+  @@unique([driverId, period])
+}
+```
+
+На стороне `User` добавляются обратные связи (`kpiMarks`, `payProfile`, `payStatements`), на `Task` — `kpiMarks`. Детекторы (см. §8) идемпотентны через `@@unique([taskId, kind])`; повторный прогон не плодит дубли.
+
 ## 5. Статусная матрица (единственный источник — `src/domain/task-status.ts`)
 
 | Из \ В | ASSIGNED | ACCEPTED | EN_ROUTE | ON_SITE | DONE | ON_HOLD | RESCHEDULED | CANCELLED |
@@ -196,6 +274,7 @@ model PushSubscription {
 - Фото отдаются НЕ из публичной статики, а через `GET /api/attachments/[id]` с теми же проверками прав.
 - Rate limit на `/api/auth/*` (брутфорс), пароли — argon2id.
 - Обязательные e2e-тесты изоляции (см. skill security-check): водитель A не видит и не может изменить задачу водителя B ни одним эндпоинтом.
+- KPI (Фаза 1.5): `GET /api/my/kpi` и расчёт водителя берут `driverId` ТОЛЬКО из сессии; чужой расчёт по прямой ссылке/ID — **404**. Подтверждение нарушений, ручные отметки, настройки оплаты и закрытие месяца — только диспетчер/админ (водитель эти ручки не видит). Каждый KPI-эндпоинт проходит security-check (та же дисциплина, что и задачи).
 
 ## 7. API (route handlers)
 
@@ -214,14 +293,22 @@ model PushSubscription {
 | DELETE /api/attachments/:id | Д, В(автор, до завершения) | удалить вложение |
 | POST /api/push/subscribe | Д, В | сохранить подписку |
 | GET/POST /api/admin/users, /api/admin/task-types | А | справочники |
+| GET /api/kpi/candidates?period | Д | нарушения-кандидаты и подтверждённые за месяц (все водители) |
+| POST /api/kpi/marks | Д | добавить отметку вручную (штраф или поощрение) |
+| POST /api/kpi/marks/:id/resolve {status} | Д | подтвердить/отклонить кандидата (CONFIRMED/DISMISSED) |
+| GET /api/kpi/statements?period | Д | расчёт по всем водителям за месяц |
+| POST /api/kpi/periods/:period/close | Д | закрыть месяц — заморозить снимок PayrollStatement |
+| GET /api/my/kpi?period | В | мой расчёт за месяц (driverId из сессии; чужой → 404) |
+| GET/PUT /api/admin/pay-profiles, /api/admin/kpi-rules | А | оклад/премия по водителю, веса штрафов |
 
-Контракт ответов: `{ data }` или `{ error: { code, message } }`; коды ошибок доменные (`FORBIDDEN_TRANSITION`, `PHOTO_REQUIRED`, `NOT_FOUND`).
+Контракт ответов: `{ data }` или `{ error: { code, message } }`; коды ошибок доменные (`FORBIDDEN_TRANSITION`, `PHOTO_REQUIRED`, `NOT_FOUND`, `PERIOD_CLOSED`).
 
 ## 8. Real-time, пуши, фоновые задачи
 
 - MVP: SWR с `refreshInterval: 10_000` на доске и в списке водителя + мгновенный optimistic update своих действий. Для 3 пользователей этого достаточно; SSE — этап 6, только если поллинг будет ощущаться.
 - Push: при назначении/изменении/отмене задачи — web-push всем подпискам водителя; payload минимальный (номер, заголовок, deeplink в карточку). Тап по пушу открывает PWA на задаче.
 - Планировщик (node-cron в том же процессе): утреннее напоминание водителям (08:00), предупреждение Милене о незаказанных пропусках на завтра (16:00).
+- KPI-детекторы (Фаза 1.5, тот же node-cron, ночной прогон ~23:30): по задачам за день создаёт кандидатов в `KpiMark` со `status=CANDIDATE` — опоздание (отметка «На месте» позже `timeTo`), не подписан акт (тип с `requiresSignedDoc`, DONE без документа-вложения), не выполнена точка (назначенная на день задача не в DONE/CANCELLED/RESCHEDULED). Идемпотентно (`@@unique([taskId, kind])`), безопасно повторно прогонять. Неоднозначное окно времени (нечитаемый `timeTo`) — пропускаем, Милена добавит вручную. Решение по каждому кандидату — за Миленой, авто-штрафов без подтверждения нет.
 
 ## 9. Деплой и эксплуатация
 
@@ -233,6 +320,6 @@ model PushSubscription {
 
 ## 10. Тестирование
 
-- Unit (Vitest): статусная матрица (все разрешённые/запрещённые переходы), authz-функции, нумерация.
-- e2e (Playwright): сценарий «Милена создала → назначила → водитель принял → выехал → на месте → фото → выполнено»; тесты изоляции (обязательно); требование фото при DONE.
+- Unit (Vitest): статусная матрица (все разрешённые/запрещённые переходы), authz-функции, нумерация. KPI (Фаза 1.5): детекторы нарушений (опоздание/акт/точка на граничных данных), прогрессивный расчёт (0 ошибок = полная премия; убавка ниже оклада; итог не ниже 0), идемпотентность детектора.
+- e2e (Playwright): сценарий «Милена создала → назначила → водитель принял → выехал → на месте → фото → выполнено»; тесты изоляции (обязательно); требование фото при DONE. KPI: водитель видит только свой расчёт (чужой → 404); водительские ручки KPI не дают подтверждать/настраивать; закрытый месяц не меняется при правке отметок.
 - Definition of Done любой фичи — в CLAUDE.md.
