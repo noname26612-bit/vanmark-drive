@@ -12,6 +12,7 @@ import {
   STATUS_LABEL,
   PASS_BADGE,
   PASS_LABEL,
+  addDaysISO,
   formatDate,
   formatDateShort,
 } from "@/lib/task-ui";
@@ -20,7 +21,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CreateTaskModal } from "../_components/create-task-modal";
 
-type DropTarget = { kind: "driver"; driverId: string } | { kind: "unassigned" } | { kind: "undated" };
+type DropTarget = { kind: "driver"; driverId: string } | { kind: "undated" };
+
+// Горизонт пула «Ближайшие 3 дня»: сегодня + 2 дня (решение Артёма 17.06).
+const HORIZON_DAYS = 2;
 
 // Опции живого обновления (Этап 6): поллинг 10 с; keepPreviousData держит прошлые данные во время
 // фонового запроса — раскладка не дёргается, скелетоны только на самой первой загрузке.
@@ -35,7 +39,9 @@ export function BoardClient({
   types: TaskTypeDTO[];
   today: string;
 }) {
-  const key = `/api/tasks?date=${today}&includeUndated=1`;
+  // Выборка для доски: задачи сегодня…+2 + пул «Без даты» (одним запросом, фильтрация — на клиенте).
+  const horizonEnd = addDaysISO(today, HORIZON_DAYS);
+  const key = `/api/tasks?dateFrom=${today}&dateTo=${horizonEnd}&includeUndated=1`;
   const { data: tasks, isLoading, error: loadError, mutate } = useSWR<TaskDTO[]>(key, fetcher, LIVE);
   const { data: attention, mutate: mutateAttention } = useSWR<AttentionDTO>(
     `/api/board/attention?date=${today}`,
@@ -46,13 +52,23 @@ export function BoardClient({
   const [actionError, setActionError] = useState<string | null>(null);
 
   const list = tasks ?? [];
-  const undated = list.filter((t) => !t.scheduledDate);
-  const dated = list.filter((t) => t.scheduledDate);
-  const unassignedToday = dated.filter((t) => !t.assigneeId);
+  const dateOf = (t: TaskDTO): string | null => (t.scheduledDate ? t.scheduledDate.slice(0, 10) : null);
 
-  const total = dated.length;
-  const inWork = dated.filter((t) => ["ACCEPTED", "EN_ROUTE", "ON_SITE"].includes(t.status)).length;
-  const done = dated.filter((t) => t.status === "DONE").length;
+  const undated = list.filter((t) => !t.scheduledDate);
+  const todays = list.filter((t) => dateOf(t) === today);
+  // Пул «Ближайшие 3 дня»: сегодня — только нераспределённые (назначенные уже стоят в колонках
+  // водителей, дубля карточек не будет); завтра и послезавтра — все задачи (и назначенные).
+  const upcoming = list.filter((t) => {
+    const d = dateOf(t);
+    if (!d) return false;
+    if (d === today) return !t.assigneeId;
+    return d > today && d <= horizonEnd;
+  });
+
+  const total = todays.length;
+  const inWork = todays.filter((t) => ["ACCEPTED", "EN_ROUTE", "ON_SITE"].includes(t.status)).length;
+  const done = todays.filter((t) => t.status === "DONE").length;
+  const unassignedTodayCount = todays.filter((t) => !t.assigneeId).length;
   const attentionCount = (attention?.overdue.length ?? 0) + (attention?.tomorrowPasses.length ?? 0);
 
   // Обновить разом обе ленты (после перетаскивания/назначения «внимание» тоже могло измениться).
@@ -68,8 +84,7 @@ export function BoardClient({
       } else {
         // Авто-простановку даты при назначении задачи без даты делает сервер (assignTask, п.1):
         // одна ручка, today передаём для корректной локальной даты.
-        const assigneeId = target.kind === "driver" ? target.driverId : null;
-        await apiSend(`/api/tasks/${taskId}`, "PATCH", { op: "assign", assigneeId, today });
+        await apiSend(`/api/tasks/${taskId}`, "PATCH", { op: "assign", assigneeId: target.driverId, today });
       }
       await refresh();
     } catch (e) {
@@ -116,7 +131,7 @@ export function BoardClient({
           testId="stat-attention"
           onClick={attentionCount > 0 ? () => scrollToAttention() : undefined}
         />
-        <Stat label="Не назначено" value={unassignedToday.length} tone="muted" />
+        <Stat label="Не назначено сегодня" value={unassignedTodayCount} tone="muted" />
       </div>
 
       {actionError ? <p className="mb-3 text-sm text-red-600">{actionError}</p> : null}
@@ -145,12 +160,14 @@ export function BoardClient({
               onDropTask={onDrop}
               onQuickAssign={quickAssign}
             />
+            {/* Пул для планирования наперёд: сегодня…+2. Только показ/источник — не drop-зона
+                (день назначается в «Планировании» или перетаскиванием на колонку водителя). */}
             <Column
-              title="Не назначено"
-              tasks={unassignedToday}
+              title="Ближайшие 3 дня"
+              hint="планирование"
+              tasks={upcoming}
               drivers={drivers}
-              target={{ kind: "unassigned" }}
-              onDropTask={onDrop}
+              showDate
               onQuickAssign={quickAssign}
             />
             {drivers.map((d) => (
@@ -158,7 +175,7 @@ export function BoardClient({
                 key={d.id}
                 title={d.name}
                 hint={d.canLogin ? undefined : "внешний"}
-                tasks={dated.filter((t) => t.assigneeId === d.id)}
+                tasks={todays.filter((t) => t.assigneeId === d.id)}
                 drivers={drivers}
                 target={{ kind: "driver", driverId: d.id }}
                 onDropTask={onDrop}
@@ -294,7 +311,7 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
 }
 
 function BoardSkeleton({ driverCount }: { driverCount: number }) {
-  const columns = driverCount + 2; // «Без даты» + «Не назначено» + водители
+  const columns = driverCount + 2; // «Без даты» + «Ближайшие 3 дня» + водители
   return (
     <div className="flex gap-3 overflow-x-auto pb-4" aria-hidden>
       {Array.from({ length: columns }).map((_, i) => (
@@ -316,6 +333,7 @@ function Column({
   tasks,
   drivers,
   target,
+  showDate = false,
   onDropTask,
   onQuickAssign,
 }: {
@@ -323,12 +341,34 @@ function Column({
   hint?: string;
   tasks: TaskDTO[];
   drivers: DriverDTO[];
-  target: DropTarget;
-  onDropTask: (taskId: string, target: DropTarget) => void;
+  target?: DropTarget; // без target — колонка только показ/источник (пул «Ближайшие 3 дня»)
+  showDate?: boolean;
+  onDropTask?: (taskId: string, target: DropTarget) => void;
   onQuickAssign: (taskId: string, assigneeId: string) => void;
 }) {
   const [over, setOver] = useState(false);
-  const testId = target.kind === "driver" ? `col-driver-${target.driverId}` : `col-${target.kind}`;
+  const droppable = target !== undefined && onDropTask !== undefined;
+  const testId = target
+    ? target.kind === "driver"
+      ? `col-driver-${target.driverId}`
+      : `col-${target.kind}`
+    : "col-upcoming";
+  // Drop-зона только для droppable-колонок; пул-источник не принимает перетаскивание.
+  const dropProps = droppable
+    ? {
+        onDragOver: (e: React.DragEvent) => {
+          e.preventDefault();
+          setOver(true);
+        },
+        onDragLeave: () => setOver(false),
+        onDrop: (e: React.DragEvent) => {
+          e.preventDefault();
+          setOver(false);
+          const id = e.dataTransfer.getData("text/plain");
+          if (id) onDropTask(id, target);
+        },
+      }
+    : {};
   return (
     <div className="flex w-72 shrink-0 flex-col" data-testid={testId}>
       <div className="mb-2 flex items-baseline justify-between px-1">
@@ -339,17 +379,7 @@ function Column({
         </span>
       </div>
       <div
-        onDragOver={(e) => {
-          e.preventDefault();
-          setOver(true);
-        }}
-        onDragLeave={() => setOver(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setOver(false);
-          const id = e.dataTransfer.getData("text/plain");
-          if (id) onDropTask(id, target);
-        }}
+        {...dropProps}
         className={`flex min-h-32 flex-1 flex-col gap-2 rounded-xl border p-2 transition-colors ${
           over ? "border-neutral-400 bg-neutral-100" : "border-neutral-200 bg-neutral-50"
         }`}
@@ -358,7 +388,13 @@ function Column({
           <p className="px-1 py-4 text-center text-xs text-neutral-400">Пусто</p>
         ) : (
           tasks.map((t) => (
-            <BoardCard key={t.id} task={t} drivers={drivers} onQuickAssign={onQuickAssign} />
+            <BoardCard
+              key={t.id}
+              task={t}
+              drivers={drivers}
+              showDate={showDate}
+              onQuickAssign={onQuickAssign}
+            />
           ))
         )}
       </div>
@@ -369,10 +405,12 @@ function Column({
 function BoardCard({
   task,
   drivers,
+  showDate = false,
   onQuickAssign,
 }: {
   task: TaskDTO;
   drivers: DriverDTO[];
+  showDate?: boolean;
   onQuickAssign: (taskId: string, assigneeId: string) => void;
 }) {
   return (
@@ -388,7 +426,15 @@ function BoardCard({
           <TypeIcon name={task.type.icon} className="h-4 w-4 text-neutral-500" />№{task.number}
           {task.priority ? <span className="text-red-500">●</span> : null}
         </Link>
-        <Badge className={STATUS_BADGE[task.status]}>{STATUS_LABEL[task.status]}</Badge>
+        <div className="flex items-center gap-1.5">
+          {/* В пуле «Ближайшие 3 дня» показываем день — задачи разных дат вперемешку. */}
+          {showDate && task.scheduledDate ? (
+            <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs font-medium text-neutral-600">
+              {formatDateShort(task.scheduledDate)}
+            </span>
+          ) : null}
+          <Badge className={STATUS_BADGE[task.status]}>{STATUS_LABEL[task.status]}</Badge>
+        </div>
       </div>
       <Link href={`/tasks/${task.id}`} className="mt-1 block text-sm text-neutral-800 hover:underline">
         {task.title}

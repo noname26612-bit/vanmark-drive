@@ -117,7 +117,12 @@ export async function listTasks(filters: ListFilters): Promise<TaskListItem[]> {
     const to = parseDate(filters.dateTo);
     if (from) range.gte = from;
     if (to) range.lte = to;
-    and.push({ scheduledDate: range });
+    // includeUndated добавляет пул «Без даты» к диапазону (доска «Сегодня»: сегодня…+2 + без даты).
+    and.push(
+      filters.includeUndated
+        ? { OR: [{ scheduledDate: range }, { scheduledDate: null }] }
+        : { scheduledDate: range },
+    );
   }
 
   if (filters.assigneeId === "none") and.push({ assigneeId: null });
