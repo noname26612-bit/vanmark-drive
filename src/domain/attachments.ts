@@ -13,18 +13,29 @@ const ALLOWED_MIME = new Set([
   "image/heif",
 ]);
 
+// Акт-документ (Фаза 1.5) — фото подписанного акта или PDF-скан.
+const ALLOWED_DOC_MIME = new Set([...ALLOWED_MIME, "application/pdf"]);
+
 export function isAllowedImageMime(mime: string): boolean {
   return ALLOWED_MIME.has(mime);
 }
+
+export function isAllowedDocMime(mime: string): boolean {
+  return ALLOWED_DOC_MIME.has(mime);
+}
+
+export type UploadKind = "PHOTO" | "DOCUMENT";
 
 export type UploadVerdict =
   | { ok: true }
   | { ok: false; code: "EMPTY" | "BAD_MIME" | "TOO_LARGE" };
 
-/** Валидация загружаемого файла: непустой, разрешённый image-mime, в пределах лимита размера. */
-export function validateUpload(mimeType: string, sizeBytes: number): UploadVerdict {
+/** Валидация загружаемого файла: непустой, разрешённый mime (фото — только image; акт — image+pdf),
+ *  в пределах лимита размера. */
+export function validateUpload(mimeType: string, sizeBytes: number, kind: UploadKind = "PHOTO"): UploadVerdict {
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) return { ok: false, code: "EMPTY" };
-  if (!isAllowedImageMime(mimeType)) return { ok: false, code: "BAD_MIME" };
+  const mimeOk = kind === "DOCUMENT" ? isAllowedDocMime(mimeType) : isAllowedImageMime(mimeType);
+  if (!mimeOk) return { ok: false, code: "BAD_MIME" };
   if (sizeBytes > MAX_UPLOAD_BYTES) return { ok: false, code: "TOO_LARGE" };
   return { ok: true };
 }

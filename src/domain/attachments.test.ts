@@ -22,6 +22,19 @@ describe("validateUpload — приёмка файла", () => {
     expect(validateUpload("image/jpeg", MAX_UPLOAD_BYTES + 1)).toEqual({ ok: false, code: "TOO_LARGE" });
     expect(validateUpload("image/jpeg", MAX_UPLOAD_BYTES).ok).toBe(true); // ровно лимит — ок
   });
+
+  // Акт-документ (Фаза 1.5): kind=DOCUMENT разрешает PDF и фото; PHOTO — только фото.
+  it("акт (DOCUMENT) принимает pdf и фото", () => {
+    expect(validateUpload("application/pdf", 1000, "DOCUMENT").ok).toBe(true);
+    expect(validateUpload("image/jpeg", 1000, "DOCUMENT").ok).toBe(true);
+  });
+  it("акт (DOCUMENT) отклоняет посторонние типы и соблюдает лимит размера", () => {
+    expect(validateUpload("application/octet-stream", 1000, "DOCUMENT")).toEqual({ ok: false, code: "BAD_MIME" });
+    expect(validateUpload("application/pdf", MAX_UPLOAD_BYTES + 1, "DOCUMENT")).toEqual({ ok: false, code: "TOO_LARGE" });
+  });
+  it("обычное фото (PHOTO) по-прежнему не принимает pdf", () => {
+    expect(validateUpload("application/pdf", 1000, "PHOTO")).toEqual({ ok: false, code: "BAD_MIME" });
+  });
 });
 
 describe("isReportPhotoMissing — гейт фото при DONE", () => {

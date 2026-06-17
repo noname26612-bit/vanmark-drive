@@ -7,6 +7,7 @@ export type TaskTypeDTO = {
   name: string;
   icon: string | null;
   requiresPhoto: boolean;
+  requiresSignedDoc: boolean; // ремонтно-арендный тип: ожидается подписанный акт (Фаза 1.5)
 };
 
 export type TaskTypeFullDTO = TaskTypeDTO & { sortOrder: number; isActive: boolean };

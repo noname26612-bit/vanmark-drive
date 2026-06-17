@@ -44,6 +44,13 @@ export function DriverTasksClient() {
 
   return (
     <main className="px-3 pb-10 pt-3">
+      {/* Ссылка на личный расчёт зарплаты (Фаза 1.5) */}
+      <div className="mb-3 flex justify-end">
+        <Link href="/m/payroll" className="text-sm font-medium text-neutral-600 underline">
+          Мой расчёт →
+        </Link>
+      </div>
+
       {/* Вкладки — крупные тач-цели */}
       <div className="mb-3 grid grid-cols-2 gap-1 rounded-xl bg-neutral-100 p-1">
         <TabButton active={tab === "today"} onClick={() => setTab("today")}>

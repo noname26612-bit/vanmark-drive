@@ -26,11 +26,13 @@ export async function POST(req: Request, { params }: Ctx) {
       const n = Number(v);
       return Number.isFinite(n) ? n : null;
     };
+    const kind = form.get("kind") === "DOCUMENT" ? "DOCUMENT" : "PHOTO";
 
     const att = await addAttachment(id, user, {
       bytes,
       mimeType: file.type,
       sizeBytes: bytes.byteLength,
+      kind,
       lat: num(form.get("lat")),
       lng: num(form.get("lng")),
     });

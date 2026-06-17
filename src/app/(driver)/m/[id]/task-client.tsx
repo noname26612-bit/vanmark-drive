@@ -5,7 +5,7 @@
 import { useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { Phone, Navigation, Loader2, Camera, X } from "lucide-react";
+import { Phone, Navigation, Loader2, Camera, X, FileText } from "lucide-react";
 import { fetcher, apiSend, apiUpload, ApiError } from "@/lib/fetcher";
 import { sendWithRetry } from "@/lib/retry";
 import { getPositionOnce } from "@/lib/geo";
@@ -71,6 +71,7 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
   const [doneComment, setDoneComment] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const docRef = useRef<HTMLInputElement | null>(null);
 
   if (isLoading) return <p className="p-6 text-base text-neutral-400">Загрузка…</p>;
   if (error || !task) {
@@ -86,7 +87,9 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
   const t = task;
 
   const myPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && a.createdById === t.assigneeId);
-  const refPhotos = t.attachments.filter((a) => a.createdById !== t.assigneeId);
+  const refPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && a.createdById !== t.assigneeId);
+  const docs = t.attachments.filter((a) => a.kind === "DOCUMENT");
+  const requiresSignedDoc = t.type.requiresSignedDoc; // ремонтная задача — ожидается акт (не блокирует DONE)
   const requiresPhoto = t.type.requiresPhoto;
   const onSite = t.paymentType === "ON_SITE";
   const canComplete = (!requiresPhoto || myPhotos.length > 0) && (!onSite || paid);
@@ -154,6 +157,31 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
     } catch (e) {
       setRetrying(false);
       setActionError(e instanceof ApiError ? e.message : "Не удалось загрузить фото");
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
+  async function uploadDoc(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setActionError(null);
+    setPhotoBusy(true);
+    try {
+      for (const file of Array.from(files)) {
+        const isPdf = file.type === "application/pdf";
+        const blob = isPdf ? file : await compressImage(file); // фото акта сжимаем, PDF — как есть
+        const form = new FormData();
+        form.append("file", blob, isPdf ? "akt.pdf" : "akt.jpg");
+        form.append("kind", "DOCUMENT");
+        await sendWithRetry(() => apiUpload(`${key}/attachments`, form), {
+          onRetry: () => setRetrying(true),
+        });
+        setRetrying(false);
+      }
+      await mutate();
+    } catch (e) {
+      setRetrying(false);
+      setActionError(e instanceof ApiError ? e.message : "Не удалось приложить акт");
     } finally {
       setPhotoBusy(false);
     }
@@ -357,6 +385,53 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
           </section>
         ) : null}
 
+        {/* Подписанный акт — ремонтно-арендные типы (Фаза 1.5). Не блокирует завершение. */}
+        {requiresSignedDoc ? (
+          <section className="rounded-xl border border-neutral-200 p-3">
+            <p className="text-xs uppercase tracking-wide text-neutral-400">Подписанный акт</p>
+            {docs.length > 0 ? (
+              <ul className="mt-2 flex flex-col gap-1.5">
+                {docs.map((a) => (
+                  <li key={a.id} className="flex items-center justify-between gap-2">
+                    <a
+                      href={`/api/attachments/${a.id}`}
+                      target="_blank"
+                      rel="noopener"
+                      className="flex items-center gap-2 text-sm font-medium text-blue-700 underline"
+                    >
+                      <FileText className="h-4 w-4" /> Акт {a.mimeType === "application/pdf" ? "(PDF)" : "(фото)"}
+                    </a>
+                    {t.status !== "DONE" ? (
+                      <button
+                        type="button"
+                        disabled={photoBusy}
+                        onClick={() => void removePhoto(a.id)}
+                        aria-label="Удалить акт"
+                        className="p-1 text-neutral-400 disabled:opacity-50"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1 text-sm text-neutral-500">
+                Не приложен. Без акта — отметка KPI, но завершить задачу можно.
+              </p>
+            )}
+            <button
+              type="button"
+              disabled={photoBusy}
+              onClick={() => docRef.current?.click()}
+              className="mt-2 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-neutral-300 text-base font-medium text-neutral-800 disabled:opacity-50"
+            >
+              {photoBusy ? <Loader2 className="h-5 w-5 animate-spin" /> : <FileText className="h-5 w-5" />}
+              Приложить акт
+            </button>
+          </section>
+        ) : null}
+
         {/* Причина паузы / отмены */}
         {t.status === "ON_HOLD" && t.holdReason ? (
           <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
@@ -454,6 +529,18 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
         className="hidden"
         onChange={(e) => {
           void uploadPhotos(e.target.files);
+          e.target.value = "";
+        }}
+      />
+
+      {/* Скрытый input акта: фото или PDF (без capture — можно выбрать файл) */}
+      <input
+        ref={docRef}
+        type="file"
+        accept="image/*,application/pdf"
+        className="hidden"
+        onChange={(e) => {
+          void uploadDoc(e.target.files);
           e.target.value = "";
         }}
       />

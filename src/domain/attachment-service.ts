@@ -2,7 +2,7 @@
 // может только тот, кто видит задачу (водитель — свою; чужая → 404). Файл хранится на томе,
 // раздаётся НЕ статикой, а через GET /api/attachments/:id с этими проверками.
 import { prisma } from "@/lib/prisma";
-import type { Role } from "@/generated/prisma/enums";
+import type { AttachmentKind, Role } from "@/generated/prisma/enums";
 import { canViewTask } from "./authz";
 import { isDispatcherRole } from "./task-status";
 import { validateUpload } from "./attachments";
@@ -15,6 +15,7 @@ export type NewAttachment = {
   bytes: Buffer;
   mimeType: string;
   sizeBytes: number;
+  kind?: AttachmentKind; // PHOTO (по умолчанию) | DOCUMENT (подписанный акт, Фаза 1.5)
   lat?: number | null;
   lng?: number | null;
 };
@@ -40,9 +41,12 @@ export async function addAttachment(taskId: string, actor: Actor, input: NewAtta
   if (!canViewTask(actor, task)) throw Errors.notFound(); // чужая → 404, не 403
   if (task.status === "CANCELLED") throw Errors.validation("Задача отменена");
 
-  const verdict = validateUpload(input.mimeType, input.sizeBytes);
+  const kind: AttachmentKind = input.kind ?? "PHOTO";
+  const verdict = validateUpload(input.mimeType, input.sizeBytes, kind);
   if (!verdict.ok) {
-    if (verdict.code === "BAD_MIME") throw Errors.uploadInvalid("Можно загружать только фото");
+    if (verdict.code === "BAD_MIME") {
+      throw Errors.uploadInvalid(kind === "DOCUMENT" ? "Акт — фото или PDF" : "Можно загружать только фото");
+    }
     if (verdict.code === "TOO_LARGE") throw Errors.uploadInvalid("Файл больше 15 МБ");
     throw Errors.uploadInvalid("Пустой файл");
   }
@@ -51,7 +55,7 @@ export async function addAttachment(taskId: string, actor: Actor, input: NewAtta
   return prisma.attachment.create({
     data: {
       taskId,
-      kind: "PHOTO",
+      kind,
       filePath,
       mimeType: input.mimeType,
       sizeBytes: input.sizeBytes,
