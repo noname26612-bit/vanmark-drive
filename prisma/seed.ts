@@ -50,12 +50,16 @@ const TASK_TYPES: { name: string; icon: string; requiresPhoto: boolean }[] = [
   { name: "Прочее", icon: "ellipsis", requiresPhoto: false },
 ];
 
-async function main(password: string): Promise<void> {
-  // Все сид-учётки получают один dev-пароль из SEED_PASSWORD (это осознанно для локалки).
-  const passwordHash = await hashPassword(password);
+// Пароль учётки: индивидуальный SEED_PASSWORD_<LOGIN> (если задан) приоритетнее общего SEED_PASSWORD.
+// На локалке достаточно общего; на проде Артём может задать каждому свой (см. deploy/.env.prod.example).
+function passwordFor(login: string, fallback: string): string {
+  return process.env[`SEED_PASSWORD_${login.toUpperCase()}`] || fallback;
+}
 
+async function main(defaultPassword: string): Promise<void> {
   for (const u of USERS) {
     const canLogin = u.canLogin ?? true;
+    const passwordHash = await hashPassword(passwordFor(u.login, defaultPassword));
     await prisma.user.upsert({
       where: { login: u.login },
       update: { name: u.name, role: u.role, canLogin, isActive: true, passwordHash },

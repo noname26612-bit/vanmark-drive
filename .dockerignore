@@ -1,0 +1,32 @@
+node_modules
+.next
+out
+dist
+.git
+.github
+*.tsbuildinfo
+next-env.d.ts
+
+# секреты и локальные данные
+.env
+.env.*
+!.env.example
+data
+uploads
+backups
+*.dump
+
+# тесты и артефакты
+e2e
+test-results
+playwright-report
+coverage
+
+# сгенерированный Prisma-клиент пересоздаётся в build (платформенные бинарники не тащим с хоста)
+src/generated
+
+# прочее
+*.log
+.DS_Store
+README.md
+START.md

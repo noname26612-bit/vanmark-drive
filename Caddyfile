@@ -1,0 +1,7 @@
+# Caddy: терминация HTTPS и реверс-прокси на app:3000 (ARCHITECTURE §9).
+# Домен берётся из переменной окружения DOMAIN (см. docker-compose.prod.yml). TLS-сертификат
+# Caddy получает и продлевает автоматически (Let's Encrypt) — нужна A-запись DOMAIN → IP сервера.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:3000
+}

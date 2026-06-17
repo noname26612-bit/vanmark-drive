@@ -16,6 +16,8 @@ const eslintConfig = defineConfig([
     "src/generated/**",
     // Service worker (Этап 5) — рантайм-глобали self/clients, отдаётся как статика.
     "public/sw.js",
+    // Локальные git-воркти этапов и файлы скиллов — не проектный исходник (в CI их нет).
+    ".claude/**",
   ]),
 ]);
 

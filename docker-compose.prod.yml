@@ -1,0 +1,71 @@
+# Прод-стек vanmark-drive (ARCHITECTURE §9): app (Next.js) + postgres + caddy (авто-HTTPS).
+# Запуск: docker compose -f docker-compose.prod.yml up -d  (см. deploy/README.md).
+# Переменные берутся из .env рядом с этим файлом (в репозиторий .env не коммитится).
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: vanmark-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Порт наружу НЕ публикуем — БД доступна только внутри docker-сети.
+
+  app:
+    build:
+      context: .
+      args:
+        # Публичный VAPID-ключ инлайнится в клиентский бандл на этапе сборки.
+        NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY}
+    image: vanmark-app
+    container_name: vanmark-app
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - uploads:/data/uploads
+    expose:
+      - "3000"
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: vanmark-caddy
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+    name: vanmark_pgdata
+  uploads:
+    name: vanmark_uploads
+  caddy_data:
+    name: vanmark_caddy_data
+  caddy_config:
+    name: vanmark_caddy_config
