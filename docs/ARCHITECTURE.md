@@ -314,6 +314,8 @@ model PayrollStatement {
 | POST /api/push/subscribe | Д, В | сохранить подписку |
 | GET/POST /api/admin/users, /api/admin/task-types | А | справочники |
 | GET /api/kpi/overview?period | Д | кандидаты в нарушения + расчёт по всем водителям за месяц (объединяет candidates+statements одним запросом) |
+| GET /api/summary/overview?granularity&date | Д | сводка по водителям за период (день/неделя/месяц, по дате закрытия задач) — Фаза 2, только чтение |
+| GET /api/summary/export?granularity&date | Д | та же сводка файлом CSV (вложение, BOM+`;` для Excel) |
 | POST /api/kpi/detect {date?} | Д | ручной прогон детектора кандидатов (та же логика, что ночной cron); идемпотентно |
 | POST /api/kpi/marks | Д | добавить отметку вручную (штраф или поощрение) |
 | POST /api/kpi/marks/:id/resolve {status} | Д | подтвердить/отклонить кандидата (CONFIRMED/DISMISSED) |

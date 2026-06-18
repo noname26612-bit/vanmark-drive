@@ -8,6 +8,7 @@ const LINKS = [
   { href: "/board", label: "Сегодня" },
   { href: "/planning", label: "Планирование" },
   { href: "/tasks", label: "Все задачи" },
+  { href: "/summary", label: "Сводка" },
   { href: "/kpi", label: "KPI / Зарплата" },
 ];
 
