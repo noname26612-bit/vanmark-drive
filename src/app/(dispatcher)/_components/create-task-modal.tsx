@@ -33,9 +33,11 @@ type FormState = {
   passStatus: PassStatus;
   priority: boolean;
   assigneeId: string;
+  requiresAct: boolean; // требование акта (дефолт из типа, диспетчер может снять)
+  actWaivedNote: string; // причина снятия требования акта
 };
 
-function emptyForm(typeId: string, date: string): FormState {
+function emptyForm(typeId: string, date: string, requiresAct: boolean): FormState {
   return {
     typeId,
     title: "",
@@ -57,6 +59,8 @@ function emptyForm(typeId: string, date: string): FormState {
     passStatus: "NOT_NEEDED",
     priority: false,
     assigneeId: "",
+    requiresAct,
+    actWaivedNote: "",
   };
 }
 
@@ -82,6 +86,8 @@ function formFromTask(t: TaskDTO): FormState {
     passStatus: t.passStatus,
     priority: t.priority,
     assigneeId: t.assigneeId ?? "",
+    requiresAct: t.requiresSignedDoc,
+    actWaivedNote: t.actWaivedNote ?? "",
   };
 }
 
@@ -105,7 +111,7 @@ export function CreateTaskModal({
   const isEdit = editTask !== null;
   const firstType = types[0]?.id ?? "";
   const [form, setForm] = useState<FormState>(() =>
-    editTask ? formFromTask(editTask) : emptyForm(firstType, defaultDate),
+    editTask ? formFromTask(editTask) : emptyForm(firstType, defaultDate, types[0]?.requiresSignedDoc ?? false),
   );
   const [showAll, setShowAll] = useState(isEdit);
   const [noDate, setNoDate] = useState(false);
@@ -114,6 +120,14 @@ export function CreateTaskModal({
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
+
+  // Тип задаёт дефолт требования акта; смена типа обновляет галочку (PRD §3–§4).
+  const selectedType = types.find((x) => x.id === form.typeId) ?? null;
+  const typeNeedsAct = selectedType?.requiresSignedDoc ?? false;
+  function onTypeChange(id: string) {
+    const tt = types.find((x) => x.id === id);
+    setForm((f) => ({ ...f, typeId: id, requiresAct: tt?.requiresSignedDoc ?? false, actWaivedNote: "" }));
+  }
 
   function buildBody(): Record<string, unknown> {
     const body: Record<string, unknown> = {
@@ -149,6 +163,9 @@ export function CreateTaskModal({
         ? null
         : undefined;
     if (!isEdit && form.assigneeId) body.assigneeId = form.assigneeId;
+    body.requiresAct = form.requiresAct;
+    if (!form.requiresAct && form.actWaivedNote.trim()) body.actWaivedNote = form.actWaivedNote.trim();
+    else if (isEdit) body.actWaivedNote = null;
     return body;
   }
 
@@ -164,7 +181,7 @@ export function CreateTaskModal({
       }
       onCreated();
       if (again && !isEdit) {
-        setForm(emptyForm(form.typeId, form.scheduledDate));
+        setForm(emptyForm(form.typeId, form.scheduledDate, selectedType?.requiresSignedDoc ?? false));
         setShowAll(false);
       } else {
         onClose();
@@ -189,7 +206,7 @@ export function CreateTaskModal({
           <Select
             data-testid="create-type"
             value={form.typeId}
-            onChange={(e) => set("typeId", e.target.value)}
+            onChange={(e) => onTypeChange(e.target.value)}
             required
           >
             {types.map((t) => (
@@ -261,6 +278,29 @@ export function CreateTaskModal({
                 ))}
               </Select>
             </Field>
+          ) : null}
+        </div>
+
+        <div className="rounded-lg border border-neutral-200 p-3">
+          <label className="flex items-center gap-2 text-sm font-medium text-neutral-800">
+            <input
+              type="checkbox"
+              data-testid="create-requires-act"
+              checked={form.requiresAct}
+              onChange={(e) => set("requiresAct", e.target.checked)}
+              className="h-4 w-4"
+            />
+            Нужен подписанный акт
+          </label>
+          {typeNeedsAct && !form.requiresAct ? (
+            <div className="mt-2">
+              <Input
+                data-testid="create-act-waived-note"
+                value={form.actWaivedNote}
+                onChange={(e) => set("actWaivedNote", e.target.value)}
+                placeholder="Почему без акта (напр. «подпишут по ЭДО»)"
+              />
+            </div>
           ) : null}
         </div>
 

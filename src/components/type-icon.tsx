@@ -10,6 +10,8 @@ import {
   PackagePlus,
   ShoppingCart,
   MoreHorizontal,
+  ShieldCheck,
+  Undo2,
   type LucideIcon,
 } from "lucide-react";
 
@@ -24,6 +26,8 @@ const ICONS: Record<string, LucideIcon> = {
   "package-plus": PackagePlus,
   "shopping-cart": ShoppingCart,
   ellipsis: MoreHorizontal,
+  "shield-check": ShieldCheck,
+  "undo-2": Undo2,
 };
 
 export function TypeIcon({

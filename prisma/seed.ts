@@ -36,22 +36,26 @@ const USERS: SeedUser[] = [
   { login: "sultan", name: "Султан (внешний перевозчик)", role: "DRIVER", canLogin: false },
 ];
 
-// Типы задач (PRD §3). requiresPhoto — по PRD §5 (фото обязательно для аренды, забора/возврата
-// из ремонта, гарантийной замены, выездного ремонта; для ТК/СДЭК — нет). Иконки — имена lucide.
-// requiresSignedDoc (Фаза 1.5, PRD §12.1) — ремонтно-арендные типы, где ожидается подписанный
-// акт приёма-передачи: аренда, забор/возврат из ремонта, гарантийная замена, выездной ремонт.
-// Это НЕ гейт завершения — отсутствие акта = нарушение KPI UNSIGNED_DOCS (см. src/domain/kpi.ts).
-const TASK_TYPES: { name: string; icon: string; requiresPhoto: boolean; requiresSignedDoc: boolean }[] = [
-  { name: "Доставка в аренду", icon: "truck", requiresPhoto: true, requiresSignedDoc: true },
-  { name: "Забор в ремонт", icon: "package-minus", requiresPhoto: true, requiresSignedDoc: true },
-  { name: "Доставка/возврат из ремонта", icon: "package-check", requiresPhoto: true, requiresSignedDoc: true },
-  { name: "Отвезти в ТК", icon: "warehouse", requiresPhoto: false, requiresSignedDoc: false },
-  { name: "Забрать СДЭК/посылку", icon: "package", requiresPhoto: false, requiresSignedDoc: false },
-  { name: "Выездной ремонт / диагностика", icon: "wrench", requiresPhoto: true, requiresSignedDoc: true },
-  { name: "Гарантийная замена", icon: "replace", requiresPhoto: true, requiresSignedDoc: true },
-  { name: "Доставка проданного", icon: "package-plus", requiresPhoto: true, requiresSignedDoc: false },
-  { name: "Закупка/выкуп станка", icon: "shopping-cart", requiresPhoto: true, requiresSignedDoc: false },
-  { name: "Прочее", icon: "ellipsis", requiresPhoto: false, requiresSignedDoc: false },
+// Типы задач (PRD §3, новый список — решение Артёма 18.06.2026). Порядок = sortOrder = очередь
+// в списке у водителя/диспетчера. requiresSignedDoc — нужен ли подписанный акт по умолчанию
+// (5 типов с актом). Это НЕ гейт завершения и не блокировка — отсутствие требуемого акта = отметка
+// KPI UNSIGNED_DOCS + недобор для бонуса за комплектность (PRD §12.6). Диспетчер может снять
+// требование на конкретной заявке (Task.requiresSignedDoc + actWaivedNote). Фото — везде по желанию
+// (поле TaskType.requiresPhoto больше не используется как гейт). Иконки — имена lucide (TypeIcon).
+const TASK_TYPES: { name: string; icon: string; requiresSignedDoc: boolean }[] = [
+  // С актом: акт выполненных работ / приёма-передачи / возврата (PRD §13).
+  { name: "Выездной ремонт / диагностика", icon: "wrench", requiresSignedDoc: true },
+  { name: "Забор в ремонт", icon: "package-minus", requiresSignedDoc: true },
+  { name: "Гарантийный ремонт", icon: "shield-check", requiresSignedDoc: true },
+  { name: "Доставка в аренду", icon: "truck", requiresSignedDoc: true },
+  { name: "Забор с аренды", icon: "undo-2", requiresSignedDoc: true },
+  // Без акта.
+  { name: "Доставка из ремонта", icon: "package-check", requiresSignedDoc: false },
+  { name: "Доставка проданного оборудования", icon: "package-plus", requiresSignedDoc: false },
+  { name: "Сдача в ТК", icon: "warehouse", requiresSignedDoc: false },
+  { name: "Забрать посылку", icon: "package", requiresSignedDoc: false },
+  { name: "Закупка/выкуп станка", icon: "shopping-cart", requiresSignedDoc: false },
+  { name: "Прочее", icon: "ellipsis", requiresSignedDoc: false },
 ];
 
 // KPI / зарплата (Фаза 1.5): дефолты и логика — в prisma/seed-kpi.ts (там же безопасный
@@ -80,7 +84,6 @@ async function main(defaultPassword: string): Promise<void> {
       where: { name: t.name },
       update: {
         icon: t.icon,
-        requiresPhoto: t.requiresPhoto,
         requiresSignedDoc: t.requiresSignedDoc,
         sortOrder: i + 1,
         isActive: true,
@@ -88,7 +91,6 @@ async function main(defaultPassword: string): Promise<void> {
       create: {
         name: t.name,
         icon: t.icon,
-        requiresPhoto: t.requiresPhoto,
         requiresSignedDoc: t.requiresSignedDoc,
         sortOrder: i + 1,
       },

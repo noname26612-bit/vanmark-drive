@@ -183,6 +183,17 @@ export function TaskDetailClient({
           <Badge className={PASS_BADGE[task.passStatus]}>{PASS_LABEL[task.passStatus]}</Badge>
         </Row>
         {task.description ? <Row label="Описание">{task.description}</Row> : null}
+        {task.requiresSignedDoc ? (
+          <Row label="Акт">
+            {task.attachments.some((a) => a.kind === "DOCUMENT") ? (
+              <Badge className="bg-green-100 text-green-700">приложен</Badge>
+            ) : (
+              <Badge className="bg-amber-100 text-amber-800">не приложен</Badge>
+            )}
+          </Row>
+        ) : task.actWaivedNote ? (
+          <Row label="Акт">Не требуется · {task.actWaivedNote}</Row>
+        ) : null}
         {task.holdReason ? <Row label="Причина паузы">{task.holdReason}</Row> : null}
         {task.cancelReason ? <Row label="Причина отмены">{task.cancelReason}</Row> : null}
       </div>

@@ -200,7 +200,7 @@ export async function detectCandidatesForDate(
       timeTo: true,
       status: true,
       completedAt: true,
-      type: { select: { requiresSignedDoc: true } },
+      requiresSignedDoc: true, // требование акта на уровне задачи (этап 11), не из типа
       events: { where: { toStatus: "ON_SITE" }, orderBy: { at: "asc" }, take: 1, select: { at: true } },
       attachments: { where: { kind: "DOCUMENT" }, take: 1, select: { id: true } },
     },
@@ -226,7 +226,7 @@ export async function detectCandidatesForDate(
       detectUnsignedDoc({
         driverId: t.assigneeId,
         taskId: t.id,
-        requiresSignedDoc: t.type.requiresSignedDoc,
+        requiresSignedDoc: t.requiresSignedDoc,
         status: t.status,
         completedAt: t.completedAt,
         hasSignedDoc,

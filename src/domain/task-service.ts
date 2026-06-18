@@ -9,7 +9,6 @@ import { resolveAssignedDate } from "./assign-date";
 import { canViewTask } from "./authz";
 import { myTasksWhere, type MyTasksScope } from "./my-tasks";
 import { overdueWhere, tomorrowPassWhere } from "./attention";
-import { isReportPhotoMissing } from "./attachments";
 import { Errors } from "./errors";
 import { notifyTaskAssignee } from "@/lib/push";
 
@@ -36,6 +35,8 @@ export type CreateTaskInput = {
   passStatus?: PassStatus;
   priority?: boolean;
   assigneeId?: string | null;
+  requiresAct?: boolean | null; // override требования акта (по умолчанию из типа); false = «акт не нужен»
+  actWaivedNote?: string | null; // причина снятия требования акта на заявке
 };
 
 export type ListFilters = {
@@ -229,6 +230,14 @@ export async function createTask(
   if (!title) throw Errors.validation("Не указано название");
   if (!address) throw Errors.validation("Не указан адрес");
 
+  // Тип задаёт дефолт требования акта; диспетчер может снять его галочкой «акт не нужен» (PRD §4).
+  const type = await prisma.taskType.findUnique({ where: { id: typeId }, select: { requiresSignedDoc: true } });
+  if (!type) throw Errors.validation("Неизвестный тип задачи");
+  const requiresSignedDoc =
+    input.requiresAct === undefined || input.requiresAct === null ? type.requiresSignedDoc : input.requiresAct;
+  // Причину снятия храним, только когда акт реально сняли с типа, который его ожидал.
+  const actWaivedNote = !requiresSignedDoc && type.requiresSignedDoc ? clean(input.actWaivedNote) : null;
+
   let assigneeId: string | null = null;
   if (input.assigneeId) {
     assigneeId = await assertAssignableDriver(input.assigneeId);
@@ -257,6 +266,8 @@ export async function createTask(
         timeNote: clean(input.timeNote),
         passStatus: input.passStatus ?? "NOT_NEEDED",
         priority: input.priority ?? false,
+        requiresSignedDoc,
+        actWaivedNote,
         status,
         assigneeId,
         createdById: actor.id,
@@ -320,6 +331,11 @@ export async function updateTaskFields(
   set("timeNote", (v) => (data.timeNote = v));
   if (fields.passStatus !== undefined) data.passStatus = fields.passStatus;
   if (fields.priority !== undefined) data.priority = fields.priority;
+  if (fields.requiresAct !== undefined) {
+    const req = fields.requiresAct ?? false;
+    data.requiresSignedDoc = req;
+    data.actWaivedNote = req ? null : clean(fields.actWaivedNote);
+  }
 
   const result = await prisma.$transaction(async (tx) => {
     const updated = await tx.task.update({ where: { id: taskId }, data, include: taskInclude });
@@ -483,7 +499,7 @@ export async function transitionTask(
   actor: Actor,
   opts: TransitionOptions = {},
 ): Promise<TaskListItem> {
-  const task = await prisma.task.findUnique({ where: { id: taskId }, include: { type: true } });
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw Errors.notFound();
   if (!canViewTask(actor, task)) throw Errors.notFound(); // изоляция: чужая → 404
 
@@ -494,23 +510,10 @@ export async function transitionTask(
   const reason = clean(opts.reason) ?? clean(opts.comment);
   if (verdict.reasonRequired && !reason) throw Errors.reasonRequired();
 
-  // Завершение (DONE): серверные гейты ДО записи (CLAUDE.md правило 4, PRD §5).
-  if (toStatus === "DONE") {
-    if (task.type.requiresPhoto) {
-      // Отчётное фото — от исполнителя (assignee) или от того, кто завершает (диспетчер за внешнего).
-      const photoCount = await prisma.attachment.count({
-        where: {
-          taskId,
-          kind: "PHOTO",
-          createdById: task.assigneeId ? { in: [task.assigneeId, actor.id] } : actor.id,
-        },
-      });
-      if (isReportPhotoMissing(true, photoCount)) throw Errors.photoRequired();
-    }
-    // Оплата «на месте» — требуется подтверждение получения денег.
-    if (task.paymentType === "ON_SITE" && !opts.paymentConfirmed) {
-      throw Errors.paymentRequired();
-    }
+  // Завершение (DONE): серверный гейт — только подтверждение оплаты «на месте» (PRD §5).
+  // Фото с этапа 11 — по желанию (не блокирует); требуемый акт — мягкая отметка KPI, не запрет.
+  if (toStatus === "DONE" && task.paymentType === "ON_SITE" && !opts.paymentConfirmed) {
+    throw Errors.paymentRequired();
   }
 
   const data: Prisma.TaskUpdateInput = { status: toStatus };

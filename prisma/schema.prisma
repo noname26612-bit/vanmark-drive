@@ -97,6 +97,13 @@ model Task {
   typeId String
   type   TaskType @relation(fields: [typeId], references: [id])
 
+  // Требование подписанного акта НА УРОВНЕ ЗАДАЧИ (этап 11, PRD §4): снимок дефолта из
+  // type.requiresSignedDoc при создании; диспетчер может снять галочкой «акт не нужен»
+  // (actWaivedNote — причина, напр. «подпишут по ЭДО»). Источник для KPI UNSIGNED_DOCS — теперь
+  // это поле, не type (см. src/domain/kpi-service.ts). НЕ гейт завершения (PRD §5).
+  requiresSignedDoc Boolean @default(false)
+  actWaivedNote     String? // причина снятия требования акта на этой заявке
+
   title         String // «ЛБМ 200 + нож + дог. маш, 0,7 мм»
   description   String?     @db.Text
   equipment     String? // «ЛБМ 250», «Sorex 2 м»

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateUpload, isReportPhotoMissing, MAX_UPLOAD_BYTES } from "./attachments";
+import { validateUpload, MAX_UPLOAD_BYTES } from "./attachments";
 
 describe("validateUpload — приёмка файла", () => {
   it("принимает обычный jpeg", () => {
@@ -34,18 +34,5 @@ describe("validateUpload — приёмка файла", () => {
   });
   it("обычное фото (PHOTO) по-прежнему не принимает pdf", () => {
     expect(validateUpload("application/pdf", 1000, "PHOTO")).toEqual({ ok: false, code: "BAD_MIME" });
-  });
-});
-
-describe("isReportPhotoMissing — гейт фото при DONE", () => {
-  it("тип требует фото, фото нет → блок", () => {
-    expect(isReportPhotoMissing(true, 0)).toBe(true);
-  });
-  it("тип требует фото, фото есть → пропуск", () => {
-    expect(isReportPhotoMissing(true, 1)).toBe(false);
-    expect(isReportPhotoMissing(true, 3)).toBe(false);
-  });
-  it("тип не требует фото → пропуск даже без фото", () => {
-    expect(isReportPhotoMissing(false, 0)).toBe(false);
   });
 });

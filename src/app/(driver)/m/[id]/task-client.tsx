@@ -90,10 +90,9 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
   const myPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && a.createdById === t.assigneeId);
   const refPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && a.createdById !== t.assigneeId);
   const docs = t.attachments.filter((a) => a.kind === "DOCUMENT");
-  const requiresSignedDoc = t.type.requiresSignedDoc; // ремонтная задача — ожидается акт (не блокирует DONE)
-  const requiresPhoto = t.type.requiresPhoto;
+  const requiresSignedDoc = t.requiresSignedDoc; // требование акта на уровне задачи (этап 11; не блокирует DONE)
   const onSite = t.paymentType === "ON_SITE";
-  const canComplete = (!requiresPhoto || myPhotos.length > 0) && (!onSite || paid);
+  const canComplete = !onSite || paid; // фото — по желанию (не блокирует); акт — мягкая отметка KPI
 
   async function changeStatus(to: TaskStatus, extra: StatusExtra = {}) {
     setActionError(null);
@@ -564,9 +563,7 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
             </div>
 
             {/* Фото отчёта */}
-            <p className="mt-3 text-sm font-medium text-neutral-700">
-              Фото отчёта{requiresPhoto ? <span className="text-red-600"> — обязательно</span> : " (по желанию)"}
-            </p>
+            <p className="mt-3 text-sm font-medium text-neutral-700">Фото отчёта (по желанию)</p>
             <div className="mt-2 flex flex-wrap gap-2">
               {myPhotos.map((a) => (
                 <div key={a.id} className="relative">
@@ -596,9 +593,6 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
                 {photoBusy ? "Загрузка…" : "Добавить"}
               </button>
             </div>
-            {requiresPhoto && myPhotos.length === 0 ? (
-              <p className="mt-1 text-xs text-amber-700">Для этого типа задачи нужно хотя бы одно фото.</p>
-            ) : null}
 
             {/* Оплата на месте — деньги получены */}
             {onSite ? (

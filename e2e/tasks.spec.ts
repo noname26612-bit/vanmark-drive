@@ -17,8 +17,8 @@ test("диспетчер: создание → назначение → пере
 
   await page.getByRole("button", { name: "Задача" }).click();
 
-  // доступны все 10 типов
-  await expect(page.locator('[data-testid="create-type"] option')).toHaveCount(10);
+  // доступны все 11 типов (10 рабочих + «Прочее»)
+  await expect(page.locator('[data-testid="create-type"] option')).toHaveCount(11);
 
   const title = `E2E задача ${Date.now()}`;
   await page.getByPlaceholder("ЛБМ 200 + нож, 0,7 мм").fill(title);

@@ -16,7 +16,6 @@ export function TaskTypesClient({ initial }: { initial: TaskTypeFullDTO[] }) {
     { fallbackData: initial },
   );
   const [newName, setNewName] = useState("");
-  const [newPhoto, setNewPhoto] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -27,11 +26,9 @@ export function TaskTypesClient({ initial }: { initial: TaskTypeFullDTO[] }) {
     try {
       await apiSend("/api/admin/task-types", "POST", {
         name: newName.trim(),
-        requiresPhoto: newPhoto,
         sortOrder: types.length + 1,
       });
       setNewName("");
-      setNewPhoto(true);
       await mutate();
     } catch (e) {
       setError((e as Error).message);
@@ -47,7 +44,8 @@ export function TaskTypesClient({ initial }: { initial: TaskTypeFullDTO[] }) {
       </Link>
       <h1 className="mt-2 text-2xl font-semibold text-neutral-900">Типы задач</h1>
       <p className="mt-1 text-sm text-neutral-500">
-        Влияет на форму создания и обязательность фото при завершении.
+        Влияет на форму создания. Фото — везде по желанию; требование акта берётся из типа и
+        задаётся на конкретной заявке (PRD §3–§4).
       </p>
 
       <div className="mt-4 overflow-hidden rounded-xl border border-neutral-200 bg-white">
@@ -55,7 +53,7 @@ export function TaskTypesClient({ initial }: { initial: TaskTypeFullDTO[] }) {
           <thead className="border-b border-neutral-200 text-xs text-neutral-400">
             <tr>
               <th className="px-3 py-2">Тип</th>
-              <th className="px-3 py-2">Фото при «Выполнено»</th>
+              <th className="px-3 py-2">Акт по умолчанию</th>
               <th className="px-3 py-2">Активен</th>
               <th className="px-3 py-2" />
             </tr>
@@ -78,10 +76,6 @@ export function TaskTypesClient({ initial }: { initial: TaskTypeFullDTO[] }) {
             className="w-64"
           />
         </label>
-        <label className="flex items-center gap-2 pb-2 text-sm text-neutral-700">
-          <input type="checkbox" checked={newPhoto} onChange={(e) => setNewPhoto(e.target.checked)} className="h-4 w-4" />
-          Требует фото
-        </label>
         <Button disabled={busy || !newName.trim()} onClick={addType}>
           Добавить
         </Button>
@@ -93,19 +87,17 @@ export function TaskTypesClient({ initial }: { initial: TaskTypeFullDTO[] }) {
 
 function TypeRow({ type, onSaved }: { type: TaskTypeFullDTO; onSaved: () => void }) {
   const [name, setName] = useState(type.name);
-  const [requiresPhoto, setRequiresPhoto] = useState(type.requiresPhoto);
   const [isActive, setIsActive] = useState(type.isActive);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const dirty =
-    name !== type.name || requiresPhoto !== type.requiresPhoto || isActive !== type.isActive;
+  const dirty = name !== type.name || isActive !== type.isActive;
 
   async function save() {
     setError(null);
     setBusy(true);
     try {
-      await apiSend(`/api/admin/task-types/${type.id}`, "PATCH", { name, requiresPhoto, isActive });
+      await apiSend(`/api/admin/task-types/${type.id}`, "PATCH", { name, isActive });
       onSaved();
     } catch (e) {
       setError((e as Error).message);
@@ -124,12 +116,11 @@ function TypeRow({ type, onSaved }: { type: TaskTypeFullDTO; onSaved: () => void
         {error ? <span className="text-xs text-red-600">{error}</span> : null}
       </td>
       <td className="px-3 py-2">
-        <input
-          type="checkbox"
-          checked={requiresPhoto}
-          onChange={(e) => setRequiresPhoto(e.target.checked)}
-          className="h-4 w-4"
-        />
+        {type.requiresSignedDoc ? (
+          <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-600">да</span>
+        ) : (
+          <span className="text-xs text-neutral-400">—</span>
+        )}
       </td>
       <td className="px-3 py-2">
         <input

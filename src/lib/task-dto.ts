@@ -6,8 +6,7 @@ export type TaskTypeDTO = {
   id: string;
   name: string;
   icon: string | null;
-  requiresPhoto: boolean;
-  requiresSignedDoc: boolean; // ремонтно-арендный тип: ожидается подписанный акт (Фаза 1.5)
+  requiresSignedDoc: boolean; // тип с актом: дефолт требования акта для новых задач (PRD §3)
 };
 
 export type TaskTypeFullDTO = TaskTypeDTO & { sortOrder: number; isActive: boolean };
@@ -37,6 +36,8 @@ export type TaskDTO = {
   timeNote: string | null;
   passStatus: PassStatus;
   priority: boolean;
+  requiresSignedDoc: boolean; // требование акта на уровне задачи (снимок из типа, override галочкой)
+  actWaivedNote: string | null; // причина снятия требования акта (если снят диспетчером)
   status: TaskStatus;
   assigneeId: string | null;
   assignee: AssigneeDTO;

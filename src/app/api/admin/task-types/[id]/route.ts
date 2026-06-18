@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
 
-// PATCH /api/admin/task-types/:id — изменить тип (название, иконка, requiresPhoto, порядок, активность).
+// PATCH /api/admin/task-types/:id — изменить тип (название, иконка, порядок, активность).
 export async function PATCH(req: Request, { params }: Ctx) {
   try {
     const user = await requireAdmin();

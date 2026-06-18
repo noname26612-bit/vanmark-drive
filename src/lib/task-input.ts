@@ -13,7 +13,6 @@ export function parseTaskTypeFields(body: Record<string, unknown>): Partial<Task
     const v = body.icon;
     if (v === null || typeof v === "string") out.icon = v;
   }
-  if (typeof body.requiresPhoto === "boolean") out.requiresPhoto = body.requiresPhoto;
   if (typeof body.sortOrder === "number") out.sortOrder = Math.trunc(body.sortOrder);
   if (typeof body.isActive === "boolean") out.isActive = body.isActive;
   return out;
@@ -39,6 +38,7 @@ const NULLABLE_STRINGS = [
   "timeFrom",
   "timeTo",
   "timeNote",
+  "actWaivedNote",
 ] as const;
 
 const REQUIRED_STRINGS = ["typeId", "title", "address"] as const;
@@ -69,6 +69,10 @@ export function parseTaskFields(body: Record<string, unknown>): Partial<CreateTa
     out.paymentAmount = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
   }
   if (typeof body.priority === "boolean") out.priority = body.priority;
+  if ("requiresAct" in body) {
+    const v = body.requiresAct;
+    if (v === null || typeof v === "boolean") out.requiresAct = v;
+  }
   if ("assigneeId" in body) {
     const v = body.assigneeId;
     if (v === null || typeof v === "string") out.assigneeId = v;

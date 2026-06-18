@@ -39,9 +39,3 @@ export function validateUpload(mimeType: string, sizeBytes: number, kind: Upload
   if (sizeBytes > MAX_UPLOAD_BYTES) return { ok: false, code: "TOO_LARGE" };
   return { ok: true };
 }
-
-/** Нужно ли блокировать DONE из-за отсутствия отчётного фото (PRD §5, ARCHITECTURE §5).
- *  Чистая функция — общая для unit-теста и для серверного гейта в transitionTask. */
-export function isReportPhotoMissing(requiresPhoto: boolean, reportPhotoCount: number): boolean {
-  return requiresPhoto && reportPhotoCount <= 0;
-}

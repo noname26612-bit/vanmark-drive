@@ -18,7 +18,6 @@ export function listAllTaskTypes() {
 export type TaskTypeInput = {
   name: string;
   icon?: string | null;
-  requiresPhoto?: boolean;
   sortOrder?: number;
   isActive?: boolean;
 };
@@ -33,7 +32,6 @@ export async function createTaskType(input: Partial<TaskTypeInput>, actor: { rol
     data: {
       name,
       icon: input.icon?.trim() || null,
-      requiresPhoto: input.requiresPhoto ?? true,
       sortOrder: input.sortOrder ?? 0,
       isActive: input.isActive ?? true,
     },
@@ -52,7 +50,6 @@ export async function updateTaskType(
   const data: {
     name?: string;
     icon?: string | null;
-    requiresPhoto?: boolean;
     sortOrder?: number;
     isActive?: boolean;
   } = {};
@@ -67,7 +64,6 @@ export async function updateTaskType(
     data.name = name;
   }
   if (input.icon !== undefined) data.icon = input.icon?.trim() || null;
-  if (input.requiresPhoto !== undefined) data.requiresPhoto = input.requiresPhoto;
   if (input.sortOrder !== undefined) data.sortOrder = input.sortOrder;
   if (input.isActive !== undefined) data.isActive = input.isActive;
 

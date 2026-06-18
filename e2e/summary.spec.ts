@@ -11,12 +11,12 @@ async function login(page: Page, login: string): Promise<void> {
   await page.waitForURL((url) => !url.pathname.startsWith("/login"));
 }
 
-// Создаёт задачу через UI и назначает водителю. Тип «Отвезти в ТК» — без обязательного фото.
+// Создаёт задачу через UI и назначает водителю. Тип «Сдача в ТК» — без обязательного фото.
 async function createAssignedTask(milena: Page, driverLabel: string): Promise<string> {
   const title = `e2e-summary ${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
   await milena.goto("/tasks");
   await milena.getByRole("button", { name: "Задача" }).click();
-  await milena.locator('[data-testid="create-type"]').selectOption({ label: "Отвезти в ТК" });
+  await milena.locator('[data-testid="create-type"]').selectOption({ label: "Сдача в ТК" });
   await milena.getByPlaceholder("ЛБМ 200 + нож, 0,7 мм").fill(title);
   await milena.getByPlaceholder("Москва, ул. ..., д. ...").fill("Адрес e2e summary");
   await milena.getByRole("button", { name: "Создать", exact: true }).click();
