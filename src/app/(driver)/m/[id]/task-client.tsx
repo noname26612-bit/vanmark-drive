@@ -10,7 +10,7 @@ import { fetcher, apiSend, apiUpload, ApiError } from "@/lib/fetcher";
 import { sendWithRetry } from "@/lib/retry";
 import { getPositionOnce } from "@/lib/geo";
 import { compressImage } from "@/lib/image-compress";
-import type { TaskDetailDTO } from "@/lib/task-dto";
+import type { TaskDetailDTO, WorkCatalogItemDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
 import {
   STATUS_BADGE,
@@ -57,6 +57,11 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
   const { data: task, error, isLoading, mutate } = useSWR<TaskDetailDTO>(key, fetcher, {
     refreshInterval: 10_000,
   });
+  // Справочник работ для ведомости — грузим только для типов с расценкой (этап 12).
+  const { data: workCatalog = [] } = useSWR<WorkCatalogItemDTO[]>(
+    task?.type.requiresPricing ? "/api/work-catalog" : null,
+    fetcher,
+  );
 
   const [retrying, setRetrying] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -70,6 +75,11 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
   const [paid, setPaid] = useState(false);
   const [amountInput, setAmountInput] = useState("");
   const [doneComment, setDoneComment] = useState("");
+  // Ведомость работ (этап 12): выбор работы (из справочника или свободная) + количество.
+  const [workSel, setWorkSel] = useState("");
+  const [workFree, setWorkFree] = useState("");
+  const [workQty, setWorkQty] = useState("1");
+  const [wsBusy, setWsBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const docRef = useRef<HTMLInputElement | null>(null);
@@ -91,6 +101,9 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
   const refPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && a.createdById !== t.assigneeId);
   const docs = t.attachments.filter((a) => a.kind === "DOCUMENT");
   const requiresSignedDoc = t.requiresSignedDoc; // требование акта на уровне задачи (этап 11; не блокирует DONE)
+  const requiresPricing = t.type.requiresPricing; // ведомость работ + расценка (этап 12)
+  const ws = t.worksheetStatus;
+  const wsEditable = requiresPricing && (ws === null || ws === "DRAFT");
   const onSite = t.paymentType === "ON_SITE";
   const canComplete = !onSite || paid; // фото — по желанию (не блокирует); акт — мягкая отметка KPI
 
@@ -197,6 +210,51 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
       setActionError(e instanceof ApiError ? e.message : "Не удалось удалить фото");
     } finally {
       setPhotoBusy(false);
+    }
+  }
+
+  async function addWorkItem() {
+    if (!workSel && !workFree.trim()) return;
+    const qty = Math.max(1, Number.parseInt(workQty, 10) || 1);
+    const body = workSel ? { catalogItemId: workSel, quantity: qty } : { name: workFree.trim(), quantity: qty };
+    setActionError(null);
+    setWsBusy(true);
+    try {
+      await apiSend(`${key}/work-items`, "POST", body);
+      setWorkSel("");
+      setWorkFree("");
+      setWorkQty("1");
+      await mutate();
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : "Не удалось добавить работу");
+    } finally {
+      setWsBusy(false);
+    }
+  }
+
+  async function removeWorkItem(id: string) {
+    setActionError(null);
+    setWsBusy(true);
+    try {
+      await apiSend(`/api/work-items/${id}`, "DELETE");
+      await mutate();
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : "Не удалось удалить работу");
+    } finally {
+      setWsBusy(false);
+    }
+  }
+
+  async function submitWorksheet() {
+    setActionError(null);
+    setWsBusy(true);
+    try {
+      await apiSend(`${key}/worksheet/submit`, "POST");
+      await mutate();
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : "Не удалось отправить ведомость");
+    } finally {
+      setWsBusy(false);
     }
   }
 
@@ -382,6 +440,96 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
                 </a>
               ))}
             </div>
+          </section>
+        ) : null}
+
+        {/* Ведомость работ — типы с расценкой (этап 12). Водитель фиксирует работы без цен. */}
+        {requiresPricing ? (
+          <section className="rounded-xl border border-neutral-200 p-3">
+            <p className="text-xs uppercase tracking-wide text-neutral-400">Ведомость работ</p>
+            {t.workItems.length > 0 ? (
+              <ul className="mt-2 flex flex-col gap-1.5">
+                {t.workItems.map((w) => (
+                  <li key={w.id} className="flex items-center justify-between gap-2 text-sm">
+                    <span className="text-neutral-800">
+                      {w.name} · {w.quantity} шт
+                    </span>
+                    {wsEditable ? (
+                      <button
+                        type="button"
+                        disabled={wsBusy}
+                        onClick={() => void removeWorkItem(w.id)}
+                        aria-label="Удалить работу"
+                        className="p-1 text-neutral-400 disabled:opacity-50"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1 text-sm text-neutral-500">Пока пусто. Добавьте выполненные работы.</p>
+            )}
+
+            {wsEditable ? (
+              <div className="mt-3 flex flex-col gap-2">
+                <select
+                  data-testid="worksheet-select"
+                  value={workSel}
+                  onChange={(e) => setWorkSel(e.target.value)}
+                  className="h-11 rounded-lg border border-neutral-300 px-3 text-base outline-none focus:border-neutral-900"
+                >
+                  <option value="">Своя работа (вписать)…</option>
+                  {workCatalog.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                {!workSel ? (
+                  <input
+                    value={workFree}
+                    onChange={(e) => setWorkFree(e.target.value)}
+                    placeholder="Название работы"
+                    className="h-11 rounded-lg border border-neutral-300 px-3 text-base outline-none focus:border-neutral-900"
+                  />
+                ) : null}
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-neutral-500">Кол-во</span>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    value={workQty}
+                    onChange={(e) => setWorkQty(e.target.value)}
+                    className="h-11 w-20 rounded-lg border border-neutral-300 px-3 text-base outline-none"
+                  />
+                  <button
+                    type="button"
+                    disabled={wsBusy || (!workSel && !workFree.trim())}
+                    onClick={() => void addWorkItem()}
+                    className="h-11 flex-1 rounded-lg border border-neutral-300 text-base font-medium text-neutral-800 disabled:opacity-50"
+                  >
+                    Добавить
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  disabled={wsBusy || t.workItems.length === 0}
+                  onClick={() => void submitWorksheet()}
+                  className="mt-1 inline-flex h-11 w-full items-center justify-center rounded-lg bg-indigo-600 text-base font-semibold text-white active:bg-indigo-700 disabled:opacity-50"
+                >
+                  Отправить на расценку
+                </button>
+              </div>
+            ) : ws === "PRICING" ? (
+              <p className="mt-2 rounded-lg bg-indigo-50 px-3 py-2 text-sm text-indigo-700">
+                Отправлено на расценку — ждём цены от диспетчера.
+              </p>
+            ) : ws === "PRICED" ? (
+              <p className="mt-2 rounded-lg bg-green-50 px-3 py-2 text-sm text-green-700">Цены проставлены.</p>
+            ) : null}
           </section>
         ) : null}
 

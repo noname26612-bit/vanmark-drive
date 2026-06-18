@@ -42,20 +42,36 @@ const USERS: SeedUser[] = [
 // KPI UNSIGNED_DOCS + недобор для бонуса за комплектность (PRD §12.6). Диспетчер может снять
 // требование на конкретной заявке (Task.requiresSignedDoc + actWaivedNote). Фото — везде по желанию
 // (поле TaskType.requiresPhoto больше не используется как гейт). Иконки — имена lucide (TypeIcon).
-const TASK_TYPES: { name: string; icon: string; requiresSignedDoc: boolean }[] = [
+// requiresPricing — нужна ли ведомость работ + расценка (этап 12, PRD §13): выездной ремонт, гарантия.
+const TASK_TYPES: { name: string; icon: string; requiresSignedDoc: boolean; requiresPricing: boolean }[] = [
   // С актом: акт выполненных работ / приёма-передачи / возврата (PRD §13).
-  { name: "Выездной ремонт / диагностика", icon: "wrench", requiresSignedDoc: true },
-  { name: "Забор в ремонт", icon: "package-minus", requiresSignedDoc: true },
-  { name: "Гарантийный ремонт", icon: "shield-check", requiresSignedDoc: true },
-  { name: "Доставка в аренду", icon: "truck", requiresSignedDoc: true },
-  { name: "Забор с аренды", icon: "undo-2", requiresSignedDoc: true },
+  { name: "Выездной ремонт / диагностика", icon: "wrench", requiresSignedDoc: true, requiresPricing: true },
+  { name: "Забор в ремонт", icon: "package-minus", requiresSignedDoc: true, requiresPricing: false },
+  { name: "Гарантийный ремонт", icon: "shield-check", requiresSignedDoc: true, requiresPricing: true },
+  { name: "Доставка в аренду", icon: "truck", requiresSignedDoc: true, requiresPricing: false },
+  { name: "Забор с аренды", icon: "undo-2", requiresSignedDoc: true, requiresPricing: false },
   // Без акта.
-  { name: "Доставка из ремонта", icon: "package-check", requiresSignedDoc: false },
-  { name: "Доставка проданного оборудования", icon: "package-plus", requiresSignedDoc: false },
-  { name: "Сдача в ТК", icon: "warehouse", requiresSignedDoc: false },
-  { name: "Забрать посылку", icon: "package", requiresSignedDoc: false },
-  { name: "Закупка/выкуп станка", icon: "shopping-cart", requiresSignedDoc: false },
-  { name: "Прочее", icon: "ellipsis", requiresSignedDoc: false },
+  { name: "Доставка из ремонта", icon: "package-check", requiresSignedDoc: false, requiresPricing: false },
+  { name: "Доставка проданного оборудования", icon: "package-plus", requiresSignedDoc: false, requiresPricing: false },
+  { name: "Сдача в ТК", icon: "warehouse", requiresSignedDoc: false, requiresPricing: false },
+  { name: "Забрать посылку", icon: "package", requiresSignedDoc: false, requiresPricing: false },
+  { name: "Закупка/выкуп станка", icon: "shopping-cart", requiresSignedDoc: false, requiresPricing: false },
+  { name: "Прочее", icon: "ellipsis", requiresSignedDoc: false, requiresPricing: false },
+];
+
+// Стартовый справочник работ для ведомости (этап 12, PRD §13.3). Артём дополнит под реальные
+// работы VanMark через админку — здесь generic-набор, чтобы экран был не пустой. Upsert по name.
+const WORK_CATALOG: string[] = [
+  "Выезд мастера",
+  "Диагностика оборудования",
+  "Ремонт гидравлики",
+  "Замена ножа",
+  "Замена матрицы",
+  "Настройка зазоров",
+  "Замена подшипника",
+  "Пусконаладка",
+  "Обучение оператора",
+  "Замена электрооборудования",
 ];
 
 // KPI / зарплата (Фаза 1.5): дефолты и логика — в prisma/seed-kpi.ts (там же безопасный
@@ -85,6 +101,7 @@ async function main(defaultPassword: string): Promise<void> {
       update: {
         icon: t.icon,
         requiresSignedDoc: t.requiresSignedDoc,
+        requiresPricing: t.requiresPricing,
         sortOrder: i + 1,
         isActive: true,
       },
@@ -92,11 +109,21 @@ async function main(defaultPassword: string): Promise<void> {
         name: t.name,
         icon: t.icon,
         requiresSignedDoc: t.requiresSignedDoc,
+        requiresPricing: t.requiresPricing,
         sortOrder: i + 1,
       },
     });
   }
   console.log(`  ✓ типы задач: ${TASK_TYPES.length}`);
+
+  for (const [i, name] of WORK_CATALOG.entries()) {
+    await prisma.workCatalogItem.upsert({
+      where: { name },
+      update: { sortOrder: i + 1, isActive: true },
+      create: { name, sortOrder: i + 1 },
+    });
+  }
+  console.log(`  ✓ справочник работ: ${WORK_CATALOG.length}`);
 
   await seedKpi(prisma);
 }

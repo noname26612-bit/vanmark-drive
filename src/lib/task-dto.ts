@@ -1,12 +1,13 @@
 // Формы данных задачи, как они приходят клиенту по JSON (даты — строки ISO).
 // Держим отдельно от Prisma-типов, чтобы не тащить серверный клиент в браузерный бандл.
-import type { AttachmentKind, PassStatus, PaymentType, TaskStatus } from "@/generated/prisma/enums";
+import type { AttachmentKind, PassStatus, PaymentType, TaskStatus, WorksheetStatus } from "@/generated/prisma/enums";
 
 export type TaskTypeDTO = {
   id: string;
   name: string;
   icon: string | null;
   requiresSignedDoc: boolean; // тип с актом: дефолт требования акта для новых задач (PRD §3)
+  requiresPricing: boolean; // нужна ли ведомость работ + расценка (этап 12, PRD §13)
 };
 
 export type TaskTypeFullDTO = TaskTypeDTO & { sortOrder: number; isActive: boolean };
@@ -38,6 +39,7 @@ export type TaskDTO = {
   priority: boolean;
   requiresSignedDoc: boolean; // требование акта на уровне задачи (снимок из типа, override галочкой)
   actWaivedNote: string | null; // причина снятия требования акта (если снят диспетчером)
+  worksheetStatus: WorksheetStatus | null; // ведомость работ (этап 12): null — не нужна для типа
   status: TaskStatus;
   assigneeId: string | null;
   assignee: AssigneeDTO;
@@ -78,8 +80,23 @@ export type AttachmentDTO = {
   createdAt: string;
 };
 
+export type WorkCatalogItemDTO = { id: string; name: string };
+
+export type WorkCatalogFullDTO = WorkCatalogItemDTO & { isActive: boolean; sortOrder: number };
+
+export type WorkItemDTO = {
+  id: string;
+  catalogItemId: string | null;
+  name: string;
+  quantity: number;
+  sortOrder: number;
+  createdById: string;
+  createdAt: string;
+};
+
 export type TaskDetailDTO = TaskDTO & {
   createdBy: { id: string; name: string };
   events: TaskEventDTO[];
   attachments: AttachmentDTO[];
+  workItems: WorkItemDTO[];
 };

@@ -27,4 +27,6 @@ export const Errors = {
   validation: (message: string) => new DomainError("VALIDATION", message, 422),
   periodClosed: () =>
     new DomainError("PERIOD_CLOSED", "Месяц закрыт — расчёт зафиксирован и не меняется", 409),
+  worksheetLocked: () =>
+    new DomainError("WORKSHEET_LOCKED", "Ведомость уже отправлена на расценку", 409),
 };

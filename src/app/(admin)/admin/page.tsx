@@ -9,7 +9,8 @@ export default function AdminPage() {
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <AdminLink href="/board" title="Доска «Сегодня»" desc="Задачи дня по водителям" />
         <AdminLink href="/tasks" title="Все задачи" desc="Таблица с фильтрами и поиском" />
-        <AdminLink href="/admin/task-types" title="Типы задач" desc="Справочник: названия, фото, порядок" />
+        <AdminLink href="/admin/task-types" title="Типы задач" desc="Справочник: названия, акт, порядок" />
+        <AdminLink href="/admin/work-catalog" title="Работы (ведомость)" desc="Справочник работ для ведомости водителя" />
         <AdminLink href="/admin/pay" title="Оплата (KPI)" desc="Оклады, премии, веса штрафов, прогрессия" />
       </div>
     </main>

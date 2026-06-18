@@ -52,6 +52,15 @@ enum AttachmentKind {
   DOCUMENT
 }
 
+// Состояние ведомости работ (этап 12, PRD §13.4). На задаче null — ведомость не нужна
+// (тип без requiresPricing). Жизненный цикл живёт отдельно от статуса задачи.
+enum WorksheetStatus {
+  DRAFT // водитель заполняет
+  PRICING // отправлена диспетчеру на расценку (этап 13)
+  PRICED // цены проставлены (этап 13)
+  SIGNED // подписанный акт приложен (этап 14)
+}
+
 model User {
   id           String   @id @default(uuid())
   login        String   @unique // латиница, вводится при входе
@@ -84,6 +93,9 @@ model TaskType {
   // Ремонтный тип: ожидается подписанный акт (документ-вложение). НЕ гейт завершения —
   // отсутствие = нарушение KPI UNSIGNED_DOCS (Фаза 1.5, PRD §12.1). См. src/domain/kpi.ts.
   requiresSignedDoc Boolean @default(false)
+  // Нужна ли ведомость работ + расценка (этап 12, PRD §13): выездной ремонт/диагностика, гарантия.
+  // Акты-описи (аренда/забор) ведомость не используют, поэтому это отдельный флаг от requiresSignedDoc.
+  requiresPricing   Boolean @default(false)
   sortOrder         Int     @default(0)
   isActive          Boolean @default(true)
   tasks             Task[]
@@ -103,6 +115,8 @@ model Task {
   // это поле, не type (см. src/domain/kpi-service.ts). НЕ гейт завершения (PRD §5).
   requiresSignedDoc Boolean @default(false)
   actWaivedNote     String? // причина снятия требования акта на этой заявке
+  // Ведомость работ (этап 12): null — не нужна (тип без requiresPricing); иначе DRAFT→PRICING→PRICED→SIGNED.
+  worksheetStatus   WorksheetStatus?
 
   title         String // «ЛБМ 200 + нож + дог. маш, 0,7 мм»
   description   String?     @db.Text
@@ -134,6 +148,7 @@ model Task {
 
   events      TaskEvent[]
   attachments Attachment[]
+  workItems   WorkItem[] // позиции ведомости работ (этап 12)
   kpiMarks    KpiMark[] // отметки KPI, привязанные к этой задаче (Фаза 1.5)
 
   createdAt   DateTime  @default(now())
@@ -180,6 +195,34 @@ model Attachment {
   createdAt   DateTime       @default(now())
 
   @@index([taskId, createdAt])
+}
+
+// Справочник работ для ведомости (этап 12, PRD §13.3). Наполняет админ. Цены-подсказки — этап 13.
+model WorkCatalogItem {
+  id        String     @id @default(uuid())
+  name      String     @unique // «Диагностика», «Замена ножа»...
+  isActive  Boolean    @default(true)
+  sortOrder Int        @default(0)
+  createdAt DateTime   @default(now())
+  workItems WorkItem[]
+}
+
+// Позиция ведомости выполненных работ (этап 12, PRD §13.1). Водитель фиксирует ЧТО сделал и
+// количество — БЕЗ цен. Цену проставляет диспетчер при расценке (этап 13). Меняется водителем
+// только пока worksheetStatus=DRAFT. catalogItemId=null — свободная строка (работы нет в справочнике).
+model WorkItem {
+  id            String           @id @default(uuid())
+  taskId        String
+  task          Task             @relation(fields: [taskId], references: [id])
+  catalogItemId String?
+  catalogItem   WorkCatalogItem? @relation(fields: [catalogItemId], references: [id])
+  name          String // снимок названия работы (из справочника или свободный ввод)
+  quantity      Int              @default(1)
+  sortOrder     Int              @default(0)
+  createdById   String // водитель, заполнивший позицию
+  createdAt     DateTime         @default(now())
+
+  @@index([taskId, sortOrder])
 }
 
 // Подписка устройства на web-push (ARCHITECTURE §4, §8). Одна запись = один браузер/устройство

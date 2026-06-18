@@ -3,7 +3,7 @@
 // Каждое изменение атомарно пишет событие в TaskEvent (CLAUDE.md правило 3 — журнал только на запись).
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
-import type { PassStatus, PaymentType, Role, TaskStatus } from "@/generated/prisma/enums";
+import type { PassStatus, PaymentType, Role, TaskStatus, WorksheetStatus } from "@/generated/prisma/enums";
 import { checkTransition, isDispatcherRole } from "./task-status";
 import { resolveAssignedDate } from "./assign-date";
 import { canViewTask } from "./authz";
@@ -76,6 +76,18 @@ const taskDetailInclude = {
       createdById: true,
       lat: true,
       lng: true,
+      createdAt: true,
+    },
+  },
+  workItems: {
+    orderBy: { sortOrder: "asc" },
+    select: {
+      id: true,
+      catalogItemId: true,
+      name: true,
+      quantity: true,
+      sortOrder: true,
+      createdById: true,
       createdAt: true,
     },
   },
@@ -231,12 +243,17 @@ export async function createTask(
   if (!address) throw Errors.validation("Не указан адрес");
 
   // Тип задаёт дефолт требования акта; диспетчер может снять его галочкой «акт не нужен» (PRD §4).
-  const type = await prisma.taskType.findUnique({ where: { id: typeId }, select: { requiresSignedDoc: true } });
+  const type = await prisma.taskType.findUnique({
+    where: { id: typeId },
+    select: { requiresSignedDoc: true, requiresPricing: true },
+  });
   if (!type) throw Errors.validation("Неизвестный тип задачи");
   const requiresSignedDoc =
     input.requiresAct === undefined || input.requiresAct === null ? type.requiresSignedDoc : input.requiresAct;
   // Причину снятия храним, только когда акт реально сняли с типа, который его ожидал.
   const actWaivedNote = !requiresSignedDoc && type.requiresSignedDoc ? clean(input.actWaivedNote) : null;
+  // Ведомость работ заводится сразу в DRAFT для типов с расценкой (этап 12, PRD §13).
+  const worksheetStatus: WorksheetStatus | null = type.requiresPricing ? "DRAFT" : null;
 
   let assigneeId: string | null = null;
   if (input.assigneeId) {
@@ -268,6 +285,7 @@ export async function createTask(
         priority: input.priority ?? false,
         requiresSignedDoc,
         actWaivedNote,
+        worksheetStatus,
         status,
         assigneeId,
         createdById: actor.id,

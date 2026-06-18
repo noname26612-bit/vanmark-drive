@@ -68,6 +68,7 @@ enum TaskStatus  { NEW ASSIGNED ACCEPTED EN_ROUTE ON_SITE DONE ON_HOLD RESCHEDUL
 enum PassStatus  { NOT_NEEDED NEEDED ORDERED }
 enum PaymentType { NONE OFFICE ON_SITE }
 enum AttachmentKind { PHOTO DOCUMENT }
+enum WorksheetStatus { DRAFT PRICING PRICED SIGNED }   // ведомость работ (этап 12, PRD §13.4)
 
 model User {
   id            String   @id @default(uuid())
@@ -89,8 +90,9 @@ model TaskType {
   id            String  @id @default(uuid())
   name             String  @unique       // «Доставка в аренду», «Забор в ремонт»...
   icon             String?                // имя иконки lucide
-  requiresPhoto    Boolean @default(true) // обязательное фото при DONE (гейт)
-  requiresSignedDoc Boolean @default(false) // ремонтный тип: ожидается подписанный акт. НЕ гейт — отсутствие = нарушение KPI (Фаза 1.5)
+  requiresPhoto    Boolean @default(true) // DEPRECATED (этап 11): фото больше не гейт — везде по желанию
+  requiresSignedDoc Boolean @default(false) // дефолт «нужен акт» для новых задач (этап 11: фактический флаг переехал на Task)
+  requiresPricing  Boolean @default(false) // нужна ведомость работ + расценка (этап 12): выездной ремонт, гарантия
   sortOrder        Int     @default(0)
   isActive         Boolean @default(true)
   tasks            Task[]
@@ -101,6 +103,9 @@ model Task {
   number        Int        @unique        // сквозной, sequence (старт задаёт сид)
   typeId        String
   type          TaskType   @relation(fields: [typeId], references: [id])
+  requiresSignedDoc Boolean @default(false) // требование акта НА ЗАДАЧЕ (этап 11): снимок из типа, диспетчер снимает галочкой
+  actWaivedNote String?                    // причина снятия акта на заявке (этап 11)
+  worksheetStatus WorksheetStatus?         // ведомость работ (этап 12): null — не нужна для типа
   title         String                    // «ЛБМ 200 + нож + дог. маш, 0,7 мм»
   description   String?    @db.Text
   equipment     String?                   // «ЛБМ 250», «Sorex 2 м»
@@ -128,6 +133,7 @@ model Task {
   holdReason    String?
   events        TaskEvent[]
   attachments   Attachment[]
+  workItems     WorkItem[]                 // позиции ведомости работ (этап 12)
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
   completedAt   DateTime?
@@ -166,6 +172,28 @@ model Attachment {
   lat         Float?
   lng         Float?
   createdAt   DateTime       @default(now())
+}
+
+// Ведомость работ (этап 12, PRD §13). Водитель фиксирует работы без цен — цену ставит диспетчер (этап 13).
+model WorkCatalogItem {                     // справочник работ (наполняет админ)
+  id        String     @id @default(uuid())
+  name      String     @unique
+  isActive  Boolean    @default(true)
+  sortOrder Int        @default(0)
+  workItems WorkItem[]
+}
+
+model WorkItem {                            // позиция ведомости: работа + количество (цена — этап 13)
+  id            String           @id @default(uuid())
+  taskId        String
+  task          Task             @relation(fields: [taskId], references: [id])
+  catalogItemId String?                     // null — свободная строка (работы нет в справочнике)
+  catalogItem   WorkCatalogItem? @relation(fields: [catalogItemId], references: [id])
+  name          String                      // снимок названия работы
+  quantity      Int              @default(1)
+  sortOrder     Int              @default(0)
+  createdById   String                      // водитель, заполнивший позицию
+  createdAt     DateTime         @default(now())
 }
 
 model PushSubscription {
@@ -276,11 +304,11 @@ model PayrollStatement {
 | ASSIGNED | Д (переназн.) | В | — | — | — | Д | Д | Д |
 | ACCEPTED | — | — | В | — | — | Д, В* | Д | Д |
 | EN_ROUTE | — | — | — | В | — | Д, В* | Д | Д |
-| ON_SITE | — | — | — | — | В (фото!) | Д, В* | Д | Д |
+| ON_SITE | — | — | — | — | В | Д, В* | Д | Д |
 | ON_HOLD | Д | — | — | — | — | — | Д | Д |
 | RESCHEDULED → автоматически ASSIGNED на новую дату | | | | | | | | |
 
-Д — диспетчер/админ; В — назначенный водитель; В* — водитель может поставить «Ждёт» только с обязательной причиной (нет пропуска, клиент недоступен). DONE требует фото, если `type.requiresPhoto`, а при `paymentType = ON_SITE` — подтверждение получения денег (сумма пишется в событие); обе проверки на сервере. Любая корректировка статуса диспетчером задним числом — это новый event, история не переписывается.
+Д — диспетчер/админ; В — назначенный водитель; В* — водитель может поставить «Ждёт» только с обязательной причиной (нет пропуска, клиент недоступен). DONE с этапа 11 НЕ требует фото (фото везде по желанию); при `paymentType = ON_SITE` — подтверждение получения денег (сумма пишется в событие) — единственный серверный гейт завершения. Требуемый акт и опоздание — мягкие отметки KPI, не блокируют (PRD §5, §12). Любая корректировка статуса диспетчером задним числом — это новый event, история не переписывается.
 
 Уточнено с Артёмом 04.06.2026 (реализовано в `src/domain/task-status.ts`): диспетчер/админ может выполнить ЛЮБОЙ валидный переход матрицы (включая «водительские» шаги вперёд) — это нужно, чтобы вести статусы за внешнего исполнителя (Султан, без приложения) и исправлять ошибки. Водитель — только разрешённые ему рёбра и только по своей задаче. Сами рёбра матрицы не меняются.
 
@@ -313,6 +341,10 @@ model PayrollStatement {
 | DELETE /api/attachments/:id | Д, В(автор, до завершения) | удалить вложение |
 | POST /api/push/subscribe | Д, В | сохранить подписку |
 | GET/POST /api/admin/users, /api/admin/task-types | А | справочники |
+| GET /api/work-catalog | Д, В | справочник работ для ведомости (этап 12) |
+| POST /api/tasks/:id/work-items · PATCH/DELETE /api/work-items/:id | В(своя), Д | позиции ведомости (этап 12; правка пока DRAFT, чужая → 404) |
+| POST /api/tasks/:id/worksheet/submit | В(своя), Д | отправить ведомость на расценку (DRAFT→PRICING) |
+| GET/POST /api/admin/work-catalog · PATCH /api/admin/work-catalog/:id | А | справочник работ |
 | GET /api/kpi/overview?period | Д | кандидаты в нарушения + расчёт по всем водителям за месяц (объединяет candidates+statements одним запросом) |
 | GET /api/summary/overview?granularity&date | Д | сводка по водителям за период (день/неделя/месяц, по дате закрытия задач) — Фаза 2, только чтение |
 | GET /api/summary/export?granularity&date | Д | та же сводка файлом CSV (вложение, BOM+`;` для Excel) |
