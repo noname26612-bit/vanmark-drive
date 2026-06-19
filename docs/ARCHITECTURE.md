@@ -81,12 +81,24 @@ model User {
   phone         String?
   role          Role
   isActive      Boolean  @default(true)
-  canLogin      Boolean  @default(true)   // false — внешний исполнитель (Султан): статусы ведёт диспетчер
+  canLogin      Boolean  @default(true)   // false — внешний перевозчик (наёмный): статусы ведёт диспетчер
   tasks         Task[]   @relation("assignee")
   createdTasks  Task[]   @relation("creator")
   events        TaskEvent[]
   pushSubs      PushSubscription[]
+  uiPrefs       UiPreference[]            // персональная раскладка экранов диспетчера (порядок/свёрнутость пулов)
   createdAt     DateTime @default(now())
+}
+
+// Персональные настройки интерфейса (раскладка доски/планирования). value — JSON-массив строк-ключей
+// пулов. Привязка к пользователю — раскладка одинакова на любом устройстве. Личность — только из сессии.
+model UiPreference {
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key       String                        // "board.order" | "board.collapsed" | "planning.order"
+  value     Json                          // string[]
+  updatedAt DateTime @updatedAt
+  @@id([userId, key])
 }
 
 model TaskType {
@@ -394,6 +406,7 @@ estimate   = type.onSiteMinutes + travelMin     (round)
 - Rate limit на `/api/auth/*` (брутфорс), пароли — argon2id.
 - Обязательные e2e-тесты изоляции (см. skill security-check): водитель A не видит и не может изменить задачу водителя B ни одним эндпоинтом.
 - KPI (Фаза 1.5): `GET /api/my/kpi` и расчёт водителя берут `driverId` ТОЛЬКО из сессии; чужой расчёт по прямой ссылке/ID — **404**. Подтверждение нарушений, ручные отметки, настройки оплаты и закрытие месяца — только диспетчер/админ (водитель эти ручки не видит). Каждый KPI-эндпоинт проходит security-check (та же дисциплина, что и задачи).
+  - Участие в KPI/зарплате = наличие АКТИВНОГО денежного профиля (`DriverPayProfile.isActive`). Водители без профиля (подменный Николай, внешний перевозчик) исключены из детектора нарушений, списка кандидатов, ручных отметок и расчёта; экран «Мой расчёт» им не показывается (`isPayrollDriver`). Это единственный признак участия — отдельного флага в схеме нет.
 
 ## 7. API (route handlers)
 
@@ -411,6 +424,7 @@ estimate   = type.onSiteMinutes + travelMin     (round)
 | GET /api/attachments/:id | Д, В(своя) | файл с проверкой прав (nosniff, не из public/) |
 | DELETE /api/attachments/:id | Д, В(автор, до завершения) | удалить вложение |
 | POST /api/push/subscribe | Д, В | сохранить подписку |
+| GET /api/ui-prefs · PUT /api/ui-prefs {key,value} | любой | персональная раскладка экранов (порядок/свёрнутость пулов); userId из сессии, key из белого списка, value санируется |
 | GET/POST /api/admin/users, /api/admin/task-types | А | справочники |
 | GET /api/work-catalog | Д, В | справочник работ для ведомости, сгруппирован по разделам; для водителя — БЕЗ цены (id+name+раздел) |
 | POST /api/tasks/:id/work-items · PATCH/DELETE /api/work-items/:id | В(своя), Д | позиции ведомости (этап 12; правка пока DRAFT, чужая → 404) |

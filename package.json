@@ -19,6 +19,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:kpi": "tsx prisma/seed-kpi.ts",
     "db:seed:capacity": "tsx prisma/seed-capacity.ts",
+    "db:seed:roster": "tsx prisma/seed-roster.ts",
     "db:seed:pilot": "tsx prisma/seed-pilot.ts",
     "db:studio": "prisma studio",
     "prisma": "prisma",

@@ -1,10 +1,21 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { Plus, AlertTriangle, RefreshCw, CalendarOff, CalendarClock } from "lucide-react";
+import {
+  Plus,
+  AlertTriangle,
+  RefreshCw,
+  CalendarOff,
+  CalendarClock,
+  GripVertical,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 import { fetcher, apiSend } from "@/lib/fetcher";
+import { mergeOrder, moveTo } from "@/lib/pool-order";
+import { persistUiPref } from "@/lib/ui-prefs-client";
 import type { AttentionDTO, DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
 import {
   STATUS_BADGE,
@@ -25,12 +36,29 @@ import { CreateTaskModal } from "../_components/create-task-modal";
 
 type DropTarget = { kind: "driver"; driverId: string } | { kind: "undated" };
 
+// Отдельный MIME-тип для перетаскивания ПУЛОВ (колонок) — чтобы не пересекаться с перетаскиванием
+// карточек задач (те кладут id в "text/plain"). Drop карточки на тело колонки читает только text/plain,
+// поэтому drag пула по телу колонки ничего не назначает; reorder ловится на шапке по этому типу.
+const POOL_MIME = "application/x-vm-pool";
+
 // Горизонт пула «Ближайшие 3 дня»: сегодня + 2 дня (решение Артёма 17.06).
 const HORIZON_DAYS = 2;
 
 // Опции живого обновления (Этап 6): поллинг 10 с; keepPreviousData держит прошлые данные во время
 // фонового запроса — раскладка не дёргается, скелетоны только на самой первой загрузке.
 const LIVE = { refreshInterval: 10_000, keepPreviousData: true, revalidateOnFocus: true } as const;
+
+// Описание пула-колонки, не зависящее от раскладки: заголовок, иконка, задачи, drop-цель.
+type PoolDescriptor = {
+  poolKey: string;
+  title: string;
+  hint?: string;
+  headIcon?: React.ReactNode;
+  isDriver?: boolean;
+  tasks: TaskDTO[];
+  target?: DropTarget;
+  showDate?: boolean;
+};
 
 // Инициалы водителя для аватара в графитовой шапке колонки: «Алексей Каширский» → «АК».
 function initials(name: string): string {
@@ -46,10 +74,14 @@ export function BoardClient({
   drivers,
   types,
   today,
+  initialOrder = [],
+  initialCollapsed = [],
 }: {
   drivers: DriverDTO[];
   types: TaskTypeDTO[];
   today: string;
+  initialOrder?: string[];
+  initialCollapsed?: string[];
 }) {
   // Выборка для доски: задачи сегодня…+2 + пул «Без даты» (одним запросом, фильтрация — на клиенте).
   const horizonEnd = addDaysISO(today, HORIZON_DAYS);
@@ -62,6 +94,35 @@ export function BoardClient({
   );
   const [createOpen, setCreateOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Персональная раскладка пулов (сохраняется в аккаунте). order — заданный диспетчером порядок
+  // ключей пулов; collapsed — множество свёрнутых. При перезагрузке приходят с сервера (props).
+  const [order, setOrder] = useState<string[]>(initialOrder);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(initialCollapsed));
+
+  // Ключи всех пулов в естественном порядке: служебные + по водителю. Стабильные id для раскладки.
+  const poolKeys = useMemo(
+    () => ["undated", "upcoming", ...drivers.map((d) => `driver:${d.id}`)],
+    [drivers],
+  );
+
+  function handleReorder(dragKey: string, targetKey: string) {
+    setOrder((prev) => {
+      const next = moveTo(mergeOrder(prev, poolKeys), dragKey, targetKey);
+      persistUiPref("board.order", next);
+      return next;
+    });
+  }
+
+  function toggleCollapse(key: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      persistUiPref("board.collapsed", [...next]);
+      return next;
+    });
+  }
 
   const list = tasks ?? [];
   const dateOf = (t: TaskDTO): string | null => (t.scheduledDate ? t.scheduledDate.slice(0, 10) : null);
@@ -122,6 +183,44 @@ export function BoardClient({
   // Ошибка фонового обновления, но данные уже есть — показываем спокойный индикатор, не сносим доску.
   const staleError = loadError && tasks;
 
+  // Порядок отображения = сохранённый порядок, сведённый к актуальному набору пулов (новый водитель
+  // появляется сам, пропавший отбрасывается). Дескриптор пула собирается по ключу.
+  const displayOrder = mergeOrder(order, poolKeys);
+  const poolByKey = (key: string): PoolDescriptor | null => {
+    if (key === "undated") {
+      return {
+        poolKey: key,
+        title: "Без даты",
+        hint: "пул для планирования",
+        headIcon: <CalendarOff className="h-4 w-4 text-slate-300" />,
+        tasks: undated,
+        target: { kind: "undated" },
+      };
+    }
+    if (key === "upcoming") {
+      return {
+        poolKey: key,
+        title: "Ближайшие 3 дня",
+        hint: "планирование",
+        headIcon: <CalendarClock className="h-4 w-4 text-slate-300" />,
+        tasks: upcoming,
+        showDate: true,
+      };
+    }
+    if (key.startsWith("driver:")) {
+      const d = drivers.find((x) => x.id === key.slice("driver:".length));
+      if (!d) return null;
+      return {
+        poolKey: key,
+        title: d.name,
+        isDriver: true,
+        tasks: todays.filter((t) => t.assigneeId === d.id),
+        target: { kind: "driver", driverId: d.id },
+      };
+    }
+    return null;
+  };
+
   return (
     <div className="p-4" data-testid="board">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -164,40 +263,32 @@ export function BoardClient({
         <>
           {attentionCount > 0 && attention ? <AttentionBlock attention={attention} /> : null}
 
-          <div className="flex gap-3 overflow-x-auto pb-4">
-            <Column
-              title="Без даты"
-              hint="пул для планирования"
-              headIcon={<CalendarOff className="h-4 w-4 text-slate-300" />}
-              tasks={undated}
-              drivers={drivers}
-              target={{ kind: "undated" }}
-              onDropTask={onDrop}
-              onQuickAssign={quickAssign}
-            />
-            {/* Пул для планирования наперёд: сегодня…+2. Только показ/источник — не drop-зона
-                (день назначается в «Планировании» или перетаскиванием на колонку водителя). */}
-            <Column
-              title="Ближайшие 3 дня"
-              hint="планирование"
-              headIcon={<CalendarClock className="h-4 w-4 text-slate-300" />}
-              tasks={upcoming}
-              drivers={drivers}
-              showDate
-              onQuickAssign={quickAssign}
-            />
-            {drivers.map((d) => (
-              <Column
-                key={d.id}
-                title={d.name}
-                hint={d.canLogin ? undefined : "внешний"}
-                tasks={todays.filter((t) => t.assigneeId === d.id)}
-                drivers={drivers}
-                target={{ kind: "driver", driverId: d.id }}
-                onDropTask={onDrop}
-                onQuickAssign={quickAssign}
-              />
-            ))}
+          {/* Пулы в персональном порядке. Шапку можно перетащить, чтобы поменять пулы местами;
+              стрелка в шапке сворачивает пул в узкую полосу — остальные расширяются. */}
+          <div className="flex gap-3 overflow-x-auto pb-4" data-testid="board-columns">
+            {displayOrder.map((key) => {
+              const p = poolByKey(key);
+              if (!p) return null;
+              return (
+                <Column
+                  key={key}
+                  poolKey={p.poolKey}
+                  title={p.title}
+                  hint={p.hint}
+                  headIcon={p.headIcon}
+                  isDriver={p.isDriver}
+                  tasks={p.tasks}
+                  drivers={drivers}
+                  target={p.target}
+                  showDate={p.showDate}
+                  onDropTask={onDrop}
+                  onQuickAssign={quickAssign}
+                  collapsed={collapsed.has(key)}
+                  onToggleCollapse={() => toggleCollapse(key)}
+                  onReorder={handleReorder}
+                />
+              );
+            })}
           </div>
         </>
       )}
@@ -348,54 +439,131 @@ function BoardSkeleton({ driverCount }: { driverCount: number }) {
 }
 
 function Column({
+  poolKey,
   title,
   hint,
   headIcon,
+  isDriver = false,
   tasks,
   drivers,
   target,
   showDate = false,
   onDropTask,
   onQuickAssign,
+  collapsed,
+  onToggleCollapse,
+  onReorder,
 }: {
+  poolKey: string;
   title: string;
   hint?: string;
   headIcon?: React.ReactNode;
+  isDriver?: boolean;
   tasks: TaskDTO[];
   drivers: DriverDTO[];
   target?: DropTarget; // без target — колонка только показ/источник (пул «Ближайшие 3 дня»)
   showDate?: boolean;
   onDropTask?: (taskId: string, target: DropTarget) => void;
   onQuickAssign: (taskId: string, assigneeId: string) => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+  onReorder: (dragKey: string, targetKey: string) => void;
 }) {
-  const [over, setOver] = useState(false);
+  const [over, setOver] = useState(false); // подсветка drop-зоны карточек
+  const [reorderOver, setReorderOver] = useState(false); // подсветка drop-зоны перетаскивания пула
   const droppable = target !== undefined && onDropTask !== undefined;
-  const isDriver = target?.kind === "driver";
   const testId = target
     ? target.kind === "driver"
       ? `col-driver-${target.driverId}`
       : `col-${target.kind}`
     : "col-upcoming";
-  // Drop-зона только для droppable-колонок; пул-источник не принимает перетаскивание.
-  const dropProps = droppable
-    ? {
-        onDragOver: (e: React.DragEvent) => {
-          e.preventDefault();
-          setOver(true);
-        },
-        onDragLeave: () => setOver(false),
-        onDrop: (e: React.DragEvent) => {
-          e.preventDefault();
-          setOver(false);
-          const id = e.dataTransfer.getData("text/plain");
-          if (id) onDropTask(id, target);
-        },
-      }
-    : {};
+
+  // Перетаскивание пула (reorder): кладём ключ в свой MIME-тип, отличный от карточек ("text/plain").
+  const headDragProps = {
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      e.dataTransfer.setData(POOL_MIME, poolKey);
+      e.dataTransfer.effectAllowed = "move";
+    },
+  };
+  // Шапка — drop-зона reorder: реагирует ТОЛЬКО на перетаскивание пула (по типу), не на карточки.
+  const headDropProps = {
+    onDragOver: (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes(POOL_MIME)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      setReorderOver(true);
+    },
+    onDragLeave: () => setReorderOver(false),
+    onDrop: (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes(POOL_MIME)) return;
+      e.preventDefault();
+      setReorderOver(false);
+      const dragKey = e.dataTransfer.getData(POOL_MIME);
+      if (dragKey) onReorder(dragKey, poolKey);
+    },
+  };
+
+  // Drop-зона карточек — только у развёрнутой droppable-колонки; перетаскивание пула сюда игнорируем.
+  const dropProps =
+    droppable && !collapsed
+      ? {
+          onDragOver: (e: React.DragEvent) => {
+            if (e.dataTransfer.types.includes(POOL_MIME)) return;
+            e.preventDefault();
+            setOver(true);
+          },
+          onDragLeave: () => setOver(false),
+          onDrop: (e: React.DragEvent) => {
+            e.preventDefault();
+            setOver(false);
+            const id = e.dataTransfer.getData("text/plain");
+            if (id && target && onDropTask) onDropTask(id, target);
+          },
+        }
+      : {};
+
+  const ringCls = reorderOver ? "rounded-md ring-2 ring-slate-400" : "";
+
+  // Свёрнутый пул — узкая полоса: грип-перетаскивание, иконка/инициалы, счётчик, разворот по клику.
+  if (collapsed) {
+    return (
+      <div data-testid={testId} data-collapsed="true" className={`flex w-11 shrink-0 flex-col ${ringCls}`}>
+        <button
+          type="button"
+          {...headDragProps}
+          {...headDropProps}
+          onClick={onToggleCollapse}
+          aria-label={`Развернуть пул «${title}»`}
+          data-testid={`col-expand-${poolKey}`}
+          className="flex flex-1 cursor-grab flex-col items-center gap-2 rounded-md bg-slate-900 px-1 py-2 active:cursor-grabbing"
+        >
+          <ChevronRight className="h-4 w-4 text-slate-300" />
+          {isDriver ? (
+            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-700 text-[11px] font-semibold text-white">
+              {initials(title)}
+            </span>
+          ) : (
+            headIcon ?? null
+          )}
+          <span className="text-xs font-semibold tabular-nums text-slate-300">{tasks.length}</span>
+          <span className="mt-1 max-h-36 overflow-hidden text-xs font-medium text-white [writing-mode:vertical-rl]">
+            {title}
+          </span>
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex min-w-[18rem] flex-1 flex-col" data-testid={testId}>
-      {/* Графитовая шапка: аватар-инициалы у водителя, иконка-пул у служебных колонок */}
-      <div className="flex items-center gap-2 rounded-t-md bg-slate-900 px-2.5 py-2">
+    <div className={`flex min-w-[18rem] flex-1 flex-col ${ringCls}`} data-testid={testId}>
+      {/* Графитовая шапка: грип (перетащить пул), аватар/иконка, заголовок, счётчик, кнопка свернуть. */}
+      <div
+        {...headDragProps}
+        {...headDropProps}
+        className="flex cursor-grab items-center gap-2 rounded-t-md bg-slate-900 px-2.5 py-2 active:cursor-grabbing"
+      >
+        <GripVertical className="h-4 w-4 shrink-0 text-slate-500" />
         {isDriver ? (
           <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-700 text-[11px] font-semibold text-white">
             {initials(title)}
@@ -408,6 +576,15 @@ function Column({
           {hint ? `${hint} · ` : ""}
           {tasks.length}
         </span>
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          aria-label={`Свернуть пул «${title}»`}
+          data-testid={`col-collapse-${poolKey}`}
+          className="shrink-0 rounded p-0.5 text-slate-300 hover:bg-slate-700 hover:text-white"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </button>
       </div>
       <div
         {...dropProps}

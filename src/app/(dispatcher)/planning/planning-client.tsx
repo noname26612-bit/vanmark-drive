@@ -3,8 +3,10 @@
 import { useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { ChevronLeft, ChevronRight, RefreshCw, Move } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Move, GripVertical } from "lucide-react";
 import { fetcher, apiSend } from "@/lib/fetcher";
+import { mergeOrder, moveTo } from "@/lib/pool-order";
+import { persistUiPref } from "@/lib/ui-prefs-client";
 import type { DriverDTO, TaskDTO } from "@/lib/task-dto";
 import { STATUS_BADGE, STATUS_BAR, STATUS_LABEL, addDaysISO, formatDate } from "@/lib/task-ui";
 import { formatMinutes } from "@/domain/capacity";
@@ -16,8 +18,11 @@ const LIVE = { refreshInterval: 10_000, keepPreviousData: true, revalidateOnFocu
 const HORIZON_DAYS = 7; // окно планирования — неделя (решение Артёма 17.06)
 const TERMINAL = ["DONE", "CANCELLED"];
 const WD = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+// Отдельный MIME-тип для перетаскивания СТРОК-пулов — чтобы не пересекаться с перетаскиванием
+// карточек (те кладут id в "text/plain"). Ячейки читают только text/plain, drag строки их не трогает.
+const ROW_MIME = "application/x-vm-row";
 
-type Row = { key: string; label: string; driverId: string | null; hint?: string };
+type Row = { key: string; label: string; driverId: string | null };
 
 function dayHeader(iso: string): { wd: string; day: number } {
   const d = new Date(`${iso}T00:00:00.000Z`);
@@ -36,12 +41,16 @@ export function PlanningClient({
   drivers,
   today,
   workdayMinutes,
+  initialRowOrder = [],
 }: {
   drivers: DriverDTO[];
   today: string;
   workdayMinutes: number;
+  initialRowOrder?: string[];
 }) {
   const [weekStart, setWeekStart] = useState(today);
+  // Персональный порядок строк-пулов (сохраняется в аккаунте). При перезагрузке приходит с сервера.
+  const [rowOrder, setRowOrder] = useState<string[]>(initialRowOrder);
   const weekEnd = addDaysISO(weekStart, HORIZON_DAYS - 1);
   const days = Array.from({ length: HORIZON_DAYS }, (_, i) => addDaysISO(weekStart, i));
 
@@ -56,13 +65,22 @@ export function PlanningClient({
   // Строки сетки: «Без водителя» (дата есть, исполнителя нет) + по строке на водителя.
   const rows: Row[] = [
     { key: "none", label: "Без водителя", driverId: null },
-    ...drivers.map((d) => ({
-      key: d.id,
-      label: d.name,
-      driverId: d.id,
-      hint: d.canLogin ? undefined : "внешний",
-    })),
+    ...drivers.map((d) => ({ key: d.id, label: d.name, driverId: d.id })),
   ];
+  // Отображаемый порядок строк = сохранённый, сведённый к актуальному набору (новый водитель сам
+  // встаёт в конец, пропавший отбрасывается). Перетаскивание меняет порядок и сохраняет его.
+  const rowKeys = rows.map((r) => r.key);
+  const displayRows = mergeOrder(rowOrder, rowKeys)
+    .map((key) => rows.find((r) => r.key === key))
+    .filter((r): r is Row => r !== undefined);
+
+  function reorderRows(dragKey: string, targetKey: string) {
+    setRowOrder((prev) => {
+      const next = moveTo(mergeOrder(prev, rowKeys), dragKey, targetKey);
+      persistUiPref("planning.order", next);
+      return next;
+    });
+  }
 
   const cellTasks = (row: Row, day: string): TaskDTO[] =>
     list.filter((t) => dateOf(t) === day && (t.assigneeId ?? null) === row.driverId);
@@ -128,7 +146,7 @@ export function PlanningClient({
 
       <p className="mb-3 flex items-center gap-1.5 text-xs text-neutral-400">
         <Move className="h-3.5 w-3.5" /> перетащите карточку в ячейку — задаёт день и водителя; в «Без
-        даты» — снимает дату
+        даты» — снимает дату. Метку строки слева можно перетащить, чтобы поменять строки местами
       </p>
 
       {actionError ? <p className="mb-3 text-sm text-red-600">{actionError}</p> : null}
@@ -173,8 +191,9 @@ export function PlanningClient({
                 );
               })}
 
-              {/* Строки */}
-              {rows.map((row) => (
+              {/* Строки в персональном порядке. Левую метку можно перетащить, чтобы поменять
+                  строки-пулы местами (порядок сохраняется в аккаунте). */}
+              {displayRows.map((row) => (
                 <RowCells
                   key={row.key}
                   row={row}
@@ -183,6 +202,7 @@ export function PlanningClient({
                   cellTasks={cellTasks}
                   onPlan={plan}
                   workdayMinutes={workdayMinutes}
+                  onReorder={reorderRows}
                 />
               ))}
             </div>
@@ -203,6 +223,7 @@ function RowCells({
   cellTasks,
   onPlan,
   workdayMinutes,
+  onReorder,
 }: {
   row: Row;
   days: string[];
@@ -210,12 +231,40 @@ function RowCells({
   cellTasks: (row: Row, day: string) => TaskDTO[];
   onPlan: (taskId: string, day: string, assigneeId: string | null) => void;
   workdayMinutes: number;
+  onReorder: (dragKey: string, targetKey: string) => void;
 }) {
+  const [reorderOver, setReorderOver] = useState(false);
   return (
     <>
-      <div className="flex items-center px-1 text-xs font-medium text-neutral-700">
+      {/* Левая метка — ручка перетаскивания строки (reorder). Свой MIME-тип, не пересекается с
+          перетаскиванием карточек (те читают text/plain). */}
+      <div
+        draggable
+        data-testid={`row-handle-${row.key}`}
+        onDragStart={(e) => {
+          e.dataTransfer.setData(ROW_MIME, row.key);
+          e.dataTransfer.effectAllowed = "move";
+        }}
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes(ROW_MIME)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          setReorderOver(true);
+        }}
+        onDragLeave={() => setReorderOver(false)}
+        onDrop={(e) => {
+          if (!e.dataTransfer.types.includes(ROW_MIME)) return;
+          e.preventDefault();
+          setReorderOver(false);
+          const dragKey = e.dataTransfer.getData(ROW_MIME);
+          if (dragKey) onReorder(dragKey, row.key);
+        }}
+        className={`flex cursor-grab items-center gap-1 rounded px-1 text-xs font-medium text-neutral-700 active:cursor-grabbing ${
+          reorderOver ? "ring-2 ring-neutral-400" : ""
+        }`}
+      >
+        <GripVertical className="h-3.5 w-3.5 shrink-0 text-neutral-300" />
         <span className="truncate">{row.label}</span>
-        {row.hint ? <span className="ml-1 text-neutral-400">· {row.hint}</span> : null}
       </div>
       {days.map((day) => (
         <Cell
@@ -258,6 +307,7 @@ function Cell({
     <div
       data-testid={`cell-${rowKey}-${day}`}
       onDragOver={(e) => {
+        if (e.dataTransfer.types.includes(ROW_MIME)) return; // перетаскивание строки — не для ячейки
         e.preventDefault();
         setOver(true);
       }}
@@ -338,6 +388,7 @@ function UndatedPool({
     <div
       data-testid="plan-undated"
       onDragOver={(e) => {
+        if (e.dataTransfer.types.includes(ROW_MIME)) return; // перетаскивание строки — не для пула
         e.preventDefault();
         setOver(true);
       }}

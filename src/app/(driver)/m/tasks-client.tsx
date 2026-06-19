@@ -27,7 +27,7 @@ function isTerminal(s: TaskStatus): boolean {
   return s === "DONE" || s === "CANCELLED";
 }
 
-export function DriverTasksClient() {
+export function DriverTasksClient({ showPayroll = true }: { showPayroll?: boolean }) {
   const today = todayISO();
   const [tab, setTab] = useState<Tab>("today");
   const key = `/api/my/tasks?date=${today}&scope=${tab}`;
@@ -44,12 +44,14 @@ export function DriverTasksClient() {
 
   return (
     <main className="px-3 pb-10 pt-3">
-      {/* Ссылка на личный расчёт зарплаты (Фаза 1.5) */}
-      <div className="mb-3 flex justify-end">
-        <Link href="/m/payroll" className="text-sm font-medium text-neutral-600 underline">
-          Мой расчёт →
-        </Link>
-      </div>
+      {/* Ссылка на личный расчёт зарплаты (Фаза 1.5) — только у водителей с денежным профилем. */}
+      {showPayroll ? (
+        <div className="mb-3 flex justify-end">
+          <Link href="/m/payroll" className="text-sm font-medium text-neutral-600 underline">
+            Мой расчёт →
+          </Link>
+        </div>
+      ) : null}
 
       {/* Вкладки — крупные тач-цели */}
       <div className="mb-3 grid grid-cols-2 gap-1 rounded-xl bg-neutral-100 p-1">

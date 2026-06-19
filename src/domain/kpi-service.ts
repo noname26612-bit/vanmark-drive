@@ -46,6 +46,16 @@ function assertPeriod(period: string): void {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) throw Errors.validation("Период должен быть в формате YYYY-MM");
 }
 
+/**
+ * Водители, участвующие в KPI/зарплате = те, у кого есть АКТИВНЫЙ денежный профиль (isActive).
+ * Это единственный признак участия (CLAUDE.md: не плодим лишних флагов). Внешний перевозчик и
+ * подменный водитель (Николай) профиля не имеют → исключены из детектора, кандидатов и расчёта.
+ */
+async function trackedDriverIds(): Promise<string[]> {
+  const profiles = await prisma.driverPayProfile.findMany({ where: { isActive: true }, select: { driverId: true } });
+  return profiles.map((p) => p.driverId);
+}
+
 const markInclude = {
   task: { select: { number: true, title: true } },
   driver: { select: { name: true } },
@@ -250,9 +260,12 @@ export async function detectCandidatesForDate(
   const scheduledDay = new Date(`${dayKey}T00:00:00.000Z`); // @db.Date хранится UTC-полночью
   const dayEnd = new Date(scheduledDay.getTime() + 24 * 60 * 60 * 1000);
 
+  // Отметки заводим только по водителям, участвующим в KPI (с денежным профилем). Задачи Николая
+  // и внешнего перевозчика детектор пропускает — они вне расчёта (PRD §12, §2).
+  const tracked = await trackedDriverIds();
   const tasks = await prisma.task.findMany({
     where: {
-      assigneeId: { not: null },
+      assigneeId: { in: tracked },
       OR: [{ scheduledDate: scheduledDay }, { completedAt: { gte: scheduledDay, lt: dayEnd } }],
     },
     select: {
@@ -326,7 +339,7 @@ export async function runKpiDetection(): Promise<void> {
 /** Полная картина месяца для экрана Милены: кандидаты + расчёт по каждому активному водителю. */
 export async function getKpiOverview(period: string): Promise<KpiOverview> {
   assertPeriod(period);
-  const [closed, candidates, profiles, config] = await Promise.all([
+  const [closed, allCandidates, profiles, config] = await Promise.all([
     isPeriodClosed(period),
     listMarks(period, { status: "CANDIDATE" }),
     prisma.driverPayProfile.findMany({
@@ -335,6 +348,10 @@ export async function getKpiOverview(period: string): Promise<KpiOverview> {
     }),
     loadKpiConfig(),
   ]);
+  // Показываем кандидатов только по водителям с активным профилем — отметки исторических/внешних
+  // исполнителей без профиля (Николай, внешний перевозчик) не засоряют список (PRD §12, §2).
+  const trackedIds = new Set(profiles.map((p) => p.driverId));
+  const candidates = allCandidates.filter((c) => trackedIds.has(c.driverId));
   const ordered = profiles.sort((a, b) => a.driver.name.localeCompare(b.driver.name, "ru"));
   const drivers = await Promise.all(
     ordered.map((p) => buildPayroll({ id: p.driverId, name: p.driver.name }, p.baseSalary, p.premiumBase, period, config)),
@@ -366,8 +383,13 @@ export async function addManualMark(
   if (!Number.isInteger(input.amount) || input.amount === 0) {
     throw Errors.validation("Сумма должна быть ненулевым целым числом (− штраф, + поощрение)");
   }
-  const driver = await prisma.user.findUnique({ where: { id: input.driverId }, select: { id: true, role: true } });
+  const driver = await prisma.user.findUnique({
+    where: { id: input.driverId },
+    select: { id: true, role: true, payProfile: { select: { isActive: true } } },
+  });
   if (!driver || driver.role !== "DRIVER") throw Errors.validation("Неизвестный водитель");
+  // Ручная отметка KPI — только по водителю, участвующему в расчёте (активный денежный профиль).
+  if (!driver.payProfile?.isActive) throw Errors.validation("Водитель не участвует в KPI/зарплате");
   const now = new Date();
   const created = await prisma.kpiMark.create({
     data: {
@@ -447,6 +469,19 @@ export async function closePeriod(period: string, actor: Actor): Promise<{ close
 }
 
 // ───────────────────────────── Водитель: только свой расчёт (изоляция) ─────────────────────────────
+
+/**
+ * Участвует ли водитель в KPI/зарплате (есть активный денежный профиль). Для скрытия экрана
+ * «Мой расчёт» у штатных не-водителей вроде Николая (PRD §2, §8): зайдя в приложение, он не должен
+ * видеть пустой расчёт с нулями. driverId — только из сессии.
+ */
+export async function isPayrollDriver(driverId: string): Promise<boolean> {
+  const profile = await prisma.driverPayProfile.findUnique({
+    where: { driverId },
+    select: { isActive: true },
+  });
+  return profile?.isActive ?? false;
+}
 
 /** Расчёт водителя. driverId приходит ТОЛЬКО из сессии — чужой расчёт получить нельзя. */
 export async function getMyKpi(driverId: string, period: string): Promise<DriverPayrollView> {

@@ -84,6 +84,7 @@ model User {
   kpiCreatedMarks KpiMark[]          @relation("kpiCreatedBy") // ручные отметки, созданные этим диспетчером
   payProfile      DriverPayProfile?  @relation("payProfile") // денежный профиль (только водители)
   payStatements   PayrollStatement[] @relation("payStatements") // закрытые расчёты за месяцы
+  uiPrefs         UiPreference[] // настройки интерфейса (раскладка доски/планирования)
 }
 
 // Справочник типов задач (PRD §3). Новые типы заводит админ без правки кода.
@@ -407,4 +408,18 @@ model TrafficWindow {
   toMinutes     Int // 07:00 = 420
   factorPercent Int // 100 = ×1.0 … 140 = ×1.4
   sortOrder     Int    @default(0)
+}
+
+// Настройки интерфейса пользователя: персональная раскладка экранов диспетчера (порядок пулов на
+// доске/планировании и свёрнутые пулы). Привязка к пользователю — раскладка одинакова на любом его
+// устройстве. Личность пишется ТОЛЬКО из сессии (CLAUDE.md правило 1). value — JSON-массив строк
+// (ключи пулов в нужном порядке / свёрнутые ключи). Ключи допустимых настроек — в src/domain/ui-prefs.ts.
+model UiPreference {
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key       String // "board.order" | "board.collapsed" | "planning.order"
+  value     Json // string[]
+  updatedAt DateTime @updatedAt
+
+  @@id([userId, key])
 }
