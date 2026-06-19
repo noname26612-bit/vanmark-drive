@@ -34,6 +34,8 @@ export const KPI_SETTINGS = {
   progressionPercent: 110,
   progressionStartIndex: 3,
   floor: "SALARY" as const,
+  actBonusAmount: 5000, // бонус за комплектность актов, ₽ (этап 15, PRD §12.6)
+  actBonusThresholdPercent: 80, // порог комплектности актов для бонуса, %
 };
 
 /** Идемпотентный KPI-сид. Принимает уже сконфигурированный PrismaClient. */
@@ -77,9 +79,11 @@ export async function seedKpi(prisma: PrismaClient): Promise<void> {
       progressionPercent: KPI_SETTINGS.progressionPercent,
       progressionStartIndex: KPI_SETTINGS.progressionStartIndex,
       floor: KPI_SETTINGS.floor,
+      actBonusAmount: KPI_SETTINGS.actBonusAmount,
+      actBonusThresholdPercent: KPI_SETTINGS.actBonusThresholdPercent,
     },
   });
-  console.log("  ✓ настройки расчёта KPI (прогрессия, порог)");
+  console.log("  ✓ настройки расчёта KPI (прогрессия, порог, бонус за акты)");
 }
 
 // Standalone-запуск (`pnpm db:seed:kpi`) — для прода после миграции.

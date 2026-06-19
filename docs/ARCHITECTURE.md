@@ -274,6 +274,8 @@ model KpiSettings {
   progressionPercent    Int         @default(110)  // шаг прогрессии, % (110 = ×1.10)
   progressionStartIndex Int         @default(3)    // с какого по счёту нарушения месяца включается прогрессия
   floor                 PayoutFloor @default(SALARY) // нижний порог итога
+  actBonusAmount           Int      @default(5000) // бонус за комплектность актов, ₽ (этап 15, §12.6)
+  actBonusThresholdPercent Int      @default(80)   // порог комплектности актов для бонуса, %
   updatedAt             DateTime    @updatedAt
 }
 
@@ -287,7 +289,10 @@ model PayrollStatement {
   premiumBase Int                          // снимок премии
   penalty     Int                          // сумма штрафов (положительное число)
   bonus       Int                          // сумма ручных поощрений
-  total       Int                          // итог к выплате (не ниже 0)
+  actBonus    Int      @default(0)         // бонус за комплектность актов (этап 15, §12.6): 0 или actBonusAmount
+  actBase     Int      @default(0)         // знаменатель: завершённые актовые задачи месяца (снимок)
+  actComplete Int      @default(0)         // числитель: из них с приложенным актом (снимок)
+  total       Int                          // итог к выплате (не ниже 0; включает actBonus)
   breakdown   Json                         // детализация по отметкам на момент закрытия
   closedById  String
   closedAt    DateTime @default(now())

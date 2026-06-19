@@ -162,6 +162,8 @@ function SettingsSection() {
   const [percent, setPercent] = useState<string | null>(null);
   const [startIndex, setStartIndex] = useState<string | null>(null);
   const [floor, setFloor] = useState<string | null>(null);
+  const [bonusAmount, setBonusAmount] = useState<string | null>(null);
+  const [bonusThreshold, setBonusThreshold] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -170,10 +172,14 @@ function SettingsSection() {
   const percentVal = percent ?? String(data.progressionPercent);
   const startVal = startIndex ?? String(data.progressionStartIndex);
   const floorVal = floor ?? data.floor;
+  const bonusAmountVal = bonusAmount ?? String(data.actBonusAmount);
+  const bonusThresholdVal = bonusThreshold ?? String(data.actBonusThresholdPercent);
   const dirty =
     Number(percentVal) !== data.progressionPercent ||
     Number(startVal) !== data.progressionStartIndex ||
-    floorVal !== data.floor;
+    floorVal !== data.floor ||
+    Number(bonusAmountVal) !== data.actBonusAmount ||
+    Number(bonusThresholdVal) !== data.actBonusThresholdPercent;
 
   async function save() {
     setError(null);
@@ -183,10 +189,14 @@ function SettingsSection() {
         progressionPercent: Math.trunc(Number(percentVal)),
         progressionStartIndex: Math.trunc(Number(startVal)),
         floor: floorVal,
+        actBonusAmount: Math.trunc(Number(bonusAmountVal)),
+        actBonusThresholdPercent: Math.trunc(Number(bonusThresholdVal)),
       });
       setPercent(null);
       setStartIndex(null);
       setFloor(null);
+      setBonusAmount(null);
+      setBonusThreshold(null);
       await mutate();
     } catch (e) {
       setError((e as Error).message);
@@ -197,7 +207,7 @@ function SettingsSection() {
 
   return (
     <section className="mt-8">
-      <h2 className="text-lg font-semibold text-neutral-900">Прогрессия и порог</h2>
+      <h2 className="text-lg font-semibold text-neutral-900">Прогрессия, порог и бонус за акты</h2>
       <div className="mt-2 grid gap-3 rounded-xl border border-neutral-200 bg-white p-4 sm:grid-cols-2">
         <Field label="Шаг прогрессии, %" hint="110 = каждая следующая ошибка на 10% дороже">
           <Input type="number" min={100} value={percentVal} onChange={(e) => setPercent(e.target.value)} />
@@ -211,7 +221,14 @@ function SettingsSection() {
             <option value="ZERO">Может уйти ниже оклада (не ниже 0)</option>
           </Select>
         </Field>
-        <div className="flex items-end">
+        <div />
+        <Field label="Бонус за комплектность актов, ₽" hint="5000 = +5000 ₽ при достижении порога; 0 — выключить">
+          <Input type="number" min={0} value={bonusAmountVal} onChange={(e) => setBonusAmount(e.target.value)} />
+        </Field>
+        <Field label="Порог комплектности актов, %" hint="80 = бонус при ≥80% актовых задач с актом">
+          <Input type="number" min={1} max={100} value={bonusThresholdVal} onChange={(e) => setBonusThreshold(e.target.value)} />
+        </Field>
+        <div className="flex items-end sm:col-span-2">
           <Button disabled={!dirty || busy} onClick={save}>
             Сохранить
           </Button>

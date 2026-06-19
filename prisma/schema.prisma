@@ -320,11 +320,13 @@ model KpiRule {
 // в БД, потому что админ настраивает прогрессию в UI (PRD §8 экран 5, решение Артёма). Это
 // осознанное уточнение ARCHITECTURE §4а («шаг прогрессии — константа») — зафиксировано в доке.
 model KpiSettings {
-  id                    String      @id @default("singleton") // ровно одна строка
-  progressionPercent    Int         @default(110) // шаг прогрессии, % (110 = ×1.10 на каждую следующую ошибку)
-  progressionStartIndex Int         @default(3) // с какого по счёту нарушения месяца включается прогрессия
-  floor                 PayoutFloor @default(SALARY) // нижний порог итога (решение Артёма)
-  updatedAt             DateTime    @updatedAt
+  id                       String      @id @default("singleton") // ровно одна строка
+  progressionPercent       Int         @default(110) // шаг прогрессии, % (110 = ×1.10 на каждую следующую ошибку)
+  progressionStartIndex    Int         @default(3) // с какого по счёту нарушения месяца включается прогрессия
+  floor                    PayoutFloor @default(SALARY) // нижний порог итога (решение Артёма)
+  actBonusAmount           Int         @default(5000) // бонус за комплектность актов, ₽ (этап 15, PRD §12.6)
+  actBonusThresholdPercent Int         @default(80) // порог комплектности актов для бонуса, % (этап 15)
+  updatedAt                DateTime    @updatedAt
 }
 
 // Снимок расчёта за закрытый месяц (неизменяем). До закрытия расчёт считается на лету из
@@ -338,7 +340,10 @@ model PayrollStatement {
   premiumBase Int // снимок премии
   penalty     Int // сумма штрафов (положительное число)
   bonus       Int // сумма ручных поощрений
-  total       Int // итог к выплате (не ниже нижнего порога)
+  actBonus    Int      @default(0) // бонус за комплектность актов (этап 15, PRD §12.6): 0 или actBonusAmount
+  actBase     Int      @default(0) // знаменатель: завершённые актовые задачи месяца (снимок)
+  actComplete Int      @default(0) // числитель: из них с приложенным актом (снимок)
+  total       Int // итог к выплате (не ниже нижнего порога; включает actBonus)
   breakdown   Json // детализация по отметкам на момент закрытия
   closedById  String // кто закрыл (uuid, без навигации)
   closedAt    DateTime @default(now())

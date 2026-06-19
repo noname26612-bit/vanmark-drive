@@ -24,10 +24,28 @@ export async function PUT(req: Request) {
     const progressionPercent = typeof body.progressionPercent === "number" ? body.progressionPercent : NaN;
     const progressionStartIndex = typeof body.progressionStartIndex === "number" ? body.progressionStartIndex : NaN;
     const floor = body.floor === "ZERO" ? "ZERO" : "SALARY";
-    if (!Number.isFinite(progressionPercent) || !Number.isFinite(progressionStartIndex)) {
-      throw Errors.validation("Шаг прогрессии и порог должны быть числами");
+    const actBonusAmount = typeof body.actBonusAmount === "number" ? body.actBonusAmount : NaN;
+    const actBonusThresholdPercent =
+      typeof body.actBonusThresholdPercent === "number" ? body.actBonusThresholdPercent : NaN;
+    if (
+      !Number.isFinite(progressionPercent) ||
+      !Number.isFinite(progressionStartIndex) ||
+      !Number.isFinite(actBonusAmount) ||
+      !Number.isFinite(actBonusThresholdPercent)
+    ) {
+      throw Errors.validation("Параметры расчёта и бонуса должны быть числами");
     }
-    return NextResponse.json(ok(await updateKpiSettings({ progressionPercent, progressionStartIndex, floor })));
+    return NextResponse.json(
+      ok(
+        await updateKpiSettings({
+          progressionPercent,
+          progressionStartIndex,
+          floor,
+          actBonusAmount,
+          actBonusThresholdPercent,
+        }),
+      ),
+    );
   } catch (e) {
     return errorResponse(e);
   }

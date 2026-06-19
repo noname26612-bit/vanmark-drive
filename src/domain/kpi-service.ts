@@ -7,6 +7,8 @@ import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
 import {
   computePay,
+  computeActBonus,
+  periodBoundsUtc,
   detectLate,
   detectUnsignedDoc,
   detectMissedStop,
@@ -15,6 +17,7 @@ import {
   type CalcConfig,
   type CalcMark,
   type BreakdownItem,
+  type ActBonusResult,
 } from "./kpi";
 import type { KpiMarkKind, KpiMarkStatus, PayoutFloor } from "@/generated/prisma/enums";
 import type {
@@ -87,23 +90,50 @@ function toCalcMark(m: MarkRow): CalcMark {
   return { id: m.id, kind: m.kind, occurredAt: m.occurredAt, manualAmount: m.manualAmount, taskId: m.taskId, note: m.note };
 }
 
+// Полный конфиг расчёта: штрафная арифметика (CalcConfig) + параметры бонуса за комплектность (этап 15).
+type KpiConfig = { calc: CalcConfig; actBonusAmount: number; actBonusThresholdPercent: number };
+
 /** Денежные правила и настройки расчёта из БД (с дефолтами на случай неполного сида). */
-async function loadKpiConfig(): Promise<CalcConfig> {
+async function loadKpiConfig(): Promise<KpiConfig> {
   const [rules, settings] = await Promise.all([
     prisma.kpiRule.findMany(),
     prisma.kpiSettings.findUnique({ where: { id: "singleton" } }),
   ]);
   const weight = (kind: KpiMarkKind, def: number) => rules.find((r) => r.kind === kind)?.weight ?? def;
   return {
-    weights: {
-      LATE: weight("LATE", 500),
-      UNSIGNED_DOCS: weight("UNSIGNED_DOCS", 1000),
-      MISSED_STOP: weight("MISSED_STOP", 500),
+    calc: {
+      weights: {
+        LATE: weight("LATE", 500),
+        UNSIGNED_DOCS: weight("UNSIGNED_DOCS", 1000),
+        MISSED_STOP: weight("MISSED_STOP", 500),
+      },
+      progressionPercent: settings?.progressionPercent ?? 110,
+      progressionStartIndex: settings?.progressionStartIndex ?? 3,
+      floor: (settings?.floor as PayoutFloor) ?? "SALARY",
     },
-    progressionPercent: settings?.progressionPercent ?? 110,
-    progressionStartIndex: settings?.progressionStartIndex ?? 3,
-    floor: (settings?.floor as PayoutFloor) ?? "SALARY",
+    actBonusAmount: settings?.actBonusAmount ?? 5000,
+    actBonusThresholdPercent: settings?.actBonusThresholdPercent ?? 80,
   };
+}
+
+/**
+ * Счётчики комплектности актов за месяц (этап 15, PRD §12.6). База — завершённые за период задачи,
+ * по которым акт фактически требуется (Task.requiresSignedDoc=true; учитывает галочку «акт не нужен»,
+ * §4). Комплект — из них с приложенным подписанным актом (DOCUMENT-вложение, тот же признак, что у
+ * детектора UNSIGNED_DOCS). Период — по completedAt в границах месяца (МСК).
+ */
+async function getActCompletenessCounts(driverId: string, period: string): Promise<{ base: number; complete: number }> {
+  const { start, end } = periodBoundsUtc(period);
+  const tasks = await prisma.task.findMany({
+    where: {
+      assigneeId: driverId,
+      status: "DONE",
+      requiresSignedDoc: true,
+      completedAt: { gte: start, lt: end },
+    },
+    select: { _count: { select: { attachments: { where: { kind: "DOCUMENT" } } } } },
+  });
+  return { base: tasks.length, complete: tasks.filter((t) => t._count.attachments > 0).length };
 }
 
 async function listMarks(period: string, filter: { driverId?: string; status?: KpiMarkStatus } = {}): Promise<MarkView[]> {
@@ -124,12 +154,33 @@ async function isPeriodClosed(period: string): Promise<boolean> {
 }
 
 /** Расчёт одного водителя: закрытый месяц — из снимка, открытый — на лету из CONFIRMED-отметок. */
+// Реконструкция бонуса за комплектность из снимка закрытого месяца (значение зафиксировано, §12.4).
+// Сумма для показа берётся из снимка (начисленный value), а не из ТЕКУЩИХ настроек — иначе после
+// смены настроек закрытый месяц показывал бы неисторическую сумму. missing=0 — месяц финализирован.
+function snapshotActBonus(
+  snap: { actBase: number; actComplete: number; actBonus: number },
+  config: KpiConfig,
+): ActBonusResult {
+  const { actBase: base, actComplete: complete, actBonus: value } = snap;
+  return {
+    base,
+    complete,
+    percent: base > 0 ? Math.round((complete / base) * 100) : 0,
+    thresholdPercent: config.actBonusThresholdPercent,
+    amount: value > 0 ? value : config.actBonusAmount, // начислено → историческая сумма из снимка
+    awarded: value > 0,
+    value,
+    requiredComplete: base > 0 ? Math.ceil((config.actBonusThresholdPercent * base) / 100) : 0,
+    missing: 0, // закрытый месяц финализирован — «не хватает» не показываем
+  };
+}
+
 async function buildPayroll(
   driver: { id: string; name: string },
   baseSalary: number,
   premiumBase: number,
   period: string,
-  config: CalcConfig,
+  config: KpiConfig,
 ): Promise<DriverPayrollView> {
   const [snap, marks] = await Promise.all([
     prisma.payrollStatement.findUnique({ where: { driverId_period: { driverId: driver.id, period } } }),
@@ -145,18 +196,28 @@ async function buildPayroll(
       premiumBase: snap.premiumBase,
       penalty: snap.penalty,
       bonus: snap.bonus,
+      actBonus: snapshotActBonus(snap, config),
       premiumAfter: snap.premiumBase - snap.penalty,
       total: snap.total,
       breakdown: (snap.breakdown as unknown as BreakdownItem[]) ?? [],
       marks,
     };
   }
-  const confirmed = await prisma.kpiMark.findMany({
-    where: { driverId: driver.id, period, status: "CONFIRMED" },
-    include: markInclude,
-    orderBy: { occurredAt: "asc" },
+  const [confirmed, counts] = await Promise.all([
+    prisma.kpiMark.findMany({
+      where: { driverId: driver.id, period, status: "CONFIRMED" },
+      include: markInclude,
+      orderBy: { occurredAt: "asc" },
+    }),
+    getActCompletenessCounts(driver.id, period),
+  ]);
+  const r = computePay({ baseSalary, premiumBase, marks: confirmed.map(toCalcMark), config: config.calc });
+  const actBonus = computeActBonus({
+    base: counts.base,
+    complete: counts.complete,
+    thresholdPercent: config.actBonusThresholdPercent,
+    amount: config.actBonusAmount,
   });
-  const r = computePay({ baseSalary, premiumBase, marks: confirmed.map(toCalcMark), config });
   return {
     driverId: driver.id,
     driverName: driver.name,
@@ -166,8 +227,9 @@ async function buildPayroll(
     premiumBase: r.premiumBase,
     penalty: r.penalty,
     bonus: r.bonus,
+    actBonus,
     premiumAfter: r.premiumAfter,
-    total: r.total,
+    total: r.total + actBonus.value, // бонус за комплектность — сверх формулы §12.3
     breakdown: r.breakdown,
     marks,
   };
@@ -337,10 +399,13 @@ export async function closePeriod(period: string, actor: Actor): Promise<{ close
 
   const rows = [];
   for (const p of profiles) {
-    const marks = await prisma.kpiMark.findMany({
-      where: { driverId: p.driverId, period, status: "CONFIRMED" },
-      orderBy: { occurredAt: "asc" },
-    });
+    const [marks, counts] = await Promise.all([
+      prisma.kpiMark.findMany({
+        where: { driverId: p.driverId, period, status: "CONFIRMED" },
+        orderBy: { occurredAt: "asc" },
+      }),
+      getActCompletenessCounts(p.driverId, period),
+    ]);
     const r = computePay({
       baseSalary: p.baseSalary,
       premiumBase: p.premiumBase,
@@ -352,7 +417,13 @@ export async function closePeriod(period: string, actor: Actor): Promise<{ close
         taskId: m.taskId,
         note: m.note,
       })),
-      config,
+      config: config.calc,
+    });
+    const actBonus = computeActBonus({
+      base: counts.base,
+      complete: counts.complete,
+      thresholdPercent: config.actBonusThresholdPercent,
+      amount: config.actBonusAmount,
     });
     rows.push({
       driverId: p.driverId,
@@ -361,7 +432,10 @@ export async function closePeriod(period: string, actor: Actor): Promise<{ close
       premiumBase: r.premiumBase,
       penalty: r.penalty,
       bonus: r.bonus,
-      total: r.total,
+      actBonus: actBonus.value,
+      actBase: actBonus.base,
+      actComplete: actBonus.complete,
+      total: r.total + actBonus.value, // бонус за комплектность — сверх §12.3 (этап 15)
       breakdown: r.breakdown as unknown as object,
       closedById: actor.id,
     });
@@ -458,6 +532,8 @@ export async function getKpiSettings(): Promise<KpiSettingsView> {
     progressionPercent: s?.progressionPercent ?? 110,
     progressionStartIndex: s?.progressionStartIndex ?? 3,
     floor: (s?.floor as PayoutFloor) ?? "SALARY",
+    actBonusAmount: s?.actBonusAmount ?? 5000,
+    actBonusThresholdPercent: s?.actBonusThresholdPercent ?? 80,
   };
 }
 
@@ -465,18 +541,25 @@ export async function updateKpiSettings(input: {
   progressionPercent: number;
   progressionStartIndex: number;
   floor: PayoutFloor;
+  actBonusAmount: number;
+  actBonusThresholdPercent: number;
 }): Promise<KpiSettingsView> {
   const progressionPercent = Math.min(1000, Math.max(100, Math.trunc(input.progressionPercent))); // ≥100% (без прогрессии — 100)
   const progressionStartIndex = Math.max(1, Math.trunc(input.progressionStartIndex));
   const floor: PayoutFloor = input.floor === "ZERO" ? "ZERO" : "SALARY";
+  const actBonusAmount = Math.max(0, Math.trunc(input.actBonusAmount)); // ₽; 0 — бонус выключен
+  const actBonusThresholdPercent = Math.min(100, Math.max(1, Math.trunc(input.actBonusThresholdPercent))); // 1..100%
+  const data = { progressionPercent, progressionStartIndex, floor, actBonusAmount, actBonusThresholdPercent };
   const saved = await prisma.kpiSettings.upsert({
     where: { id: "singleton" },
-    update: { progressionPercent, progressionStartIndex, floor },
-    create: { id: "singleton", progressionPercent, progressionStartIndex, floor },
+    update: data,
+    create: { id: "singleton", ...data },
   });
   return {
     progressionPercent: saved.progressionPercent,
     progressionStartIndex: saved.progressionStartIndex,
     floor: saved.floor as PayoutFloor,
+    actBonusAmount: saved.actBonusAmount,
+    actBonusThresholdPercent: saved.actBonusThresholdPercent,
   };
 }

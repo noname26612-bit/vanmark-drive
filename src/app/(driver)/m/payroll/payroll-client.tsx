@@ -5,7 +5,7 @@ import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
 import { formatMoney, formatDate, formatPeriod, shiftPeriod } from "@/lib/task-ui";
-import { KPI_KIND_LABEL, KPI_KIND_BADGE } from "@/lib/kpi-dto";
+import { KPI_KIND_LABEL, KPI_KIND_BADGE, actBonusSummary } from "@/lib/kpi-dto";
 import type { DriverPayrollView } from "@/lib/kpi-dto";
 import { Badge } from "@/components/ui/badge";
 
@@ -86,7 +86,16 @@ function PayrollBody({ data }: { data: DriverPayrollView }) {
             <span className="text-right text-green-700">+{formatMoney(data.bonus)}</span>
           </>
         ) : null}
+        {data.actBonus.value > 0 ? (
+          <>
+            <span className="text-neutral-600">Бонус за акты</span>
+            <span className="text-right text-green-700">+{formatMoney(data.actBonus.value)}</span>
+          </>
+        ) : null}
       </div>
+
+      {/* Прогресс бонуса за комплектность актов (этап 15, PRD §12.6) */}
+      {data.actBonus.base > 0 || data.actBonus.value > 0 ? <ActBonusNote data={data} /> : null}
 
       {/* Мои нарушения и отметки */}
       <h2 className="mt-6 px-1 text-sm font-semibold uppercase tracking-wide text-neutral-400">
@@ -123,4 +132,15 @@ function PayrollBody({ data }: { data: DriverPayrollView }) {
       )}
     </>
   );
+}
+
+function ActBonusNote({ data }: { data: DriverPayrollView }) {
+  const s = actBonusSummary(data.actBonus);
+  const tone =
+    s.tone === "green"
+      ? "border-green-200 bg-green-50 text-green-800"
+      : s.tone === "amber"
+        ? "border-amber-200 bg-amber-50 text-amber-800"
+        : "border-neutral-200 bg-neutral-50 text-neutral-600";
+  return <p className={`mt-3 rounded-xl border px-3 py-3 text-sm font-medium ${tone}`}>{s.text}</p>;
 }

@@ -4,7 +4,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { fetcher, apiSend } from "@/lib/fetcher";
 import { formatMoney, formatDate, formatPeriod, shiftPeriod } from "@/lib/task-ui";
-import { KPI_KIND_LABEL, KPI_KIND_BADGE } from "@/lib/kpi-dto";
+import { KPI_KIND_LABEL, KPI_KIND_BADGE, actBonusSummary } from "@/lib/kpi-dto";
 import type { KpiOverview, MarkView, DriverPayrollView } from "@/lib/kpi-dto";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -222,7 +222,14 @@ function DriverCard({
         <span className={`text-right ${driver.bonus > 0 ? "text-green-700" : ""}`}>
           {driver.bonus > 0 ? `+${formatMoney(driver.bonus)}` : "—"}
         </span>
+        <span>Бонус за акты</span>
+        <span className={`text-right ${driver.actBonus.value > 0 ? "text-green-700" : ""}`}>
+          {driver.actBonus.value > 0 ? `+${formatMoney(driver.actBonus.value)}` : "—"}
+        </span>
       </div>
+
+      {/* Прогресс бонуса за комплектность актов (этап 15, PRD §12.6) */}
+      {driver.actBonus.base > 0 || driver.actBonus.value > 0 ? <ActBonusLine driver={driver} /> : null}
 
       <div className="mt-3 flex items-center gap-2">
         <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => setOpen((v) => !v)}>
@@ -261,6 +268,17 @@ function DriverCard({
       ) : null}
     </div>
   );
+}
+
+function ActBonusLine({ driver }: { driver: DriverPayrollView }) {
+  const s = actBonusSummary(driver.actBonus);
+  const tone =
+    s.tone === "green"
+      ? "border-green-200 bg-green-50 text-green-800"
+      : s.tone === "amber"
+        ? "border-amber-200 bg-amber-50 text-amber-800"
+        : "border-neutral-200 bg-neutral-50 text-neutral-600";
+  return <p className={`mt-2 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${tone}`}>{s.text}</p>;
 }
 
 function ManualMarkModal({

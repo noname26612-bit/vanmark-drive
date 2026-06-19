@@ -10,6 +10,8 @@ import {
   detectUnsignedDoc,
   detectMissedStop,
   computePay,
+  computeActBonus,
+  periodBoundsUtc,
   type CalcConfig,
   type CalcMark,
 } from "./kpi";
@@ -309,5 +311,83 @@ describe("kpi — computePay: порядок и breakdown", () => {
     expect(r.breakdown).toHaveLength(3);
     const late = r.breakdown.find((b) => b.kind === "LATE");
     expect(late?.amount).toBe(-500);
+  });
+});
+
+// ───────────────────────────── Бонус за комплектность актов (этап 15, §12.6) ─────────────────────────────
+
+describe("computeActBonus — бонус за комплектность актов", () => {
+  const cfg = { thresholdPercent: 80, amount: 5000 };
+
+  it("база 0 (нет актовых задач) → не начисляется, нейтрально", () => {
+    const r = computeActBonus({ base: 0, complete: 0, ...cfg });
+    expect(r.awarded).toBe(false);
+    expect(r.value).toBe(0);
+    expect(r.percent).toBe(0);
+    expect(r.missing).toBe(0);
+  });
+
+  it("пример §12.6: 17/20 = 85% ≥ 80% → +5000", () => {
+    const r = computeActBonus({ base: 20, complete: 17, ...cfg });
+    expect(r.percent).toBe(85);
+    expect(r.awarded).toBe(true);
+    expect(r.value).toBe(5000);
+    expect(r.missing).toBe(0);
+  });
+
+  it("ровно порог: 16/20 = 80% → начисляется (≥ включительно)", () => {
+    const r = computeActBonus({ base: 20, complete: 16, ...cfg });
+    expect(r.percent).toBe(80);
+    expect(r.awarded).toBe(true);
+    expect(r.value).toBe(5000);
+  });
+
+  it("пример §12.6: 72% → не начислен, «не хватает 2 актов»", () => {
+    const r = computeActBonus({ base: 25, complete: 18, ...cfg });
+    expect(r.percent).toBe(72);
+    expect(r.awarded).toBe(false);
+    expect(r.value).toBe(0);
+    expect(r.requiredComplete).toBe(20); // ⌈80%·25⌉ = 20
+    expect(r.missing).toBe(2);
+  });
+
+  it("сравнение точное, не по округлённому проценту: 796/1000 = 79.6% (округляется до 80, но НЕ начисляется)", () => {
+    const r = computeActBonus({ base: 1000, complete: 796, ...cfg });
+    expect(r.percent).toBe(80); // display округляет
+    expect(r.awarded).toBe(false); // но 796 < ⌈0.8·1000⌉ = 800
+    expect(r.requiredComplete).toBe(800);
+    expect(r.missing).toBe(4);
+    expect(computeActBonus({ base: 1000, complete: 800, ...cfg }).awarded).toBe(true);
+  });
+
+  it("complete не больше base (защита): 25/20 → клемпится к 20/20 = 100% → начислен", () => {
+    const r = computeActBonus({ base: 20, complete: 25, ...cfg });
+    expect(r.complete).toBe(20);
+    expect(r.percent).toBe(100);
+    expect(r.awarded).toBe(true);
+  });
+
+  it("сумма 0 (бонус выключен): порог пройден, но начислять нечего", () => {
+    const r = computeActBonus({ base: 10, complete: 10, thresholdPercent: 80, amount: 0 });
+    expect(r.awarded).toBe(true);
+    expect(r.value).toBe(0);
+  });
+});
+
+describe("periodBoundsUtc — границы месяца (МСК), согласованы с periodOf", () => {
+  it("июнь 2026: [start, end) и принадлежность через periodOf", () => {
+    const { start, end } = periodBoundsUtc("2026-06");
+    // локальная полночь МСК = UTC−3ч
+    expect(start.toISOString()).toBe("2026-05-31T21:00:00.000Z");
+    expect(end.toISOString()).toBe("2026-06-30T21:00:00.000Z");
+    expect(periodOf(start, TZ)).toBe("2026-06");
+    expect(periodOf(new Date(end.getTime() - 1), TZ)).toBe("2026-06");
+    expect(periodOf(end, TZ)).toBe("2026-07"); // конец полуинтервала уже в июле
+  });
+
+  it("декабрь → переход через год", () => {
+    const { start, end } = periodBoundsUtc("2026-12");
+    expect(start.toISOString()).toBe("2026-11-30T21:00:00.000Z");
+    expect(end.toISOString()).toBe("2026-12-31T21:00:00.000Z");
   });
 });

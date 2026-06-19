@@ -1,9 +1,12 @@
 // Сериализуемые типы KPI для границы сервер↔клиент (как task-dto). Без импортов prisma-клиента,
 // чтобы безопасно использоваться в клиентских компонентах. Источник арифметики — src/domain/kpi.ts.
 import type { KpiMarkKind, KpiMarkStatus, PayoutFloor } from "@/generated/prisma/enums";
-import type { BreakdownItem } from "@/domain/kpi";
+import type { BreakdownItem, ActBonusResult } from "@/domain/kpi";
 
-export type { BreakdownItem };
+export type { BreakdownItem, ActBonusResult };
+
+// Бонус за комплектность актов в расчёте водителя (этап 15, PRD §12.6).
+export type ActBonusView = ActBonusResult;
 
 export type MarkView = {
   id: string;
@@ -31,8 +34,9 @@ export type DriverPayrollView = {
   premiumBase: number;
   penalty: number;
   bonus: number;
+  actBonus: ActBonusView; // бонус за комплектность актов (этап 15, PRD §12.6)
   premiumAfter: number;
-  total: number;
+  total: number; // включает actBonus.value
   breakdown: BreakdownItem[];
   marks: MarkView[];
 };
@@ -59,6 +63,8 @@ export type KpiSettingsView = {
   progressionPercent: number;
   progressionStartIndex: number;
   floor: PayoutFloor;
+  actBonusAmount: number; // сумма бонуса за комплектность актов, ₽ (этап 15)
+  actBonusThresholdPercent: number; // порог комплектности для бонуса, % (этап 15)
 };
 
 // Подписи видов нарушений для интерфейса (русский, кратко).
@@ -76,3 +82,32 @@ export const KPI_KIND_BADGE: Record<KpiMarkKind, string> = {
   MISSED_STOP: "bg-amber-100 text-amber-800",
   MANUAL: "bg-slate-100 text-slate-700",
 };
+
+// Русское склонение числительного: pluralRu(2, ["акт","акта","актов"]) → "акта".
+function pluralRu(n: number, forms: [string, string, string]): string {
+  const a = Math.abs(n) % 100;
+  const b = a % 10;
+  if (a > 10 && a < 20) return forms[2];
+  if (b > 1 && b < 5) return forms[1];
+  if (b === 1) return forms[0];
+  return forms[2];
+}
+
+// Текст и тон прогресса бонуса за комплектность актов (этап 15, PRD §12.6) — для водителя и Милены.
+export function actBonusSummary(ab: ActBonusView): { text: string; tone: "green" | "amber" | "neutral" } {
+  const amount = ab.amount.toLocaleString("ru-RU");
+  if (ab.base === 0) {
+    return { text: "За месяц нет актовых задач — бонус не считается", tone: "neutral" };
+  }
+  const ratio = `Акты ${ab.complete}/${ab.base} = ${ab.percent}%`;
+  if (ab.awarded) {
+    return { text: `${ratio} → бонус ${amount} ₽ начислен`, tone: "green" };
+  }
+  // Закрытый месяц финализирован (missing=0) — без «не хватает», бонус просто не начислен.
+  if (ab.missing === 0) {
+    return { text: `${ratio} — бонус за акты не начислен`, tone: "neutral" };
+  }
+  // «ещё N актов» — счётное (именительное) сочетание, обычная парадигма склонения.
+  const acts = pluralRu(ab.missing, ["акт", "акта", "актов"]);
+  return { text: `${ratio} — ещё ${ab.missing} ${acts} до бонуса ${amount} ₽`, tone: "amber" };
+}

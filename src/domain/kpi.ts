@@ -52,6 +52,22 @@ export function utcDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+/**
+ * Границы месяца «YYYY-MM» как UTC-моменты [start, end) — для выборки задач по completedAt.
+ * Москва фиксированный UTC+3 (как и весь модуль KPI), поэтому локальная полночь = `...+03:00`.
+ * Согласовано с periodOf(): задача попадает в период ⇔ её completedAt в [start, end).
+ */
+export function periodBoundsUtc(period: string): { start: Date; end: Date } {
+  const [y, m] = period.split("-").map(Number);
+  const ny = m === 12 ? y + 1 : y;
+  const nm = m === 12 ? 1 : m + 1;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return {
+    start: new Date(`${y}-${pad(m)}-01T00:00:00.000+03:00`),
+    end: new Date(`${ny}-${pad(nm)}-01T00:00:00.000+03:00`),
+  };
+}
+
 /** Полдень UTC указанного календарного дня — безопасный «момент дня» вдали от границ зоны. */
 export function noonUtc(dateKey: string): Date {
   return new Date(`${dateKey}T12:00:00.000Z`);
@@ -279,4 +295,53 @@ export function computePay(input: {
       : Math.max(0, baseSalary + premiumAfter + bonus);
 
   return { baseSalary, premiumBase, penalty, bonus, premiumAfter, total, breakdown };
+}
+
+// ───────────────────────────── Бонус за комплектность актов (этап 15, PRD §12.6) ─────────────────────────────
+
+export type ActBonusInput = {
+  base: number; // завершённые за месяц задачи, по которым акт фактически требуется (знаменатель)
+  complete: number; // из них с приложенным подписанным актом (числитель)
+  thresholdPercent: number; // порог комплектности, % (по умолчанию 80)
+  amount: number; // сумма бонуса, ₽ (по умолчанию 5000)
+};
+
+export type ActBonusResult = {
+  base: number;
+  complete: number;
+  percent: number; // округлённый процент для показа (display-only)
+  thresholdPercent: number;
+  amount: number; // настроенная сумма бонуса (эхо конфига)
+  awarded: boolean; // начислен ли бонус
+  value: number; // фактически начислено: awarded ? amount : 0
+  requiredComplete: number; // сколько актов нужно для порога при текущей базе
+  missing: number; // сколько ещё актов не хватает до порога (0, если начислен или база=0)
+};
+
+/**
+ * Бонус за комплектность актов (PRD §12.6): если доля задач с приложенным актом ≥ порога — +amount.
+ * База = 0 (за месяц нет актовых задач) → бонус не начисляется (нейтрально, без штрафа).
+ * Сравнение с порогом — точное (целочисленное), без потери на округлении: complete/base ≥ threshold/100.
+ */
+export function computeActBonus(i: ActBonusInput): ActBonusResult {
+  const base = Math.max(0, Math.trunc(i.base));
+  const complete = Math.max(0, Math.min(base, Math.trunc(i.complete)));
+  const threshold = Math.max(0, Math.trunc(i.thresholdPercent));
+  const amount = Math.max(0, Math.trunc(i.amount));
+  const percent = base > 0 ? Math.round((complete / base) * 100) : 0;
+  // requiredComplete = ⌈threshold·base/100⌉; complete ≥ requiredComplete ⇔ complete/base ≥ threshold/100.
+  const requiredComplete = base > 0 ? Math.ceil((threshold * base) / 100) : 0;
+  const awarded = base > 0 && complete >= requiredComplete;
+  const missing = awarded || base === 0 ? 0 : Math.max(0, requiredComplete - complete);
+  return {
+    base,
+    complete,
+    percent,
+    thresholdPercent: threshold,
+    amount,
+    awarded,
+    value: awarded ? amount : 0,
+    requiredComplete,
+    missing,
+  };
 }
