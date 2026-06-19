@@ -20,18 +20,33 @@ function clean(v: string | null | undefined): string | null {
 
 // ───────────────────────────── Справочник работ ─────────────────────────────
 
+// Справочник для ВОДИТЕЛЯ: только id+name — цену-подсказку (defaultPrice) водителю НЕ отдаём
+// (PRD §13: водитель не формирует и не видит цены до расценки). Цены — у диспетчера/админа.
 export function listWorkCatalog() {
   return prisma.workCatalogItem.findMany({
     where: { isActive: true },
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    select: { id: true, name: true },
   });
 }
 
+// Полный справочник для АДМИНА (включая defaultPrice и скрытые позиции).
 export function listAllWorkCatalog() {
   return prisma.workCatalogItem.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] });
 }
 
-export type WorkCatalogInput = { name: string; isActive?: boolean; sortOrder?: number };
+export type WorkCatalogInput = {
+  name: string;
+  isActive?: boolean;
+  sortOrder?: number;
+  defaultPrice?: number | null; // цена-подсказка ₽/ед (этап «справочник»): null — без подсказки
+};
+
+// Нормализует цену-подсказку: null оставляем, число — целое ≥0.
+function cleanPrice(v: number | null | undefined): number | null {
+  if (v === null || v === undefined) return null;
+  return Math.max(0, Math.trunc(v));
+}
 
 export async function createWorkCatalogItem(input: Partial<WorkCatalogInput>, actor: { role: Role }) {
   assertAdmin(actor.role);
@@ -41,7 +56,12 @@ export async function createWorkCatalogItem(input: Partial<WorkCatalogInput>, ac
     throw Errors.validation("Работа с таким названием уже есть");
   }
   return prisma.workCatalogItem.create({
-    data: { name, sortOrder: input.sortOrder ?? 0, isActive: input.isActive ?? true },
+    data: {
+      name,
+      sortOrder: input.sortOrder ?? 0,
+      isActive: input.isActive ?? true,
+      defaultPrice: cleanPrice(input.defaultPrice),
+    },
   });
 }
 
@@ -49,7 +69,7 @@ export async function updateWorkCatalogItem(id: string, input: Partial<WorkCatal
   assertAdmin(actor.role);
   const existing = await prisma.workCatalogItem.findUnique({ where: { id } });
   if (!existing) throw Errors.notFound();
-  const data: { name?: string; isActive?: boolean; sortOrder?: number } = {};
+  const data: { name?: string; isActive?: boolean; sortOrder?: number; defaultPrice?: number | null } = {};
   if (input.name !== undefined) {
     const name = clean(input.name);
     if (!name) throw Errors.validation("Название работы не может быть пустым");
@@ -60,6 +80,7 @@ export async function updateWorkCatalogItem(id: string, input: Partial<WorkCatal
   }
   if (input.isActive !== undefined) data.isActive = input.isActive;
   if (input.sortOrder !== undefined) data.sortOrder = input.sortOrder;
+  if (input.defaultPrice !== undefined) data.defaultPrice = cleanPrice(input.defaultPrice);
   return prisma.workCatalogItem.update({ where: { id }, data });
 }
 

@@ -37,5 +37,11 @@ export function parseWorkCatalogInput(body: Record<string, unknown>): Partial<Wo
   if (typeof body.name === "string") out.name = body.name;
   if (typeof body.isActive === "boolean") out.isActive = body.isActive;
   if (typeof body.sortOrder === "number") out.sortOrder = Math.trunc(body.sortOrder);
+  // Цена-подсказка: число (₽) или null (очистить). Прочее (undefined/строка) — поле не трогаем.
+  if ("defaultPrice" in body) {
+    const v = body.defaultPrice;
+    if (v === null) out.defaultPrice = null;
+    else if (typeof v === "number" && Number.isFinite(v)) out.defaultPrice = Math.trunc(v);
+  }
   return out;
 }

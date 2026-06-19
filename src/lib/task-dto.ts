@@ -82,9 +82,13 @@ export type AttachmentDTO = {
   createdAt: string;
 };
 
-export type WorkCatalogItemDTO = { id: string; name: string };
+export type WorkCatalogItemDTO = { id: string; name: string }; // для водителя: без цены (PRD §13)
 
-export type WorkCatalogFullDTO = WorkCatalogItemDTO & { isActive: boolean; sortOrder: number };
+export type WorkCatalogFullDTO = WorkCatalogItemDTO & {
+  isActive: boolean;
+  sortOrder: number;
+  defaultPrice: number | null; // цена-подсказка ₽/ед — только для админа/диспетчера
+};
 
 export type WorkItemDTO = {
   id: string;

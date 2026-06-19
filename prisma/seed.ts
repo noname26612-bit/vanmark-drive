@@ -59,19 +59,27 @@ const TASK_TYPES: { name: string; icon: string; requiresSignedDoc: boolean; requ
   { name: "Прочее", icon: "ellipsis", requiresSignedDoc: false, requiresPricing: false },
 ];
 
-// Стартовый справочник работ для ведомости (этап 12, PRD §13.3). Артём дополнит под реальные
-// работы VanMark через админку — здесь generic-набор, чтобы экран был не пустой. Upsert по name.
-const WORK_CATALOG: string[] = [
-  "Выезд мастера",
-  "Диагностика оборудования",
-  "Ремонт гидравлики",
-  "Замена ножа",
-  "Замена матрицы",
-  "Настройка зазоров",
-  "Замена подшипника",
-  "Пусконаладка",
-  "Обучение оператора",
-  "Замена электрооборудования",
+// Справочник работ для ведомости (PRD §13.3). ЧЕРНОВИК структуры (заменяет прежний demo-набор):
+// реальные названия и цены VanMark Артём правит в /admin/work-catalog (цена-подсказка редактируется
+// там же) либо присылает списком для сида. price — цена-подсказка ₽/ед (опционально).
+// Сид — первичный загрузчик: create ставит цену, update её НЕ перетирает (источник цен — админка).
+const WORK_CATALOG: { name: string; price?: number }[] = [
+  { name: "Выезд мастера" },
+  { name: "Диагностика на объекте" },
+  { name: "Замена ножа" },
+  { name: "Заточка ножа" },
+  { name: "Настройка зазоров / прижима" },
+  { name: "Калибровка станка" },
+  { name: "Ремонт / замена привода" },
+  { name: "Замена ремня" },
+  { name: "Замена подшипника" },
+  { name: "Ремонт каретки / направляющих" },
+  { name: "Пусконаладка после ремонта" },
+  { name: "Нож (запчасть)" },
+  { name: "Ремень привода (запчасть)" },
+  { name: "Подшипник (запчасть)" },
+  { name: "Дог. машинка (узел)" },
+  { name: "Размотчик (узел)" },
 ];
 
 // KPI / зарплата (Фаза 1.5): дефолты и логика — в prisma/seed-kpi.ts (там же безопасный
@@ -116,14 +124,22 @@ async function main(defaultPassword: string): Promise<void> {
   }
   console.log(`  ✓ типы задач: ${TASK_TYPES.length}`);
 
-  for (const [i, name] of WORK_CATALOG.entries()) {
+  for (const [i, item] of WORK_CATALOG.entries()) {
     await prisma.workCatalogItem.upsert({
-      where: { name },
+      where: { name: item.name },
+      // update НЕ трогает defaultPrice — цены настраивает админ в UI (PRD §13.3); сид их не перетирает.
       update: { sortOrder: i + 1, isActive: true },
-      create: { name, sortOrder: i + 1 },
+      create: { name: item.name, sortOrder: i + 1, defaultPrice: item.price ?? null },
     });
   }
-  console.log(`  ✓ справочник работ: ${WORK_CATALOG.length}`);
+  // Деактивируем работы, которых нет в актуальном списке (прежний demo-набор) — НЕ удаляем,
+  // чтобы не порвать ссылки уже заполненных ведомостей (WorkItem.catalogItemId).
+  const catalogNames = WORK_CATALOG.map((w) => w.name);
+  const deactivated = await prisma.workCatalogItem.updateMany({
+    where: { name: { notIn: catalogNames }, isActive: true },
+    data: { isActive: false },
+  });
+  console.log(`  ✓ справочник работ: ${WORK_CATALOG.length} активных, деактивировано прежних: ${deactivated.count}`);
 
   await seedKpi(prisma);
 }

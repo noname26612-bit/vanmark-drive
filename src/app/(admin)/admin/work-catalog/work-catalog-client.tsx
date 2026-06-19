@@ -15,6 +15,7 @@ export function WorkCatalogClient({ initial }: { initial: WorkCatalogFullDTO[] }
     { fallbackData: initial },
   );
   const [newName, setNewName] = useState("");
+  const [newPrice, setNewPrice] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -23,8 +24,13 @@ export function WorkCatalogClient({ initial }: { initial: WorkCatalogFullDTO[] }
     setError(null);
     setBusy(true);
     try {
-      await apiSend("/api/admin/work-catalog", "POST", { name: newName.trim(), sortOrder: items.length + 1 });
+      await apiSend("/api/admin/work-catalog", "POST", {
+        name: newName.trim(),
+        sortOrder: items.length + 1,
+        defaultPrice: newPrice.trim() === "" ? null : Math.trunc(Number(newPrice)) || 0,
+      });
       setNewName("");
+      setNewPrice("");
       await mutate();
     } catch (e) {
       setError((e as Error).message);
@@ -41,7 +47,7 @@ export function WorkCatalogClient({ initial }: { initial: WorkCatalogFullDTO[] }
       <h1 className="mt-2 text-2xl font-semibold text-neutral-900">Работы (для ведомости)</h1>
       <p className="mt-1 text-sm text-neutral-500">
         Справочник работ, из которого водитель выбирает позиции ведомости при выездном ремонте (PRD §13).
-        Цены проставляет диспетчер при расценке — здесь только названия.
+        Цена-подсказка помогает диспетчеру при расценке (он правит цену под случай). Водитель цен не видит.
       </p>
 
       <div className="mt-4 overflow-hidden rounded-xl border border-neutral-200 bg-white">
@@ -49,6 +55,7 @@ export function WorkCatalogClient({ initial }: { initial: WorkCatalogFullDTO[] }
           <thead className="border-b border-neutral-200 text-xs text-neutral-400">
             <tr>
               <th className="px-3 py-2">Работа</th>
+              <th className="px-3 py-2">Цена-подсказка, ₽</th>
               <th className="px-3 py-2">Активна</th>
               <th className="px-3 py-2" />
             </tr>
@@ -71,6 +78,17 @@ export function WorkCatalogClient({ initial }: { initial: WorkCatalogFullDTO[] }
             className="w-64"
           />
         </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-neutral-500">Цена-подсказка, ₽</span>
+          <Input
+            type="number"
+            min={0}
+            value={newPrice}
+            onChange={(e) => setNewPrice(e.target.value)}
+            placeholder="без цены"
+            className="w-32"
+          />
+        </label>
         <Button disabled={busy || !newName.trim()} onClick={add}>
           Добавить
         </Button>
@@ -82,16 +100,23 @@ export function WorkCatalogClient({ initial }: { initial: WorkCatalogFullDTO[] }
 
 function Row({ item, onSaved }: { item: WorkCatalogFullDTO; onSaved: () => void }) {
   const [name, setName] = useState(item.name);
+  const [price, setPrice] = useState(item.defaultPrice != null ? String(item.defaultPrice) : "");
   const [isActive, setIsActive] = useState(item.isActive);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const dirty = name !== item.name || isActive !== item.isActive;
+
+  const priceVal = price.trim() === "" ? null : Math.trunc(Number(price)) || 0;
+  const dirty = name !== item.name || isActive !== item.isActive || priceVal !== item.defaultPrice;
 
   async function save() {
     setError(null);
     setBusy(true);
     try {
-      await apiSend(`/api/admin/work-catalog/${item.id}`, "PATCH", { name, isActive });
+      await apiSend(`/api/admin/work-catalog/${item.id}`, "PATCH", {
+        name,
+        isActive,
+        defaultPrice: priceVal,
+      });
       onSaved();
     } catch (e) {
       setError((e as Error).message);
@@ -105,6 +130,16 @@ function Row({ item, onSaved }: { item: WorkCatalogFullDTO; onSaved: () => void 
       <td className="px-3 py-2">
         <Input value={name} onChange={(e) => setName(e.target.value)} className="h-8 w-64" />
         {error ? <span className="text-xs text-red-600">{error}</span> : null}
+      </td>
+      <td className="px-3 py-2">
+        <Input
+          type="number"
+          min={0}
+          value={price}
+          onChange={(e) => setPrice(e.target.value)}
+          placeholder="без цены"
+          className="h-8 w-28"
+        />
       </td>
       <td className="px-3 py-2">
         <input
