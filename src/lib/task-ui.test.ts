@@ -25,7 +25,7 @@ describe("addDaysISO (горизонт доски/планирования)", ()
 
 describe("палитра статусов (спокойная, редизайн 18.06)", () => {
   const statuses = Object.keys(STATUS_LABEL) as (keyof typeof STATUS_LABEL)[];
-  const neutral = ["NEW", "ASSIGNED", "ACCEPTED", "EN_ROUTE", "ON_SITE", "RESCHEDULED"] as const;
+  const neutral = ["NEW", "ASSIGNED", "IN_PROGRESS", "ACCEPTED", "EN_ROUTE", "ON_SITE", "RESCHEDULED"] as const;
 
   it("каждый статус покрыт во всех картах", () => {
     for (const s of statuses) {
@@ -56,6 +56,12 @@ describe("палитра статусов (спокойная, редизайн 
       expect(STATUS_BADGE[s]).not.toMatch(/green|red|amber|blue|violet|indigo|orange|sky/);
       expect(STATUS_BAR[s]).not.toMatch(/violet|indigo|blue|orange|sky/);
     }
+  });
+
+  it("переименование статусов (этап A): «В работе» / «Завершена» / «На паузе»", () => {
+    expect(STATUS_LABEL.IN_PROGRESS).toBe("В работе");
+    expect(STATUS_LABEL.DONE).toBe("Завершена");
+    expect(STATUS_LABEL.ON_HOLD).toBe("На паузе");
   });
 
   it("пропуск: нужен — янтарный сигнал, заказан — спокойный графит, оба контурные", () => {

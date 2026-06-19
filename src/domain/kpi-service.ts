@@ -276,7 +276,7 @@ export async function detectCandidatesForDate(
       status: true,
       completedAt: true,
       requiresSignedDoc: true, // требование акта на уровне задачи (этап 11), не из типа
-      events: { where: { toStatus: "ON_SITE" }, orderBy: { at: "asc" }, take: 1, select: { at: true } },
+      events: { where: { toStatus: "IN_PROGRESS" }, orderBy: { at: "asc" }, take: 1, select: { at: true } }, // старт работы (этап A)
       attachments: { where: { kind: "DOCUMENT" }, take: 1, select: { id: true } },
     },
   });

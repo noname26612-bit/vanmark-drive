@@ -37,7 +37,7 @@ async function createAssignedTask(milena: Page, title: string): Promise<string> 
 }
 
 async function advanceToDone(req: APIRequestContext, taskId: string): Promise<void> {
-  for (const toStatus of ["ACCEPTED", "EN_ROUTE", "ON_SITE", "DONE"]) {
+  for (const toStatus of ["IN_PROGRESS", "DONE"]) {
     const r = await req.post(`/api/tasks/${taskId}/transition`, { data: { toStatus } });
     expect(r.status(), `переход в ${toStatus}`).toBe(200);
   }

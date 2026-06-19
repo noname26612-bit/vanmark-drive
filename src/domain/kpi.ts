@@ -97,13 +97,15 @@ export type Candidate = {
 
 const FINAL_FOR_MISSED = new Set(["DONE", "CANCELLED", "RESCHEDULED"]);
 
-/** Опоздание: задача доведена до «На месте» позже окна времени (timeTo). PRD §12.1. */
+/** Опоздание: задача взята в работу позже окна времени (timeTo). PRD §12.1.
+ *  Этап A: «момент начала работы» — первый переход в IN_PROGRESS (раньше — ON_SITE «На месте»).
+ *  Этап D переносит «опоздание» на открытие смены (SHIFT_LATE). */
 export type LateInput = {
   driverId: string | null;
   taskId: string;
   scheduledDate: Date | null;
   timeTo: string | null;
-  onSiteAt: Date | null; // момент первого перехода в ON_SITE (из журнала событий)
+  onSiteAt: Date | null; // момент первого перехода в IN_PROGRESS (из журнала событий)
 };
 
 export function detectLate(t: LateInput, tz: string = KPI_TZ): Candidate | null {

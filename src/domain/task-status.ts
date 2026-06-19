@@ -11,39 +11,31 @@ export type EdgeRule = {
 };
 
 // from -> to -> правило. Отсутствие ребра = переход запрещён всем.
+// Переработка механики водителя (этап A): рабочая цепочка схлопнута до IN_PROGRESS «В работе»
+// (прежние ACCEPTED→EN_ROUTE→ON_SITE — одно состояние). До взятия (NEW/ASSIGNED) водитель статуса
+// не ведёт. Цепочка водителя: ASSIGNED → IN_PROGRESS → DONE; пауза ON_HOLD «На паузе» (с причиной)
+// освобождает слот и возвращается в работу через IN_PROGRESS. Legacy-статусы рёбер не имеют —
+// в них перейти нельзя (они существуют только в истории).
 const MATRIX: Partial<Record<TaskStatus, Partial<Record<TaskStatus, EdgeRule>>>> = {
   NEW: {
     ASSIGNED: { driver: false },
-    ON_HOLD: { driver: false },
     RESCHEDULED: { driver: false },
     CANCELLED: { driver: false },
   },
   ASSIGNED: {
-    ACCEPTED: { driver: true },
-    ON_HOLD: { driver: false },
+    IN_PROGRESS: { driver: true }, // водитель берёт задачу в работу (проверка «одна активная» — в сервисе)
     RESCHEDULED: { driver: false },
     CANCELLED: { driver: false },
   },
-  ACCEPTED: {
-    EN_ROUTE: { driver: true },
-    ON_HOLD: { driver: true }, // В* — только с причиной (см. reasonRequiredFor)
-    RESCHEDULED: { driver: false },
-    CANCELLED: { driver: false },
-  },
-  EN_ROUTE: {
-    ON_SITE: { driver: true },
-    ON_HOLD: { driver: true },
-    RESCHEDULED: { driver: false },
-    CANCELLED: { driver: false },
-  },
-  ON_SITE: {
-    DONE: { driver: true }, // фото при DONE проверяется в сервисе (этап 4)
-    ON_HOLD: { driver: true },
+  IN_PROGRESS: {
+    DONE: { driver: true }, // завершение; при оплате «на месте» — подтверждение денег в сервисе (PRD §5)
+    ON_HOLD: { driver: true }, // В* — пауза только с причиной (см. reasonRequiredFor)
     RESCHEDULED: { driver: false },
     CANCELLED: { driver: false },
   },
   ON_HOLD: {
-    ASSIGNED: { driver: false },
+    IN_PROGRESS: { driver: true }, // водитель возобновляет (при свободном слоте — проверка в сервисе)
+    ASSIGNED: { driver: false }, // диспетчер снимает паузу/возвращает в пул
     RESCHEDULED: { driver: false },
     CANCELLED: { driver: false },
   },

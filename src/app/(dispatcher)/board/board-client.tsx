@@ -139,7 +139,7 @@ export function BoardClient({
   });
 
   const total = todays.length;
-  const inWork = todays.filter((t) => ["ACCEPTED", "EN_ROUTE", "ON_SITE"].includes(t.status)).length;
+  const inWork = todays.filter((t) => t.status === "IN_PROGRESS").length;
   const done = todays.filter((t) => t.status === "DONE").length;
   const unassignedTodayCount = todays.filter((t) => !t.assigneeId).length;
   const attentionCount = (attention?.overdue.length ?? 0) + (attention?.tomorrowPasses.length ?? 0);

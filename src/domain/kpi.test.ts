@@ -134,7 +134,7 @@ describe("kpi — detectUnsignedDoc", () => {
   });
 
   it("ещё не завершена — нет нарушения", () => {
-    expect(detectUnsignedDoc({ ...base, status: "ON_SITE", hasSignedDoc: false }, TZ)).toBeNull();
+    expect(detectUnsignedDoc({ ...base, status: "IN_PROGRESS", hasSignedDoc: false }, TZ)).toBeNull();
   });
 });
 

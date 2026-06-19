@@ -20,12 +20,16 @@ enum Role {
 }
 
 // Статусы задачи (ARCHITECTURE §5). Переходы — только через матрицу в src/domain/task-status.ts.
+// Переработка механики водителя (этап A): рабочая цепочка схлопнута в IN_PROGRESS «В работе»
+// (объединяет прежние ACCEPTED+EN_ROUTE+ON_SITE). ACCEPTED/EN_ROUTE/ON_SITE — LEGACY: новым задачам
+// не назначаются, оставлены в enum ради чтения неизменяемого журнала TaskEvent (CLAUDE.md правило 3).
 enum TaskStatus {
   NEW
   ASSIGNED
-  ACCEPTED
-  EN_ROUTE
-  ON_SITE
+  IN_PROGRESS
+  ACCEPTED // legacy (до этапа A)
+  EN_ROUTE // legacy (до этапа A)
+  ON_SITE // legacy (до этапа A)
   DONE
   ON_HOLD
   RESCHEDULED

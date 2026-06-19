@@ -22,7 +22,7 @@ const PDF = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n", "ut
 
 type Sim = {
   status: TaskStatus; // финальный статус задачи в имитации
-  lateOnSite?: boolean; // приехал позже timeTo (→ нарушение «опоздание»)
+  lateOnSite?: boolean; // взят в работу позже timeTo (→ нарушение «опоздание»)
   withPhoto?: boolean; // приложить фото-отчёт (для requiresPhoto при DONE)
   withAct?: boolean; // приложить подписанный акт (ремонтные типы)
 };
@@ -96,13 +96,13 @@ const TASKS: PilotTask[] = [
 
   // ── 17 июня (dayOffset 0): сегодня, в работе ──
   { ref: "501", type: "Доставка/возврат из ремонта", title: "Доставка ножа Ван Марк с ремонта",
-    address: "Москва, Егорьевский проезд", timeNote: "не забываем", dayOffset: 0, driver: "kashirskiy", sim: D("ACCEPTED") },
+    address: "Москва, Егорьевский проезд", timeNote: "не забываем", dayOffset: 0, driver: "kashirskiy", sim: D("IN_PROGRESS") },
   { ref: "522", type: "Выездной ремонт / диагностика", title: "Ремонт/настройка ЛБМ 250 с ножом",
     orgName: "ЗАВОД ВИНРЭЙН ООО", contactName: "Иван", contactPhone: "89296585926",
-    address: "МО, район Домодедово (точный адрес уточняется)", dayOffset: 0, driver: "kashirskiy", sim: D("EN_ROUTE") },
+    address: "МО, район Домодедово (точный адрес уточняется)", dayOffset: 0, driver: "kashirskiy", sim: D("ASSIGNED") },
   { ref: "523", type: "Выездной ремонт / диагностика", title: "Ремонт/настройка Профи с ножом",
     contactPhone: "+79603561551", address: "Москва, Михалковская ул., 13", paymentType: "OFFICE",
-    dayOffset: 0, driver: "kashirskiy", sim: D("ON_SITE") },
+    dayOffset: 0, driver: "kashirskiy", sim: D("ASSIGNED") },
   { ref: "524a", type: "Выездной ремонт / диагностика", title: "Ремонт/настройка ЛБМ250, заточка роликов, замена деталей по мелочи",
     orgName: "ООО «СМС СК»", contactName: "Сергей (прораб)", contactPhone: "+79998329079",
     address: "Сергиев Посад, Центральная ул., 1, Завод «Звезда»", passStatus: "ORDERED", dayOffset: 0,
@@ -157,8 +157,8 @@ function addMin(d: Date, min: number): Date {
   return new Date(d.getTime() + min * 60_000);
 }
 
-// Порядок цепочки статусов для построения истории.
-const FORWARD: TaskStatus[] = ["NEW", "ASSIGNED", "ACCEPTED", "EN_ROUTE", "ON_SITE", "DONE"];
+// Порядок цепочки статусов для построения истории (этап A: схлопнуто до IN_PROGRESS).
+const FORWARD: TaskStatus[] = ["NEW", "ASSIGNED", "IN_PROGRESS", "DONE"];
 
 async function cleanup(): Promise<void> {
   const titles = TASKS.map((t) => t.title);
@@ -230,22 +230,21 @@ async function main(): Promise<void> {
     events.push({ actorId: milena.id, kind: "assign", fromStatus: "NEW", toStatus: "ASSIGNED", comment: null, at: at(t.dayOffset, "08:05"), lat: null, lng: null });
 
     const targetIdx = FORWARD.indexOf(t.sim.status);
-    const onSiteAt = t.sim.lateOnSite && t.timeTo ? addMin(at(t.dayOffset, t.timeTo), 40) : at(t.dayOffset, t.timeFrom ?? "11:00");
+    // Момент взятия в работу (IN_PROGRESS). При lateOnSite — позже окна времени (для нарушения «опоздание»).
+    const startedAt = t.sim.lateOnSite && t.timeTo ? addMin(at(t.dayOffset, t.timeTo), 40) : at(t.dayOffset, t.timeFrom ?? "11:00");
     const stepTime: Partial<Record<TaskStatus, Date>> = {
-      ACCEPTED: at(t.dayOffset, "09:00"),
-      EN_ROUTE: at(t.dayOffset, "10:00"),
-      ON_SITE: onSiteAt,
-      DONE: addMin(onSiteAt, 40),
+      IN_PROGRESS: startedAt,
+      DONE: addMin(startedAt, 40),
     };
     // водительские шаги вперёд (ASSIGNED уже создан выше)
     for (let i = 2; i <= targetIdx && t.sim.status !== "ON_HOLD"; i++) {
       const to = FORWARD[i];
       events.push({ actorId: driverId, kind: "status_change", fromStatus: FORWARD[i - 1], toStatus: to, comment: null, at: stepTime[to] ?? at(t.dayOffset, "12:00"), lat: 55.75, lng: 37.61 });
     }
-    // зависшая задача: дошла до ON_SITE и встала на паузу
+    // зависшая задача: взята в работу и встала на паузу
     if (t.sim.status === "ON_HOLD") {
-      events.push({ actorId: driverId, kind: "status_change", fromStatus: "ASSIGNED", toStatus: "ACCEPTED", comment: null, at: at(t.dayOffset, "09:00"), lat: 55.75, lng: 37.61 });
-      events.push({ actorId: driverId, kind: "status_change", fromStatus: "ACCEPTED", toStatus: "ON_HOLD", comment: "Уточняем у офиса объём (капиталка?)", at: at(t.dayOffset, "10:30"), lat: 55.75, lng: 37.61 });
+      events.push({ actorId: driverId, kind: "status_change", fromStatus: "ASSIGNED", toStatus: "IN_PROGRESS", comment: null, at: at(t.dayOffset, "09:00"), lat: 55.75, lng: 37.61 });
+      events.push({ actorId: driverId, kind: "status_change", fromStatus: "IN_PROGRESS", toStatus: "ON_HOLD", comment: "Уточняем у офиса объём (капиталка?)", at: at(t.dayOffset, "10:30"), lat: 55.75, lng: 37.61 });
     }
     await prisma.taskEvent.createMany({ data: events.map((e) => ({ taskId: task.id, ...e })) });
 

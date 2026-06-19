@@ -42,7 +42,7 @@ async function createAssignedTask(milena: Page, driverLabel: string, typeLabel: 
 // Доводит назначенную задачу до «Выполнено» руками водителя; опционально прикладывает акт (DOCUMENT).
 async function completeActTask(milena: Page, driverReq: APIRequestContext, withAct: boolean): Promise<void> {
   const id = await createAssignedTask(milena, "Алексей Каширский", "Забор в ремонт"); // акт нужен, расценки нет
-  for (const toStatus of ["ACCEPTED", "EN_ROUTE", "ON_SITE", "DONE"]) {
+  for (const toStatus of ["IN_PROGRESS", "DONE"]) {
     const r = await driverReq.post(`/api/tasks/${id}/transition`, { data: { toStatus } });
     expect(r.status(), `переход в ${toStatus}`).toBe(200);
   }

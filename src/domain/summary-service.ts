@@ -26,7 +26,7 @@ type Acc = {
   missed: number;
   cancelled: number;
   rescheduled: number;
-  durations: number[]; // длительности «На месте → Выполнено» в мс
+  durations: number[]; // длительности «В работе → Завершено» в мс (этап A: старт работы — IN_PROGRESS)
 };
 
 function emptyAcc(): Acc {
@@ -57,7 +57,7 @@ export async function getDriverSummary(granularity: string, anchorRaw: string): 
         assigneeId: true,
         completedAt: true,
         type: { select: { id: true, name: true, requiresSignedDoc: true } },
-        events: { where: { toStatus: "ON_SITE" }, orderBy: { at: "asc" }, take: 1, select: { at: true } },
+        events: { where: { toStatus: "IN_PROGRESS" }, orderBy: { at: "asc" }, take: 1, select: { at: true } },
       },
     }),
     prisma.kpiMark.findMany({
@@ -85,9 +85,9 @@ export async function getDriverSummary(granularity: string, anchorRaw: string): 
     const bt = a.byType.get(t.type.id);
     if (bt) bt.count += 1;
     else a.byType.set(t.type.id, { typeId: t.type.id, typeName: t.type.name, isRepair: t.type.requiresSignedDoc, count: 1 });
-    const onSiteAt = t.events[0]?.at;
-    if (onSiteAt) {
-      const ms = t.completedAt.getTime() - onSiteAt.getTime();
+    const startedAt = t.events[0]?.at; // первый переход в «В работе» (этап A; раньше — «На месте»)
+    if (startedAt) {
+      const ms = t.completedAt.getTime() - startedAt.getTime();
       if (ms > 0) a.durations.push(ms); // отрицательные/нулевые (кривые данные) не учитываем
     }
   }

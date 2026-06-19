@@ -8,14 +8,17 @@
 import type { PassStatus, PaymentType, TaskStatus } from "@/generated/prisma/enums";
 import type { ActState } from "@/domain/act";
 
+// Подписи статусов. IN_PROGRESS «В работе» — рабочая фаза водителя (этап A). ACCEPTED/EN_ROUTE/ON_SITE —
+// LEGACY: новым задачам не присваиваются, подписи оставлены, чтобы корректно показывать старую историю.
 export const STATUS_LABEL: Record<TaskStatus, string> = {
   NEW: "Новая",
   ASSIGNED: "Назначена",
-  ACCEPTED: "Принята",
-  EN_ROUTE: "В пути",
-  ON_SITE: "На месте",
-  DONE: "Выполнена",
-  ON_HOLD: "Ждёт",
+  IN_PROGRESS: "В работе",
+  ACCEPTED: "Принята", // legacy
+  EN_ROUTE: "В пути", // legacy
+  ON_SITE: "На месте", // legacy
+  DONE: "Завершена",
+  ON_HOLD: "На паузе",
   RESCHEDULED: "Перенесена",
   CANCELLED: "Отменена",
 };
@@ -25,9 +28,10 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
 export const STATUS_BADGE: Record<TaskStatus, string> = {
   NEW: "border border-slate-300 text-slate-600",
   ASSIGNED: "border border-slate-300 text-slate-600",
-  ACCEPTED: "border border-slate-300 text-slate-600",
-  EN_ROUTE: "border border-slate-300 text-slate-600",
-  ON_SITE: "border border-slate-300 text-slate-600",
+  IN_PROGRESS: "border border-slate-300 text-slate-600",
+  ACCEPTED: "border border-slate-300 text-slate-600", // legacy
+  EN_ROUTE: "border border-slate-300 text-slate-600", // legacy
+  ON_SITE: "border border-slate-300 text-slate-600", // legacy
   DONE: "border border-green-600 text-green-700",
   ON_HOLD: "border border-amber-500 text-amber-700",
   RESCHEDULED: "border border-slate-300 text-slate-600",
@@ -39,9 +43,10 @@ export const STATUS_BADGE: Record<TaskStatus, string> = {
 export const STATUS_BAR: Record<TaskStatus, string> = {
   NEW: "bg-slate-300",
   ASSIGNED: "bg-slate-300",
-  ACCEPTED: "bg-slate-300",
-  EN_ROUTE: "bg-slate-300",
-  ON_SITE: "bg-slate-300",
+  IN_PROGRESS: "bg-slate-300",
+  ACCEPTED: "bg-slate-300", // legacy
+  EN_ROUTE: "bg-slate-300", // legacy
+  ON_SITE: "bg-slate-300", // legacy
   DONE: "bg-green-600",
   ON_HOLD: "bg-amber-600",
   RESCHEDULED: "bg-slate-300",
@@ -89,12 +94,12 @@ export const PAYMENT_LABEL: Record<PaymentType, string> = {
   ON_SITE: "Оплата на месте",
 };
 
+// Порядок статусов для фильтров/выбора (актуальные). Legacy ACCEPTED/EN_ROUTE/ON_SITE сюда не входят —
+// новых задач в них нет, в фильтре их предлагать незачем (история показывается своими подписями).
 export const STATUS_ORDER: TaskStatus[] = [
   "NEW",
   "ASSIGNED",
-  "ACCEPTED",
-  "EN_ROUTE",
-  "ON_SITE",
+  "IN_PROGRESS",
   "ON_HOLD",
   "RESCHEDULED",
   "DONE",

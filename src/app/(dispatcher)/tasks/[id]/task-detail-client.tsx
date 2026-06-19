@@ -33,11 +33,12 @@ import { Modal } from "@/components/ui/modal";
 import { Field } from "@/components/ui/field";
 import { CreateTaskModal } from "../../_components/create-task-modal";
 
+// Диспетчер может вести статусы за исполнителя (в т.ч. внешнего перевозчика). Цепочка схлопнута (этап A):
+// «В работу» (взять) → «Завершить»; из паузы — «Вернуть в работу».
 const NEXT_FORWARD: Partial<Record<TaskStatus, { to: TaskStatus; label: string }>> = {
-  ASSIGNED: { to: "ACCEPTED", label: "Принять" },
-  ACCEPTED: { to: "EN_ROUTE", label: "В путь" },
-  EN_ROUTE: { to: "ON_SITE", label: "На месте" },
-  ON_SITE: { to: "DONE", label: "Выполнено" },
+  ASSIGNED: { to: "IN_PROGRESS", label: "В работу" },
+  IN_PROGRESS: { to: "DONE", label: "Завершить" },
+  ON_HOLD: { to: "IN_PROGRESS", label: "Вернуть в работу" },
 };
 
 const KIND_LABEL: Record<string, string> = {
@@ -303,9 +304,11 @@ export function TaskDetailClient({
           <Button variant="secondary" disabled={busy} onClick={() => setAction("reschedule")}>
             Перенести
           </Button>
-          <Button variant="secondary" disabled={busy} onClick={() => setAction("hold")}>
-            Ждёт
-          </Button>
+          {task.status === "IN_PROGRESS" ? (
+            <Button variant="secondary" disabled={busy} onClick={() => setAction("hold")}>
+              На паузу
+            </Button>
+          ) : null}
           <Button variant="secondary" disabled={busy} onClick={() => setEditOpen(true)}>
             Редактировать
           </Button>
