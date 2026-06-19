@@ -3,6 +3,7 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { fetcher, apiSend } from "@/lib/fetcher";
+import { cn } from "@/lib/cn";
 import { formatMoney, formatDate, formatPeriod, shiftPeriod } from "@/lib/task-ui";
 import { KPI_KIND_LABEL, KPI_KIND_BADGE, actBonusSummary } from "@/lib/kpi-dto";
 import type { KpiOverview, MarkView, DriverPayrollView } from "@/lib/kpi-dto";
@@ -228,6 +229,9 @@ function DriverCard({
         </span>
       </div>
 
+      <PayoutBar driver={driver} />
+      <PremiumBar driver={driver} />
+
       {/* Прогресс бонуса за комплектность актов (этап 15, PRD §12.6) */}
       {driver.actBonus.base > 0 || driver.actBonus.value > 0 ? <ActBonusLine driver={driver} /> : null}
 
@@ -270,15 +274,96 @@ function DriverCard({
   );
 }
 
+/** Полоса состава итоговой выплаты: оклад + премия (после штрафов) + поощрения + бонус за акты. */
+function PayoutBar({ driver }: { driver: DriverPayrollView }) {
+  const premium = Math.max(0, driver.premiumAfter);
+  const segs = [
+    { key: "salary", label: "Оклад", value: driver.baseSalary, cls: "bg-neutral-400" },
+    { key: "premium", label: "Премия", value: premium, cls: "bg-green-600" },
+    { key: "bonus", label: "Поощрения", value: driver.bonus, cls: "bg-green-400" },
+    { key: "act", label: "Бонус за акты", value: driver.actBonus.value, cls: "bg-green-300" },
+  ].filter((s) => s.value > 0);
+  const total = segs.reduce((sum, s) => sum + s.value, 0) || 1;
+  return (
+    <div className="mt-3">
+      <div className="mb-1.5 text-xs text-neutral-500">Из чего складывается итог</div>
+      <div className="flex h-3 overflow-hidden rounded bg-neutral-100">
+        {segs.map((s) => (
+          <div key={s.key} className={s.cls} style={{ width: `${(s.value / total) * 100}%` }} />
+        ))}
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-neutral-500">
+        {segs.map((s) => (
+          <span key={s.key} className="inline-flex items-center gap-1.5">
+            <span className={cn("h-2.5 w-2.5 rounded-sm", s.cls)} />
+            {s.label} {formatMoney(s.value)}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Шкала премии: сколько осталось (зелёным) и сколько съели штрафы (красным). Показываем только при штрафах. */
+function PremiumBar({ driver }: { driver: DriverPayrollView }) {
+  if (driver.penalty <= 0 || driver.premiumBase <= 0) return null;
+  const kept = Math.max(0, Math.min(driver.premiumBase, driver.premiumAfter));
+  const eaten = Math.min(driver.premiumBase, driver.penalty);
+  const keptPct = (kept / driver.premiumBase) * 100;
+  const eatenPct = (eaten / driver.premiumBase) * 100;
+  return (
+    <div className="mt-3">
+      <div className="mb-1.5 flex items-center justify-between text-xs">
+        <span className="text-neutral-500">Премия после штрафов</span>
+        <span className="text-red-600">штрафы −{formatMoney(driver.penalty)}</span>
+      </div>
+      <div className="flex h-2.5 overflow-hidden rounded bg-neutral-100">
+        <div className="bg-green-600" style={{ width: `${keptPct}%` }} />
+        <div className="bg-red-400" style={{ width: `${eatenPct}%` }} />
+      </div>
+      <div className="mt-1 text-xs text-neutral-500">
+        {formatMoney(kept)} из {formatMoney(driver.premiumBase)}
+      </div>
+    </div>
+  );
+}
+
 function ActBonusLine({ driver }: { driver: DriverPayrollView }) {
-  const s = actBonusSummary(driver.actBonus);
+  const ab = driver.actBonus;
+  const s = actBonusSummary(ab);
   const tone =
     s.tone === "green"
       ? "border-green-200 bg-green-50 text-green-800"
       : s.tone === "amber"
         ? "border-amber-200 bg-amber-50 text-amber-800"
         : "border-neutral-200 bg-neutral-50 text-neutral-600";
-  return <p className={`mt-2 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${tone}`}>{s.text}</p>;
+  const fillPct = ab.base > 0 ? Math.min(100, (ab.complete / ab.base) * 100) : 0;
+  const fill = ab.awarded ? "bg-green-500" : "bg-amber-400";
+  return (
+    <div className="mt-2">
+      <p className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium ${tone}`}>{s.text}</p>
+      {ab.base > 0 ? (
+        <div className="mt-2 px-0.5">
+          <div className="relative h-2.5 rounded bg-neutral-100">
+            <div className={cn("h-full rounded", fill)} style={{ width: `${fillPct}%` }} />
+            <div
+              className="absolute top-[-2px] h-[14px] w-px bg-neutral-500"
+              style={{ left: `${ab.thresholdPercent}%` }}
+              aria-hidden
+            />
+          </div>
+          <div className="relative mt-1 h-3.5">
+            <span
+              className="absolute -translate-x-1/2 whitespace-nowrap text-[10px] text-neutral-400"
+              style={{ left: `${ab.thresholdPercent}%` }}
+            >
+              порог {ab.thresholdPercent}%
+            </span>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function ManualMarkModal({
