@@ -62,15 +62,17 @@ enum WorksheetStatus {
 }
 
 model User {
-  id           String   @id @default(uuid())
-  login        String   @unique // латиница, вводится при входе
-  passwordHash String // argon2id, см. src/lib/password.ts
-  name         String // «Милена», «Алексей Писарев»
-  phone        String?
-  role         Role
-  isActive     Boolean  @default(true)
-  canLogin     Boolean  @default(true) // false — внешний исполнитель (Султан): входа нет, задачи на него ведёт диспетчер
-  createdAt    DateTime @default(now())
+  id             String               @id @default(uuid())
+  login          String               @unique // латиница, вводится при входе
+  passwordHash   String // argon2id, см. src/lib/password.ts
+  name           String // «Милена», «Алексей Писарев»
+  phone          String?
+  role           Role
+  isActive       Boolean              @default(true)
+  canLogin       Boolean              @default(true) // false — внешний исполнитель (Султан): входа нет, задачи на него ведёт диспетчер
+  // Ёмкость (Фаза 2, PRD §14.5): специализация для подсказки «кто свободен». Каширский REPAIR, Писарев/Султан DELIVERY.
+  specialization DriverSpecialization @default(ANY)
+  createdAt      DateTime             @default(now())
 
   tasks        Task[]             @relation("assignee")
   createdTasks Task[]             @relation("creator")
@@ -96,6 +98,8 @@ model TaskType {
   // Нужна ли ведомость работ + расценка (этап 12, PRD §13): выездной ремонт/диагностика, гарантия.
   // Акты-описи (аренда/забор) ведомость не используют, поэтому это отдельный флаг от requiresSignedDoc.
   requiresPricing   Boolean @default(false)
+  // Ёмкость (Фаза 2, PRD §14.2): норма работы на объекте, мин (сверх времени на дорогу).
+  onSiteMinutes     Int     @default(30)
   sortOrder         Int     @default(0)
   isActive          Boolean @default(true)
   tasks             Task[]
@@ -113,30 +117,36 @@ model Task {
   // type.requiresSignedDoc при создании; диспетчер может снять галочкой «акт не нужен»
   // (actWaivedNote — причина, напр. «подпишут по ЭДО»). Источник для KPI UNSIGNED_DOCS — теперь
   // это поле, не type (см. src/domain/kpi-service.ts). НЕ гейт завершения (PRD §5).
-  requiresSignedDoc Boolean @default(false)
+  requiresSignedDoc Boolean          @default(false)
   actWaivedNote     String? // причина снятия требования акта на этой заявке
   // Ведомость работ (этап 12): null — не нужна (тип без requiresPricing); иначе DRAFT→PRICING→PRICED→SIGNED.
   worksheetStatus   WorksheetStatus?
 
-  title         String // «ЛБМ 200 + нож + дог. маш, 0,7 мм»
-  description   String?     @db.Text
-  equipment     String? // «ЛБМ 250», «Sorex 2 м»
-  orgName       String? // «ДОМОСТРОЙ ЛОГИСТИК ООО»
-  contactName   String?
-  contactPhone  String?
-  address       String
-  addressLink   String? // deeplink Яндекс/2ГИС
-  invoiceNumber String? // «948», «261»
-  paymentType   PaymentType @default(NONE)
-  paymentAmount Int? // «доставка 5000 водителю»
-  paymentNote   String?
-  scheduledDate DateTime?   @db.Date // null — пул «Без даты»
-  timeFrom      String? // «09:00»
-  timeTo        String? // «17:00»
-  timeNote      String? // «после обеда»
-  passStatus    PassStatus  @default(NOT_NEEDED)
-  priority      Boolean     @default(false) // срочная
-  status        TaskStatus  @default(NEW)
+  title            String // «ЛБМ 200 + нож + дог. маш, 0,7 мм»
+  description      String?     @db.Text
+  equipment        String? // «ЛБМ 250», «Sorex 2 м»
+  orgName          String? // «ДОМОСТРОЙ ЛОГИСТИК ООО»
+  contactName      String?
+  contactPhone     String?
+  address          String
+  addressLink      String? // deeplink Яндекс/2ГИС
+  invoiceNumber    String? // «948», «261»
+  paymentType      PaymentType @default(NONE)
+  paymentAmount    Int? // «доставка 5000 водителю»
+  paymentNote      String?
+  scheduledDate    DateTime?   @db.Date // null — пул «Без даты»
+  timeFrom         String? // «09:00»
+  timeTo           String? // «17:00»
+  timeNote         String? // «после обеда»
+  // Ёмкость и оценка времени (Фаза 2, PRD §14). lat/lng — геокод адреса при создании/правке
+  // (src/lib/geocode.ts); null — геокод не удался (оценка считается без дороги).
+  lat              Float?
+  lng              Float?
+  estimatedMinutes Int? // оценка времени, мин (норма типа + дорога); null — не посчитана
+  estimateIsManual Boolean     @default(false) // диспетчер задал оценку вручную → не пересчитывать
+  passStatus       PassStatus  @default(NOT_NEEDED)
+  priority         Boolean     @default(false) // срочная
+  status           TaskStatus  @default(NEW)
 
   assigneeId  String?
   assignee    User?   @relation("assignee", fields: [assigneeId], references: [id])
@@ -361,4 +371,40 @@ model PayrollStatement {
   closedAt    DateTime @default(now())
 
   @@unique([driverId, period])
+}
+
+// ───────────────────────── Ёмкость и календарь загрузки (Фаза 2) ─────────────────────────
+// Модель — ARCHITECTURE §4б, продукт — PRD §14. Аддитивно. Оценка времени задачи = норма типа
+// (TaskType.onSiteMinutes) + дорога (haversine база→точка × петляние ÷ скорость × коэфф. пробок).
+// Маршрут с живыми пробками не подключаем (PRD §14.6). Чистый расчёт — src/domain/capacity.ts.
+
+// Специализация водителя для подсказки «кто свободен» (PRD §14.5). «Ремонтность» задачи берём из
+// type.requiresPricing (выездной ремонт + гарантия); это поле — предпочтение водителя.
+enum DriverSpecialization {
+  REPAIR // выездные ремонты (Каширский)
+  DELIVERY // доставки (Писарев, Султан)
+  ANY // без выраженной специализации
+}
+
+// Глобальные настройки расчёта ёмкости (singleton, одна строка), как KpiSettings. Дефолты —
+// данные Артёма 19.06.2026. Правит админ в UI.
+model CapacitySettings {
+  id              String   @id @default("singleton")
+  baseLat         Float    @default(55.959611) // база: пос. Лесные Поляны, ул. Ленина 1Ас26
+  baseLng         Float    @default(37.864076)
+  workdayMinutes  Int      @default(480) // рабочий день минус обед (9–18 − 1 ч) — знаменатель загрузки
+  avgSpeedKmh     Int      @default(50) // средняя скорость свободной дороги, км/ч; калибруется по факту
+  detourPercent   Int      @default(110) // коэфф. петляния (110 = ×1.1)
+  countReturnTrip Boolean  @default(false) // учитывать обратную дорогу (база→точка→база)
+  updatedAt       DateTime @updatedAt
+}
+
+// Коэффициент пробок по окну времени суток (PRD §14.3). Набор строк, как KpiRule. Настраивает админ.
+// Окна не пересекаются и покрывают сутки; factor берётся по timeFrom задачи (нет времени → дневное окно).
+model TrafficWindow {
+  id            String @id @default(uuid())
+  fromMinutes   Int // минуты от полуночи: 04:00 = 240
+  toMinutes     Int // 07:00 = 420
+  factorPercent Int // 100 = ×1.0 … 140 = ×1.4
+  sortOrder     Int    @default(0)
 }

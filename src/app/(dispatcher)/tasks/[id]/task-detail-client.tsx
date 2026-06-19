@@ -9,6 +9,7 @@ import { Phone, Navigation, Camera, X, FileText } from "lucide-react";
 import { fetcher, apiSend, apiUpload } from "@/lib/fetcher";
 import { compressImage } from "@/lib/image-compress";
 import { actState } from "@/domain/act";
+import { formatMinutes } from "@/domain/capacity";
 import type { DriverDTO, TaskDetailDTO, TaskTypeDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
 import {
@@ -78,6 +79,7 @@ export function TaskDetailClient({
   const fileRef = useRef<HTMLInputElement | null>(null);
   const docRef = useRef<HTMLInputElement | null>(null); // input для акта (этап 14): фото или PDF
   const [prices, setPrices] = useState<Record<string, string>>({}); // расценка ведомости (этап 13)
+  const [estimateInput, setEstimateInput] = useState(""); // ручная оценка времени (Фаза 2, §14)
 
   if (isLoading) return <p className="p-6 text-sm text-neutral-400">Загрузка…</p>;
   if (error || !task)
@@ -144,6 +146,23 @@ export function TaskDetailClient({
     run(async () => {
       await apiSend(key + "/comments", "POST", { text: comment });
       setComment("");
+    });
+  // Оценка времени (Фаза 2, §14): задать вручную (number) или вернуть к авто-расчёту (null).
+  const saveEstimate = () => {
+    const n = Number.parseInt(estimateInput, 10);
+    if (!Number.isFinite(n) || n < 0) {
+      setActionError("Некорректная оценка времени");
+      return;
+    }
+    void run(async () => {
+      await apiSend(key, "PATCH", { estimatedMinutes: n });
+      setEstimateInput("");
+    });
+  };
+  const recomputeEstimate = () =>
+    run(async () => {
+      await apiSend(key, "PATCH", { estimatedMinutes: null });
+      setEstimateInput("");
     });
   // Значение поля цены: ручной ввод → уже проставленная цена → цена-подсказка из справочника → пусто.
   // Подсказка (defaultPrice) приходит только диспетчеру (PRD §13: водителю цены не видны).
@@ -298,6 +317,63 @@ export function TaskDetailClient({
         <p className="mt-4 text-sm text-neutral-400">Задача завершена — действий нет.</p>
       )}
       {actionError ? <p className="mt-2 text-sm text-red-600">{actionError}</p> : null}
+
+      {/* Оценка времени (Фаза 2, PRD §14): авто-расчёт «норма типа + дорога»; диспетчер может
+          задать вручную или вернуть к авто. Подсказка планирования — на загрузку влияет через календарь. */}
+      <section className="mt-6" data-testid="estimate-section">
+        <h2 className="mb-2 text-sm font-semibold text-neutral-700">Оценка времени</h2>
+        <div className="rounded-xl border border-neutral-200 bg-white p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-lg font-semibold text-neutral-900" data-testid="estimate-total">
+              {task.estimatedMinutes != null ? `≈ ${formatMinutes(task.estimatedMinutes)}` : "—"}
+            </span>
+            <Badge
+              className={
+                task.estimateIsManual ? "bg-violet-100 text-violet-700" : "bg-neutral-100 text-neutral-600"
+              }
+            >
+              {task.estimateIsManual ? "вручную" : "авто"}
+            </Badge>
+          </div>
+          {!task.estimateIsManual && task.estimatedMinutes != null ? (
+            <p className="mt-1 text-xs text-neutral-500">
+              работа {formatMinutes(task.type.onSiteMinutes)}
+              {task.lat != null && task.lng != null
+                ? ` + дорога ${formatMinutes(Math.max(0, task.estimatedMinutes - task.type.onSiteMinutes))}`
+                : " · дорога не учтена (адрес не распознан геокодером)"}
+            </p>
+          ) : null}
+          {!isTerminal ? (
+            <div className="mt-3 flex flex-wrap items-end gap-2">
+              <Field label="Задать вручную, мин">
+                <Input
+                  type="number"
+                  min={0}
+                  value={estimateInput}
+                  disabled={busy}
+                  onChange={(e) => setEstimateInput(e.target.value)}
+                  placeholder={task.estimatedMinutes != null ? String(task.estimatedMinutes) : ""}
+                  className="h-9 w-28"
+                  data-testid="estimate-input"
+                />
+              </Field>
+              <Button
+                variant="secondary"
+                disabled={busy || estimateInput.trim() === ""}
+                onClick={saveEstimate}
+                data-testid="estimate-save"
+              >
+                Сохранить
+              </Button>
+              {task.estimateIsManual ? (
+                <Button variant="ghost" disabled={busy} onClick={recomputeEstimate} data-testid="estimate-recompute">
+                  Пересчитать авто
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </section>
 
       {/* Фото — отчётные (от исполнителя) и приложенные при постановке (от диспетчера) */}
       {/* Расценка ведомости — диспетчер ставит цены по позициям (этап 13, PRD §13) */}

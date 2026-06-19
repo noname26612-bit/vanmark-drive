@@ -16,5 +16,7 @@ export default defineConfig({
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    // Геокодер в e2e выключен (детерминизм, без сетевых вызовов): оценка времени = норма типа без дороги.
+    env: { ...process.env, GEOCODER_PROVIDER: "none" },
   },
 });

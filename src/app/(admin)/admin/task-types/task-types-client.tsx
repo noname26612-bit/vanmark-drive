@@ -45,7 +45,8 @@ export function TaskTypesClient({ initial }: { initial: TaskTypeFullDTO[] }) {
       <h1 className="mt-2 text-2xl font-semibold text-neutral-900">Типы задач</h1>
       <p className="mt-1 text-sm text-neutral-500">
         Влияет на форму создания. Фото — везде по желанию; требование акта берётся из типа и
-        задаётся на конкретной заявке (PRD §3–§4).
+        задаётся на конкретной заявке (PRD §3–§4). «Норма, мин» — среднее время работы на объекте
+        для оценки загрузки (Фаза 2, PRD §14); к нему прибавляется дорога.
       </p>
 
       <div className="mt-4 overflow-hidden rounded-xl border border-neutral-200 bg-white">
@@ -53,6 +54,7 @@ export function TaskTypesClient({ initial }: { initial: TaskTypeFullDTO[] }) {
           <thead className="border-b border-neutral-200 text-xs text-neutral-400">
             <tr>
               <th className="px-3 py-2">Тип</th>
+              <th className="px-3 py-2">Норма, мин</th>
               <th className="px-3 py-2">Акт по умолчанию</th>
               <th className="px-3 py-2">Активен</th>
               <th className="px-3 py-2" />
@@ -88,16 +90,23 @@ export function TaskTypesClient({ initial }: { initial: TaskTypeFullDTO[] }) {
 function TypeRow({ type, onSaved }: { type: TaskTypeFullDTO; onSaved: () => void }) {
   const [name, setName] = useState(type.name);
   const [isActive, setIsActive] = useState(type.isActive);
+  const [onSiteMinutes, setOnSiteMinutes] = useState(String(type.onSiteMinutes));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const dirty = name !== type.name || isActive !== type.isActive;
+  const dirty =
+    name !== type.name || isActive !== type.isActive || onSiteMinutes !== String(type.onSiteMinutes);
 
   async function save() {
     setError(null);
+    const minutes = Number.parseInt(onSiteMinutes, 10);
+    if (!Number.isFinite(minutes) || minutes < 0) {
+      setError("Норма должна быть числом ≥ 0");
+      return;
+    }
     setBusy(true);
     try {
-      await apiSend(`/api/admin/task-types/${type.id}`, "PATCH", { name, isActive });
+      await apiSend(`/api/admin/task-types/${type.id}`, "PATCH", { name, isActive, onSiteMinutes: minutes });
       onSaved();
     } catch (e) {
       setError((e as Error).message);
@@ -114,6 +123,15 @@ function TypeRow({ type, onSaved }: { type: TaskTypeFullDTO; onSaved: () => void
           <Input value={name} onChange={(e) => setName(e.target.value)} className="h-8 w-56" />
         </span>
         {error ? <span className="text-xs text-red-600">{error}</span> : null}
+      </td>
+      <td className="px-3 py-2">
+        <Input
+          type="number"
+          min={0}
+          value={onSiteMinutes}
+          onChange={(e) => setOnSiteMinutes(e.target.value)}
+          className="h-8 w-20"
+        />
       </td>
       <td className="px-3 py-2">
         {type.requiresSignedDoc ? (

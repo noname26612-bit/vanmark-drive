@@ -6,6 +6,7 @@ import { PrismaClient, type Role } from "@/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { hashPassword } from "@/lib/password";
 import { seedKpi } from "./seed-kpi";
+import { seedCapacity } from "./seed-capacity";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -145,6 +146,7 @@ async function main(defaultPassword: string): Promise<void> {
   console.log(`  ✓ справочник работ: ${WORK_CATALOG.length} активных, деактивировано прежних: ${deactivated.count}`);
 
   await seedKpi(prisma);
+  await seedCapacity(prisma);
 }
 
 main(seedPassword)

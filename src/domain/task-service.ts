@@ -11,6 +11,9 @@ import { myTasksWhere, type MyTasksScope } from "./my-tasks";
 import { overdueWhere, tomorrowPassWhere } from "./attention";
 import { Errors } from "./errors";
 import { notifyTaskAssignee } from "@/lib/push";
+import { geocodeAddress } from "@/lib/geocode";
+import { computeEstimate } from "./capacity-service";
+import type { LatLng } from "./capacity";
 
 export type Actor = { id: string; role: Role };
 
@@ -37,6 +40,9 @@ export type CreateTaskInput = {
   assigneeId?: string | null;
   requiresAct?: boolean | null; // override требования акта (по умолчанию из типа); false = «акт не нужен»
   actWaivedNote?: string | null; // причина снятия требования акта на заявке
+  // Ёмкость (Фаза 2, PRD §14): ручная оценка времени диспетчером. number → manual (не пересчитывать);
+  // null → сброс к авто-расчёту. undefined (поле не передано) → оценку не трогаем (пересчёт по правкам).
+  estimatedMinutes?: number | null;
 };
 
 export type ListFilters = {
@@ -289,7 +295,7 @@ export async function createTask(
   // Тип задаёт дефолт требования акта; диспетчер может снять его галочкой «акт не нужен» (PRD §4).
   const type = await prisma.taskType.findUnique({
     where: { id: typeId },
-    select: { requiresSignedDoc: true, requiresPricing: true },
+    select: { requiresSignedDoc: true, requiresPricing: true, onSiteMinutes: true },
   });
   if (!type) throw Errors.validation("Неизвестный тип задачи");
   const requiresSignedDoc =
@@ -304,6 +310,16 @@ export async function createTask(
     assigneeId = await assertAssignableDriver(input.assigneeId);
   }
   const status: TaskStatus = assigneeId ? "ASSIGNED" : "NEW";
+
+  // Оценка времени (Фаза 2, PRD §14): геокодируем адрес и считаем «норма типа + дорога».
+  // Геокод и расчёт — ДО транзакции (внешний вызов не держит БД). Сбой геокодера → дорога не учтена.
+  const timeFromClean = clean(input.timeFrom);
+  const point = await geocodeAddress(address);
+  const estimate = await computeEstimate({
+    onSiteMinutes: type.onSiteMinutes,
+    point,
+    timeFrom: timeFromClean,
+  });
 
   const created = await prisma.$transaction(async (tx) => {
     const task = await tx.task.create({
@@ -322,7 +338,7 @@ export async function createTask(
         paymentAmount: input.paymentAmount ?? null,
         paymentNote: clean(input.paymentNote),
         scheduledDate: parseDate(input.scheduledDate),
-        timeFrom: clean(input.timeFrom),
+        timeFrom: timeFromClean,
         timeTo: clean(input.timeTo),
         timeNote: clean(input.timeNote),
         passStatus: input.passStatus ?? "NOT_NEEDED",
@@ -332,6 +348,10 @@ export async function createTask(
         worksheetStatus,
         status,
         assigneeId,
+        // Ёмкость (Фаза 2): координаты геокода + авто-оценка времени (estimateIsManual=false).
+        lat: point?.lat ?? null,
+        lng: point?.lng ?? null,
+        estimatedMinutes: estimate.totalMinutes,
         createdById: actor.id,
       },
       include: taskInclude,
@@ -371,10 +391,14 @@ export async function updateTaskFields(
     if (!t) throw Errors.validation("Название не может быть пустым");
     data.title = t;
   }
+  let addressChanged = false;
+  let effectiveAddress = task.address;
   if (fields.address !== undefined) {
     const a = clean(fields.address);
     if (!a) throw Errors.validation("Адрес не может быть пустым");
     data.address = a;
+    addressChanged = a !== task.address;
+    effectiveAddress = a;
   }
   if (fields.typeId !== undefined && fields.typeId) data.type = { connect: { id: fields.typeId } };
   set("description", (v) => (data.description = v));
@@ -397,6 +421,46 @@ export async function updateTaskFields(
     const req = fields.requiresAct ?? false;
     data.requiresSignedDoc = req;
     data.actWaivedNote = req ? null : clean(fields.actWaivedNote);
+  }
+
+  // --- Оценка времени (Фаза 2, PRD §14) ---
+  // Ручная оценка диспетчера: number → фиксируем (manual, не пересчитываем); null → сброс к авто.
+  const resetToAuto = fields.estimatedMinutes === null;
+  let willBeManual = task.estimateIsManual;
+  if (fields.estimatedMinutes !== undefined && fields.estimatedMinutes !== null) {
+    const minutes = Math.round(fields.estimatedMinutes);
+    if (!Number.isFinite(minutes) || minutes < 0) throw Errors.validation("Некорректная оценка времени");
+    data.estimatedMinutes = minutes;
+    data.estimateIsManual = true;
+    willBeManual = true;
+  } else if (resetToAuto) {
+    willBeManual = false;
+  }
+
+  // Авто-пересчёт нужен, когда оценка не ручная и поменялось что-то влияющее (адрес/тип/время выезда),
+  // либо диспетчер явно сбросил к авто. Дата на величину оценки не влияет (пробки — по времени суток).
+  const typeChanged = fields.typeId !== undefined && !!fields.typeId && fields.typeId !== task.typeId;
+  const timeFromChanged = fields.timeFrom !== undefined && clean(fields.timeFrom) !== task.timeFrom;
+  if (!willBeManual && (addressChanged || typeChanged || timeFromChanged || resetToAuto)) {
+    const effectiveTypeId = fields.typeId ?? task.typeId;
+    const t = await prisma.taskType.findUnique({
+      where: { id: effectiveTypeId },
+      select: { onSiteMinutes: true },
+    });
+    const onSiteMinutes = t?.onSiteMinutes ?? 30;
+    const effectiveTimeFrom = fields.timeFrom !== undefined ? clean(fields.timeFrom) : task.timeFrom;
+    // При смене адреса геокодируем заново (и обновляем lat/lng); иначе берём сохранённые координаты.
+    let point: LatLng | null;
+    if (addressChanged) {
+      point = await geocodeAddress(effectiveAddress);
+      data.lat = point?.lat ?? null;
+      data.lng = point?.lng ?? null;
+    } else {
+      point = task.lat != null && task.lng != null ? { lat: task.lat, lng: task.lng } : null;
+    }
+    const estimate = await computeEstimate({ onSiteMinutes, point, timeFrom: effectiveTimeFrom });
+    data.estimatedMinutes = estimate.totalMinutes;
+    data.estimateIsManual = false;
   }
 
   const result = await prisma.$transaction(async (tx) => {

@@ -15,6 +15,7 @@ export function parseTaskTypeFields(body: Record<string, unknown>): Partial<Task
   }
   if (typeof body.sortOrder === "number") out.sortOrder = Math.trunc(body.sortOrder);
   if (typeof body.isActive === "boolean") out.isActive = body.isActive;
+  if (typeof body.onSiteMinutes === "number") out.onSiteMinutes = Math.trunc(body.onSiteMinutes);
   return out;
 }
 
@@ -76,6 +77,11 @@ export function parseTaskFields(body: Record<string, unknown>): Partial<CreateTa
   if ("assigneeId" in body) {
     const v = body.assigneeId;
     if (v === null || typeof v === "string") out.assigneeId = v;
+  }
+  // Оценка времени (Фаза 2, PRD §14): число → ручная оценка; null → сброс к авто-расчёту.
+  if ("estimatedMinutes" in body) {
+    const v = body.estimatedMinutes;
+    out.estimatedMinutes = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
   }
 
   return out as Partial<CreateTaskInput>;

@@ -8,6 +8,7 @@ export type TaskTypeDTO = {
   icon: string | null;
   requiresSignedDoc: boolean; // тип с актом: дефолт требования акта для новых задач (PRD §3)
   requiresPricing: boolean; // нужна ли ведомость работ + расценка (этап 12, PRD §13)
+  onSiteMinutes: number; // норма работы на объекте, мин (Фаза 2, PRD §14.2)
 };
 
 export type TaskTypeFullDTO = TaskTypeDTO & { sortOrder: number; isActive: boolean };
@@ -37,6 +38,11 @@ export type TaskDTO = {
   timeNote: string | null;
   passStatus: PassStatus;
   priority: boolean;
+  // Ёмкость и оценка времени (Фаза 2, PRD §14).
+  lat: number | null; // координаты адреса (геокод)
+  lng: number | null;
+  estimatedMinutes: number | null; // оценка времени, мин (норма типа + дорога); null — не посчитана
+  estimateIsManual: boolean; // оценка задана диспетчером вручную (не пересчитывается авто)
   requiresSignedDoc: boolean; // требование акта на уровне задачи (снимок из типа, override галочкой)
   actWaivedNote: string | null; // причина снятия требования акта (если снят диспетчером)
   hasSignedDoc?: boolean; // приложен ли подписанный акт (этап 14): есть DOCUMENT-вложение. В списках

@@ -44,9 +44,12 @@ src/
     push-service.ts             # подписки (save/delete) + плановые напоминания (cron)
     kpi.ts                      # KPI (Фаза 1.5): детекторы нарушений + прогрессивный расчёт (чистые функции, юнит-тесты)
     kpi-service.ts              # KPI: кандидаты, подтверждение/отклонение, ручные отметки, закрытие месяца, расчёт водителя (с изоляцией)
+    capacity.ts                 # Ёмкость (Фаза 2): haversine, время в пути с коэффициентами, оценка задачи (чистые функции, юнит-тесты)
+    capacity-service.ts         # Ёмкость: агрегация загрузки по водителям×дням для календаря (изоляция Д/А)
   lib/                          # prisma client, auth, утилиты
     push.ts                     # транспорт web-push (server-only): отправка + чистка протухших подписок
     cron.ts                     # планировщик node-cron (08:00 / 16:00)
+    geocode.ts                  # геокодер адреса (server-only, внешний сервис, кэш по адресу) — Фаза 2, §4б
   components/                   # ui-компоненты (+ sw-register, pwa-controls — этап 5)
   hooks/                        # use-push-subscription, use-install-prompt (этап 5)
   instrumentation.ts            # register(): старт node-cron в Node-рантайме
@@ -313,6 +316,57 @@ model PayrollStatement {
 
 На стороне `User` добавляются обратные связи (`kpiMarks`, `payProfile`, `payStatements`), на `Task` — `kpiMarks`. Детекторы (см. §8) идемпотентны через `@@unique([taskId, kind])`; повторный прогон не плодит дубли.
 
+## 4б. Модель данных: ёмкость задачи и календарь загрузки (Фаза 2)
+
+Спека — PRD §14, решения Артёма 19.06.2026. Аддитивная миграция поверх §4 (существующие таблицы только дополняются полями). Геокодер — **первая внешняя интеграция** проекта; это осознанное отступление от принципа §1.3 («карты добавляем, когда упрёмся»): без координат точки нельзя оценить дорогу. Зависимость минимальная — один вызов при создании/правке адреса, с кэшем и мягким откатом (нет координат → оценка считается без дороги). Маршрутизатор с живыми пробками НЕ подключаем (PRD §14.6).
+
+Дополнения существующих моделей:
+
+```prisma
+enum DriverSpecialization { REPAIR DELIVERY ANY }   // подсказка «кто свободен» (PRD §14.5)
+
+// User     += specialization DriverSpecialization @default(ANY)  // Каширский REPAIR, Писарев/Султан DELIVERY
+// TaskType += onSiteMinutes  Int @default(30)        // норма работы на объекте, мин (PRD §14.2)
+// Task     += lat Float?                              // геокод адреса (один раз при создании/правке)
+//          += lng Float?
+//          += estimatedMinutes  Int?                  // оценка времени задачи (снимок; null — не посчитана)
+//          += estimateIsManual  Boolean @default(false) // диспетчер задал вручную → не пересчитывать
+```
+
+Новые модели:
+
+```prisma
+// Глобальные настройки расчёта ёмкости (singleton, как KpiSettings). Дефолты — данные Артёма 19.06.2026.
+model CapacitySettings {
+  id              String   @id @default("singleton")
+  baseLat         Float    @default(55.959611)   // база: пос. Лесные Поляны, ул. Ленина 1Ас26
+  baseLng         Float    @default(37.864076)
+  workdayMinutes  Int      @default(480)         // рабочий день минус обед (9–18 − 1 ч) = знаменатель загрузки
+  avgSpeedKmh     Int      @default(50)          // свободная дорога; калибруется по факту (на подтверждение)
+  detourPercent   Int      @default(110)         // коэфф. петляния (110 = ×1.1)
+  countReturnTrip Boolean  @default(false)       // учитывать обратную дорогу (база→точка→база)
+  updatedAt       DateTime @updatedAt
+}
+
+// Коэффициенты пробок по времени суток (PRD §14.3). Набор строк-правил, как KpiRule. Настраивает админ.
+model TrafficWindow {
+  id            String @id @default(uuid())
+  fromMinutes   Int                              // минуты от полуночи: 04:00 = 240
+  toMinutes     Int                              // 07:00 = 420 (окна не пересекаются, покрывают сутки)
+  factorPercent Int                              // 100 = ×1.0 … 140 = ×1.4
+  sortOrder     Int    @default(0)
+}
+```
+
+Расчёт (чистые функции в `src/domain/capacity.ts`, юнит-тесты):
+```
+straightKm = haversine(base, point)
+roadKm     = straightKm × detourPercent/100   (× 2, если countReturnTrip)
+travelMin  = roadKm / avgSpeedKmh × 60 × trafficFactor(timeFrom)/100
+estimate   = type.onSiteMinutes + travelMin     (round)
+```
+`trafficFactor` берёт `factorPercent` окна `TrafficWindow`, в которое попадает `timeFrom` (нет времени → дневное окно). Оценка пишется в `Task.estimatedMinutes` при создании и при правке адреса/`scheduledDate`/`timeFrom`/типа в `task-service`, если `estimateIsManual=false`. Агрегация для календаря (`capacity-service.ts`): сумма `estimatedMinutes` по (`assigneeId`, `scheduledDate`) за период — дёшево, индекс `@@index([assigneeId, scheduledDate])` уже есть. «Ремонтность» задачи для подсказки §14.5 определяется по `type.requiresPricing` (выездной ремонт + гарантия); отдельное поле типа не вводим.
+
 ## 5. Статусная матрица (единственный источник — `src/domain/task-status.ts`)
 
 | Из \ В | ASSIGNED | ACCEPTED | EN_ROUTE | ON_SITE | DONE | ON_HOLD | RESCHEDULED | CANCELLED |
@@ -368,12 +422,14 @@ model PayrollStatement {
 | GET /api/kpi/overview?period | Д | кандидаты в нарушения + расчёт по всем водителям за месяц (объединяет candidates+statements одним запросом) |
 | GET /api/summary/overview?granularity&date | Д | сводка по водителям за период (день/неделя/месяц, по дате закрытия задач) — Фаза 2, только чтение |
 | GET /api/summary/export?granularity&date | Д | та же сводка файлом CSV (вложение, BOM+`;` для Excel) |
+| GET /api/capacity/calendar?from&to | Д | загрузка водителей по дням за период (Фаза 2, §4б): часы/число задач на (водитель, день) — только чтение |
 | POST /api/kpi/detect {date?} | Д | ручной прогон детектора кандидатов (та же логика, что ночной cron); идемпотентно |
 | POST /api/kpi/marks | Д | добавить отметку вручную (штраф или поощрение) |
 | POST /api/kpi/marks/:id/resolve {status} | Д | подтвердить/отклонить кандидата (CONFIRMED/DISMISSED) |
 | POST /api/kpi/periods/:period/close | Д | закрыть месяц — заморозить снимок PayrollStatement |
 | GET /api/my/kpi?period | В | мой расчёт за месяц (driverId из сессии; чужой → 404) |
 | GET/PUT /api/admin/pay-profiles, /api/admin/kpi-rules, /api/admin/kpi-settings | А | оклад/премия по водителю, веса штрафов, прогрессия/порог |
+| GET/PUT /api/admin/capacity-settings, /api/admin/traffic-windows | А | база/рабочий день/скорость/петляние/обратная дорога; коэффициенты пробок (Фаза 2, §4б) |
 
 Контракт ответов: `{ data }` или `{ error: { code, message } }`; коды ошибок доменные (`FORBIDDEN_TRANSITION`, `PHOTO_REQUIRED`, `NOT_FOUND`, `PERIOD_CLOSED`).
 
@@ -389,11 +445,12 @@ model PayrollStatement {
 - VPS в РФ (2 vCPU / 2–4 ГБ): Docker Compose — `app` (Next.js standalone), `postgres` (volume `pgdata`), `caddy` (80/443, авто-TLS). Фото — volume `/data/uploads`.
 - Бэкапы (cron на VPS): `pg_dump` ежедневно + tar uploads, хранение 14 дней локально + копия наружу (рекомендация: S3-совместимый бакет или хотя бы rsync на второй сервер/диск). Восстановление отрепетировать до пилота.
 - Релиз: см. skill deploy-release (миграции → бэкап → up → healthcheck → smoke).
-- Env: `DATABASE_URL`, `AUTH_SECRET`, `AUTH_TRUST_HOST`, `SEED_PASSWORD`, `UPLOADS_DIR`, `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY` (тот же публичный ключ — уезжает в браузер для подписки), `CRON_TZ`. Секреты — только в `.env` на сервере, в репозитории — `.env.example`.
+- Env: `DATABASE_URL`, `AUTH_SECRET`, `AUTH_TRUST_HOST`, `SEED_PASSWORD`, `UPLOADS_DIR`, `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY` (тот же публичный ключ — уезжает в браузер для подписки), `CRON_TZ`, `GEOCODER_PROVIDER`/`GEOCODER_USER_AGENT`/`DADATA_API_KEY`/`DADATA_SECRET` (геокодер ёмкости, Фаза 2 §4б; на проде — `dadata` + ключ). Секреты — только в `.env` на сервере, в репозитории — `.env.example`.
+- Прод-сид параметров ёмкости (Фаза 2): `pnpm db:seed:capacity` — безопасный (не трогает пользователей/пароли), ставит нормы типов, окна пробок, специализацию и настройки базы. Запускать после миграции `capacity_calendar`.
 - Логи: pino в stdout, `docker logs`; событийный журнал доступа — TaskEvent + auth-лог.
 
 ## 10. Тестирование
 
-- Unit (Vitest): статусная матрица (все разрешённые/запрещённые переходы), authz-функции, нумерация. KPI (Фаза 1.5): детекторы нарушений (опоздание/акт/точка на граничных данных), прогрессивный расчёт (0 ошибок = полная премия; прогрессия с 3-го нарушения; штрафы максимум обнуляют премию — итог не ниже оклада; режим ZERO — не ниже 0; сверка с примером PRD §12.3), идемпотентность детектора.
+- Unit (Vitest): статусная матрица (все разрешённые/запрещённые переходы), authz-функции, нумерация. KPI (Фаза 1.5): детекторы нарушений (опоздание/акт/точка на граничных данных), прогрессивный расчёт (0 ошибок = полная премия; прогрессия с 3-го нарушения; штрафы максимум обнуляют премию — итог не ниже оклада; режим ZERO — не ниже 0; сверка с примером PRD §12.3), идемпотентность детектора. Ёмкость (Фаза 2): haversine-расстояние, перевод в минуты с коэффициентами петляния/пробок, выбор окна `TrafficWindow` по `timeFrom` (включая отсутствие времени), оценка задачи на граничных данных; агрегация загрузки по дням.
 - e2e (Playwright): сценарий «Милена создала → назначила → водитель принял → выехал → на месте → фото → выполнено»; тесты изоляции (обязательно); требование фото при DONE. KPI: водитель видит только свой расчёт (чужой → 404); водительские ручки KPI не дают подтверждать/настраивать; закрытый месяц не меняется при правке отметок.
 - Definition of Done любой фичи — в CLAUDE.md.
