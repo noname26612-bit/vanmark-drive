@@ -49,6 +49,18 @@ function loadClass(cell: Cell, workday: number): string {
   return "bg-green-100 text-green-800";
 }
 
+// Доля заполнения дня (0–1, обрезается до 100%) и цвет полоски загрузки внутри ячейки.
+function loadFraction(cell: Cell, workday: number): number {
+  if (workday <= 0) return 0;
+  return Math.min(1, cell.minutes / workday);
+}
+function loadBarClass(cell: Cell, workday: number): string {
+  const pct = workday > 0 ? cell.minutes / workday : 0;
+  if (pct > 1) return "bg-red-500";
+  if (pct >= 0.7) return "bg-amber-500";
+  return "bg-green-500";
+}
+
 export function CapacityCalendarClient() {
   const [offset, setOffset] = useState(0); // сдвиг окна в днях (± HORIZON_DAYS)
   const base = new Date();
@@ -67,7 +79,7 @@ export function CapacityCalendarClient() {
   const [sel, setSel] = useState<{ driverId: string; driverName: string; day: string } | null>(null);
 
   return (
-    <main className="mx-auto max-w-6xl p-4">
+    <main className="mx-auto w-4/5 max-w-[1600px] p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-xl font-semibold text-neutral-900">Календарь загрузки</h1>
@@ -147,7 +159,7 @@ export function CapacityCalendarClient() {
                           type="button"
                           disabled={cell.count === 0}
                           onClick={() => setSel({ driverId: d.id, driverName: d.name, day })}
-                          className={`flex h-12 w-full flex-col items-center justify-center rounded-md ${loadClass(
+                          className={`relative flex h-14 w-full flex-col items-center justify-center gap-0.5 overflow-hidden rounded-md ${loadClass(
                             cell,
                             data.workdayMinutes,
                           )} ${cell.count > 0 ? "cursor-pointer hover:ring-2 hover:ring-neutral-300" : "cursor-default"}`}
@@ -156,6 +168,12 @@ export function CapacityCalendarClient() {
                             <>
                               <span className="text-xs font-semibold leading-tight">{formatMinutes(cell.minutes)}</span>
                               <span className="text-[10px] leading-tight">{cell.count} зад.</span>
+                              <span className="absolute inset-x-1.5 bottom-1 block h-1 overflow-hidden rounded-full bg-black/10">
+                                <span
+                                  className={`block h-full rounded-full ${loadBarClass(cell, data.workdayMinutes)}`}
+                                  style={{ width: `${loadFraction(cell, data.workdayMinutes) * 100}%` }}
+                                />
+                              </span>
                             </>
                           ) : (
                             <span className="text-xs">—</span>
