@@ -12,10 +12,12 @@ import {
   STATUS_LABEL,
   PASS_BADGE,
   PASS_LABEL,
+  actBadge,
   addDaysISO,
   formatDate,
   formatDateShort,
 } from "@/lib/task-ui";
+import { actState } from "@/domain/act";
 import { TypeIcon } from "@/components/type-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -446,6 +448,14 @@ function BoardCard({
   onQuickAssign: (taskId: string, assigneeId: string) => void;
 }) {
   const hasTime = task.timeFrom || task.timeTo || task.timeNote;
+  // Признак комплектности акта на доске (этап 14, «хвост»): показываем ТОЛЬКО на завершённой актовой
+  // задаче — это сигнал Милене «акт приложен ✓ / не приложен». На текущих задачах акт ещё рано — не шумим.
+  const actSt = actState({
+    requiresSignedDoc: task.requiresSignedDoc,
+    actWaivedNote: task.actWaivedNote,
+    hasSignedDoc: task.hasSignedDoc ?? false,
+  });
+  const act = task.status === "DONE" && (actSt === "COMPLETE" || actSt === "PENDING") ? actBadge(actSt, true) : null;
   return (
     <div
       draggable
@@ -487,8 +497,13 @@ function BoardCard({
           </p>
         ) : null}
       </div>
-      {task.passStatus !== "NOT_NEEDED" ? (
-        <Badge className={`mt-1 ${PASS_BADGE[task.passStatus]}`}>{PASS_LABEL[task.passStatus]}</Badge>
+      {task.passStatus !== "NOT_NEEDED" || act ? (
+        <div className="mt-1 flex flex-wrap items-center gap-1">
+          {task.passStatus !== "NOT_NEEDED" ? (
+            <Badge className={PASS_BADGE[task.passStatus]}>{PASS_LABEL[task.passStatus]}</Badge>
+          ) : null}
+          {act ? <Badge className={act.className}>{act.label}</Badge> : null}
+        </div>
       ) : null}
       {showAssign ? (
         <select
