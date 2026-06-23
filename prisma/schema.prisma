@@ -78,6 +78,9 @@ model User {
   login          String               @unique // латиница, вводится при входе
   passwordHash   String // argon2id, см. src/lib/password.ts
   name           String // «Милена», «Алексей Писарев»
+  // Должность для отображения в шапке (напр. «Директор» у Михаила при role=ADMIN). НЕ право:
+  // права определяет role. null → подпись берётся по роли (roleLabel). Решение Артёма 23.06.2026.
+  position       String?
   phone          String?
   role           Role
   isActive       Boolean              @default(true)

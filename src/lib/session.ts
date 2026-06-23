@@ -10,13 +10,14 @@ export type SessionUser = {
   login: string;
   role: Role;
   name?: string | null;
+  position?: string | null; // должность для отображения (напр. «Директор»); null → подпись по роли
 };
 
 export async function getSessionUser(): Promise<SessionUser | null> {
   const session = await auth();
   if (!session?.user?.id) return null;
-  const { id, login, role, name } = session.user;
-  return { id, login, role, name };
+  const { id, login, role, name, position } = session.user;
+  return { id, login, role, name, position };
 }
 
 /** Требует авторизации; иначе — на страницу входа. */

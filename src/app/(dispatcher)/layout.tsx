@@ -9,7 +9,7 @@ export default async function DispatcherLayout({ children }: { children: ReactNo
   const user = await requireAnyRole("DISPATCHER", "ADMIN");
   return (
     <div className="min-h-screen bg-neutral-50">
-      <AppHeader name={user.name} role={user.role} />
+      <AppHeader name={user.name} role={user.role} position={user.position} />
       <PwaControls />
       <DispatcherNav showAdmin={user.role === "ADMIN"} />
       {children}

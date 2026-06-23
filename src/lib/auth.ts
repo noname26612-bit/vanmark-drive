@@ -59,7 +59,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         }
 
         recordSuccess(login);
-        return { id: user.id, login: user.login, name: user.name, role: user.role };
+        return { id: user.id, login: user.login, name: user.name, role: user.role, position: user.position };
       },
     }),
   ],
@@ -70,6 +70,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         token.uid = user.id ?? "";
         token.login = user.login;
         token.role = user.role;
+        token.position = user.position ?? null;
       }
       return token;
     },
@@ -78,11 +79,12 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     // читаем через выверенный каст (значения кладём сами в jwt-колбэке выше) —
     // это «обоснованный unknown-парсинг» из CLAUDE.md.
     session({ session, token }) {
-      const t = token as { uid?: string; login?: string; role?: Role };
+      const t = token as { uid?: string; login?: string; role?: Role; position?: string | null };
       if (t.uid && t.login && t.role) {
         session.user.id = t.uid;
         session.user.login = t.login;
         session.user.role = t.role;
+        session.user.position = t.position ?? null;
       }
       return session;
     },

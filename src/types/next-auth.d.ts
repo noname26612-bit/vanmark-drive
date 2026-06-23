@@ -9,6 +9,7 @@ declare module "next-auth" {
   interface User {
     role: Role;
     login: string;
+    position?: string | null; // должность для отображения (напр. «Директор»), не право
   }
 
   interface Session {
@@ -16,6 +17,7 @@ declare module "next-auth" {
       id: string;
       login: string;
       role: Role;
+      position?: string | null; // должность для отображения в шапке; null → подпись по роли
     } & DefaultSession["user"];
   }
 }

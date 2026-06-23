@@ -8,7 +8,7 @@ export default async function DriverLayout({ children }: { children: ReactNode }
   const user = await requireRole("DRIVER");
   return (
     <div className="mx-auto min-h-screen max-w-md bg-white">
-      <AppHeader name={user.name} role={user.role} />
+      <AppHeader name={user.name} role={user.role} position={user.position} />
       <PwaControls />
       {children}
     </div>

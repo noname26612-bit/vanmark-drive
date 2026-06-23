@@ -25,11 +25,15 @@ type SeedUser = {
   name: string;
   role: Role;
   canLogin?: boolean; // по умолчанию true
+  position?: string; // должность для отображения в шапке (напр. «Директор»); не право
 };
 
 // Команда из ROADMAP этап 1 + внешний перевозчик из PRD §2 (без права входа) + подменный водитель.
 const USERS: SeedUser[] = [
   { login: "artem", name: "Артём", role: "ADMIN" },
+  // Михаил — ген. директор: полные права ADMIN (как у Артёма), в шапке подпись «Директор»
+  // (решение Артёма 23.06.2026). На проде заводится безопасно через seed-roster.ts.
+  { login: "mikhail", name: "Михаил", role: "ADMIN", position: "Директор" },
   { login: "milena", name: "Милена", role: "DISPATCHER" },
   { login: "kashirskiy", name: "Алексей Каширский", role: "DRIVER" },
   { login: "pisarev", name: "Алексей Писарев", role: "DRIVER" },
@@ -94,8 +98,8 @@ async function main(defaultPassword: string): Promise<void> {
     const passwordHash = await hashPassword(passwordFor(u.login, defaultPassword));
     await prisma.user.upsert({
       where: { login: u.login },
-      update: { name: u.name, role: u.role, canLogin, isActive: true, passwordHash },
-      create: { login: u.login, name: u.name, role: u.role, canLogin, passwordHash },
+      update: { name: u.name, role: u.role, canLogin, isActive: true, passwordHash, position: u.position ?? null },
+      create: { login: u.login, name: u.name, role: u.role, canLogin, passwordHash, position: u.position ?? null },
     });
     console.log(`  ✓ ${u.login} — ${u.name} (${u.role}${canLogin ? "" : ", без входа"})`);
   }
