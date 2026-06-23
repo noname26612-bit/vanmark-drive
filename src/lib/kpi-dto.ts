@@ -1,6 +1,6 @@
 // Сериализуемые типы KPI для границы сервер↔клиент (как task-dto). Без импортов prisma-клиента,
 // чтобы безопасно использоваться в клиентских компонентах. Источник арифметики — src/domain/kpi.ts.
-import type { KpiMarkKind, KpiMarkStatus, PayoutFloor } from "@/generated/prisma/enums";
+import type { KpiMarkKind, KpiMarkStatus, PayoutFloor, TaskStatus, ShiftStatus } from "@/generated/prisma/enums";
 import type { BreakdownItem, ActBonusResult } from "@/domain/kpi";
 
 export type { BreakdownItem, ActBonusResult };
@@ -28,6 +28,27 @@ export type MarkView = {
   penaltyAmount: number | null;
   resolvedById: string | null;
   resolvedAt: string | null;
+};
+
+// Детали нарушения для drill-down (доработка №1): к базовому MarkView добавляем разбор «почему
+// засчиталось» — состояние задачи (для UNSIGNED_DOCS/MISSED_STOP), смены (для SHIFT_LATE) и кто
+// завёл/разобрал отметку. Грузится по требованию (GET /api/kpi/marks/:id), только админ/диспетчер.
+export type MarkDetailView = MarkView & {
+  // Задача (UNSIGNED_DOCS / MISSED_STOP)
+  taskStatus: TaskStatus | null;
+  taskScheduledDate: string | null; // YYYY-MM-DD
+  taskCompletedAt: string | null; // ISO
+  taskRequiresSignedDoc: boolean | null;
+  taskHasDocument: boolean | null; // приложен ли подписанный акт (DOCUMENT)
+  // Смена (SHIFT_LATE)
+  shiftDate: string | null; // YYYY-MM-DD
+  shiftOpenedAt: string | null; // ISO — фактическое открытие смены водителем
+  shiftConfirmedAt: string | null; // ISO — диспетчер подтвердил приход
+  shiftStatus: ShiftStatus | null;
+  shiftThresholdMinutes: number | null; // порог «поздно» в минутах от полуночи (напр. 555 = 9:15)
+  // Разбор отметки
+  createdByName: string | null; // кто завёл (для ручной отметки)
+  resolvedByName: string | null; // кто подтвердил/отклонил
 };
 
 export type DriverPayrollView = {

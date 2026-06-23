@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import useSWR from "swr";
 import { fetcher, apiSend } from "@/lib/fetcher";
 import { cn } from "@/lib/cn";
-import { formatMoney, formatDate, formatPeriod, shiftPeriod } from "@/lib/task-ui";
+import { formatMoney, formatDate, formatPeriod, shiftPeriod, STATUS_LABEL } from "@/lib/task-ui";
 import { KPI_KIND_LABEL, KPI_KIND_BADGE, actBonusSummary } from "@/lib/kpi-dto";
-import type { KpiOverview, MarkView, DriverPayrollView } from "@/lib/kpi-dto";
+import type { KpiOverview, MarkView, MarkDetailView, DriverPayrollView } from "@/lib/kpi-dto";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
@@ -17,8 +18,16 @@ import { Textarea } from "@/components/ui/textarea";
 
 export function KpiClient({ initialPeriod }: { initialPeriod: string }) {
   const [period, setPeriod] = useState(initialPeriod);
-  const { data, mutate, isLoading } = useSWR<KpiOverview>(`/api/kpi/overview?period=${period}`, fetcher);
+  // Лайв-обновление (доработка №2): экран сам перетягивает картину раз в 20 с, поэтому исправленные
+  // нарушения (задача доведена до «Выполнено» / приложен акт) уходят из списка без перезагрузки.
+  // Интервал мягче доски (10 с) — экран тяжелее и не такой горячий.
+  const { data, mutate, isLoading } = useSWR<KpiOverview>(`/api/kpi/overview?period=${period}`, fetcher, {
+    refreshInterval: 20_000,
+    revalidateOnFocus: true,
+    keepPreviousData: true,
+  });
   const [manualFor, setManualFor] = useState<DriverPayrollView | null>(null);
+  const [detailFor, setDetailFor] = useState<string | null>(null); // markId для drill-down (№1)
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -95,7 +104,12 @@ export function KpiClient({ initialPeriod }: { initialPeriod: string }) {
               Найти нарушения за сегодня
             </Button>
           </div>
-          <CandidatesSection candidates={data?.candidates ?? []} closed={closed} onChanged={() => void mutate()} />
+          <CandidatesSection
+            candidates={data?.candidates ?? []}
+            closed={closed}
+            onChanged={() => void mutate()}
+            onDetails={setDetailFor}
+          />
 
           <section className="mt-8">
             <div className="flex items-center justify-between">
@@ -121,6 +135,7 @@ export function KpiClient({ initialPeriod }: { initialPeriod: string }) {
                     closed={closed}
                     payrollVisible={payrollVisible}
                     onAddMark={() => setManualFor(d)}
+                    onDetails={setDetailFor}
                   />
                 ))}
               </div>
@@ -140,6 +155,8 @@ export function KpiClient({ initialPeriod }: { initialPeriod: string }) {
           }}
         />
       ) : null}
+
+      {detailFor ? <MarkDetailModal markId={detailFor} onClose={() => setDetailFor(null)} /> : null}
     </main>
   );
 }
@@ -148,10 +165,12 @@ function CandidatesSection({
   candidates,
   closed,
   onChanged,
+  onDetails,
 }: {
   candidates: MarkView[];
   closed: boolean;
   onChanged: () => void;
+  onDetails: (markId: string) => void;
 }) {
   if (candidates.length === 0) {
     return <p className="mt-2 text-sm text-neutral-500">Новых кандидатов нет — система ничего не нашла.</p>;
@@ -159,13 +178,23 @@ function CandidatesSection({
   return (
     <ul className="mt-3 divide-y divide-neutral-100 overflow-hidden rounded-xl border border-neutral-200 bg-white">
       {candidates.map((m) => (
-        <CandidateRow key={m.id} mark={m} closed={closed} onChanged={onChanged} />
+        <CandidateRow key={m.id} mark={m} closed={closed} onChanged={onChanged} onDetails={onDetails} />
       ))}
     </ul>
   );
 }
 
-function CandidateRow({ mark, closed, onChanged }: { mark: MarkView; closed: boolean; onChanged: () => void }) {
+function CandidateRow({
+  mark,
+  closed,
+  onChanged,
+  onDetails,
+}: {
+  mark: MarkView;
+  closed: boolean;
+  onChanged: () => void;
+  onDetails: (markId: string) => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -200,16 +229,22 @@ function CandidateRow({ mark, closed, onChanged }: { mark: MarkView; closed: boo
         </span>
       ) : null}
       {error ? <span className="text-xs text-red-600">{error}</span> : null}
-      {!closed ? (
-        <span className="flex gap-2">
-          <Button variant="secondary" className="h-8 px-3" disabled={busy} onClick={() => resolve("CONFIRMED")}>
-            Подтвердить
-          </Button>
-          <Button variant="ghost" className="h-8 px-3" disabled={busy} onClick={() => resolve("DISMISSED")}>
-            Отклонить
-          </Button>
-        </span>
-      ) : null}
+      <span className="flex gap-2">
+        {/* Drill-down (№1): разбор нарушения. Доступен всегда, в т.ч. в закрытом месяце. */}
+        <Button variant="ghost" className="h-8 px-2 text-xs" disabled={busy} onClick={() => onDetails(mark.id)}>
+          Подробнее
+        </Button>
+        {!closed ? (
+          <>
+            <Button variant="secondary" className="h-8 px-3" disabled={busy} onClick={() => resolve("CONFIRMED")}>
+              Подтвердить
+            </Button>
+            <Button variant="ghost" className="h-8 px-3" disabled={busy} onClick={() => resolve("DISMISSED")}>
+              Отклонить
+            </Button>
+          </>
+        ) : null}
+      </span>
     </li>
   );
 }
@@ -219,11 +254,13 @@ function DriverCard({
   closed,
   payrollVisible,
   onAddMark,
+  onDetails,
 }: {
   driver: DriverPayrollView;
   closed: boolean;
   payrollVisible: boolean;
   onAddMark: () => void;
+  onDetails: (markId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   // Итог штрафов по водителю для диспетчера (доработка №10): тарифы авто-нарушений + ручные штрафы.
@@ -295,20 +332,25 @@ function DriverCard({
           <ul className="mt-2 divide-y divide-neutral-100 border-t border-neutral-100 text-sm">
             {driver.marks.map((m) => (
               <li key={m.id} className="flex items-center justify-between gap-2 py-1.5">
-                <span className="flex items-center gap-2">
+                <span className="flex min-w-0 items-center gap-2">
                   <Badge className={KPI_KIND_BADGE[m.kind]}>{KPI_KIND_LABEL[m.kind]}</Badge>
                   <span className="text-neutral-500">{formatDate(m.occurredAt)}</span>
                   {m.taskNumber ? <span className="text-neutral-600">№{m.taskNumber}</span> : null}
-                  {m.note ? <span className="text-neutral-400">{m.note}</span> : null}
+                  {m.note ? <span className="truncate text-neutral-400">{m.note}</span> : null}
                 </span>
-                {m.kind === "MANUAL" && m.manualAmount != null ? (
-                  <span className={m.manualAmount >= 0 ? "text-green-700" : "text-red-600"}>
-                    {m.manualAmount >= 0 ? "+" : "−"}
-                    {formatMoney(Math.abs(m.manualAmount))}
-                  </span>
-                ) : m.penaltyAmount != null && m.penaltyAmount !== 0 ? (
-                  <span className="text-red-600">−{formatMoney(Math.abs(m.penaltyAmount))}</span>
-                ) : null}
+                <span className="flex shrink-0 items-center gap-2">
+                  {m.kind === "MANUAL" && m.manualAmount != null ? (
+                    <span className={m.manualAmount >= 0 ? "text-green-700" : "text-red-600"}>
+                      {m.manualAmount >= 0 ? "+" : "−"}
+                      {formatMoney(Math.abs(m.manualAmount))}
+                    </span>
+                  ) : m.penaltyAmount != null && m.penaltyAmount !== 0 ? (
+                    <span className="text-red-600">−{formatMoney(Math.abs(m.penaltyAmount))}</span>
+                  ) : null}
+                  <Button variant="ghost" className="h-7 px-2 text-xs" onClick={() => onDetails(m.id)}>
+                    Подробнее
+                  </Button>
+                </span>
               </li>
             ))}
           </ul>
@@ -481,6 +523,124 @@ function ManualMarkModal({
           </Button>
         </div>
       </div>
+    </Modal>
+  );
+}
+
+const MARK_STATUS_LABEL: Record<string, string> = {
+  CANDIDATE: "Кандидат (не разобран)",
+  CONFIRMED: "Подтверждено",
+  DISMISSED: "Отклонено",
+};
+
+function fmtTime(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtMinutes(min: number | null): string {
+  if (min == null) return "—";
+  return `${Math.floor(min / 60)}:${String(min % 60).padStart(2, "0")}`;
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <span className="text-neutral-500">{label}</span>
+      <span className="text-right font-medium text-neutral-800">{value}</span>
+    </div>
+  );
+}
+
+/** Drill-down (№1): карточка нарушения с разбором «почему засчиталось». Грузит детали по требованию. */
+function MarkDetailModal({ markId, onClose }: { markId: string; onClose: () => void }) {
+  const { data, isLoading } = useSWR<MarkDetailView>(`/api/kpi/marks/${markId}`, fetcher);
+  const title = data ? KPI_KIND_LABEL[data.kind] : "Нарушение";
+  return (
+    <Modal open onClose={onClose} title={`Нарушение — ${title}`}>
+      {isLoading && !data ? (
+        <p className="text-sm text-neutral-400">Загрузка…</p>
+      ) : !data ? (
+        <p className="text-sm text-red-600">Не удалось загрузить детали.</p>
+      ) : (
+        <div className="flex flex-col gap-3 text-sm">
+          <DetailRow label="Водитель" value={data.driverName} />
+          <DetailRow label="Дата" value={formatDate(data.occurredAt)} />
+          <DetailRow label="Статус отметки" value={MARK_STATUS_LABEL[data.status] ?? data.status} />
+          {data.penaltyAmount != null && data.penaltyAmount !== 0 ? (
+            <DetailRow
+              label="Сумма штрафа"
+              value={`${data.penaltyAmount < 0 ? "+" : "−"}${formatMoney(Math.abs(data.penaltyAmount))}`}
+            />
+          ) : null}
+
+          {/* «Поздно открыл смену» — разбор по смене */}
+          {data.kind === "SHIFT_LATE" ? (
+            <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-neutral-600">
+              <p className="mb-1 font-medium text-neutral-800">Почему засчиталось</p>
+              <p>
+                Смена открыта в {fmtTime(data.shiftOpenedAt)}, порог — {fmtMinutes(data.shiftThresholdMinutes)}.
+                Открытие позже порога засчитывается как «поздно открыл смену».
+              </p>
+              <p className="mt-1 text-neutral-500">
+                Приход {data.shiftConfirmedAt ? `подтверждён в ${fmtTime(data.shiftConfirmedAt)}` : "ещё не подтверждён"}.
+              </p>
+            </div>
+          ) : null}
+
+          {/* «Без акта» / «Невыполненная точка» — разбор по задаче + переход в карточку */}
+          {data.taskId ? (
+            <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-neutral-600">
+              <p className="mb-1 font-medium text-neutral-800">
+                Задача №{data.taskNumber} · {data.taskTitle}
+              </p>
+              {data.kind === "UNSIGNED_DOCS" ? (
+                <p>
+                  Завершена{data.taskCompletedAt ? ` ${formatDate(data.taskCompletedAt)}` : ""}, акт требовался, но
+                  подписанный документ не приложен.
+                </p>
+              ) : null}
+              {data.kind === "MISSED_STOP" ? (
+                <p>
+                  Запланирована на {data.taskScheduledDate ? formatDate(data.taskScheduledDate) : "—"}, не доведена до
+                  «Выполнено» (статус: {data.taskStatus ? STATUS_LABEL[data.taskStatus] : "—"}).
+                </p>
+              ) : null}
+              <Link href={`/tasks/${data.taskId}`} className="mt-2 inline-block font-medium text-blue-600 hover:underline">
+                Открыть задачу →
+              </Link>
+            </div>
+          ) : null}
+
+          {/* Ручная отметка */}
+          {data.kind === "MANUAL" ? (
+            <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-neutral-600">
+              {data.manualAmount != null ? (
+                <p className="text-neutral-700">
+                  {data.manualAmount >= 0 ? "Поощрение" : "Штраф"}: {data.manualAmount >= 0 ? "+" : "−"}
+                  {formatMoney(Math.abs(data.manualAmount))}
+                </p>
+              ) : null}
+              {data.note ? <p className="mt-1">{data.note}</p> : null}
+              {data.createdByName ? <p className="mt-1 text-neutral-500">Завёл: {data.createdByName}</p> : null}
+            </div>
+          ) : null}
+
+          {/* Кто и когда разобрал */}
+          {data.resolvedByName || data.resolvedAt ? (
+            <DetailRow
+              label={data.status === "DISMISSED" ? "Отклонил" : "Подтвердил"}
+              value={`${data.resolvedByName ?? "—"}${data.resolvedAt ? ` · ${formatDate(data.resolvedAt)}` : ""}`}
+            />
+          ) : null}
+
+          <div className="mt-1 flex justify-end">
+            <Button variant="ghost" onClick={onClose}>
+              Закрыть
+            </Button>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }
