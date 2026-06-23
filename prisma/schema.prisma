@@ -73,6 +73,13 @@ enum ShiftStatus {
   CLOSED // водитель закрыл смену
 }
 
+// Тип отсутствия водителя (№9, решение Артёма 23.06): отпуск / больничный / прочее.
+enum AbsenceType {
+  VACATION // отпуск
+  SICK // больничный
+  OTHER // прочее (отгул и т.п.)
+}
+
 model User {
   id             String               @id @default(uuid())
   login          String               @unique // латиница, вводится при входе
@@ -101,6 +108,7 @@ model User {
   payStatements   PayrollStatement[] @relation("payStatements") // закрытые расчёты за месяцы
   uiPrefs         UiPreference[] // настройки интерфейса (раскладка доски/планирования)
   shifts          Shift[]            @relation("shiftDriver") // смены водителя (этап C)
+  absences        DriverAbsence[]    @relation("driverAbsence") // отпуска/больничные водителя (№9)
 }
 
 // Справочник типов задач (PRD §3). Новые типы заводит админ без правки кода.
@@ -310,6 +318,24 @@ model Shift {
 
   @@unique([driverId, date]) // одна смена на водителя в день
   @@index([date, status])
+}
+
+// Отсутствие водителя (№9, решение Артёма 23.06): отпуск/больничный/прочее на диапазон дат.
+// Заводят админ и диспетчер. Влияет на Календарь загрузки (дни «гасятся») и KPI (в отпуск не штрафуем
+// «невыполненную точку»). driverId — за другого (исключение из изоляции): валидируется как DRIVER в сервисе.
+model DriverAbsence {
+  id          String      @id @default(uuid())
+  driverId    String
+  driver      User        @relation("driverAbsence", fields: [driverId], references: [id])
+  dateFrom    DateTime    @db.Date // включительно
+  dateTo      DateTime    @db.Date // включительно
+  type        AbsenceType @default(VACATION)
+  note        String?
+  createdById String? // кто завёл (uuid без навигации, как принято)
+  createdAt   DateTime    @default(now())
+
+  @@index([driverId, dateFrom])
+  @@index([dateFrom, dateTo])
 }
 
 // ───────────────────────────── KPI и зарплата (Фаза 1.5) ─────────────────────────────

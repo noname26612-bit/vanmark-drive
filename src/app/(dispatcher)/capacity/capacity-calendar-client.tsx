@@ -3,7 +3,7 @@
 import { useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { fetcher } from "@/lib/fetcher";
+import { fetcher, apiSend } from "@/lib/fetcher";
 import { formatMinutes } from "@/domain/capacity";
 import type { TaskDTO } from "@/lib/task-dto";
 import { Badge } from "@/components/ui/badge";
@@ -14,15 +14,34 @@ const HORIZON_DAYS = 14; // 2 недели (PRD §14.4)
 
 type Spec = "REPAIR" | "DELIVERY" | "ANY";
 type Cell = { minutes: number; count: number };
+type AbsenceKind = "VACATION" | "SICK" | "OTHER";
+type Absence = {
+  id: string;
+  driverId: string;
+  driverName: string | null;
+  dateFrom: string;
+  dateTo: string;
+  type: AbsenceKind;
+  note: string | null;
+};
 type Calendar = {
   workdayMinutes: number;
   days: string[];
   drivers: { id: string; name: string; specialization: Spec }[];
   cells: Record<string, Record<string, Cell>>;
+  absences: Record<string, Absence[]>; // [driverId] → отпуска/больничные (№9)
 };
 
 const SPEC_LABEL: Record<Spec, string> = { REPAIR: "Ремонты", DELIVERY: "Доставки", ANY: "Любые" };
+const ABSENCE_LABEL: Record<AbsenceKind, string> = { VACATION: "Отпуск", SICK: "Больничный", OTHER: "Отсутствие" };
+const ABSENCE_SHORT: Record<AbsenceKind, string> = { VACATION: "Отпуск", SICK: "Больн.", OTHER: "Нет" };
 const WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+
+// Отпуск/больничный, покрывающий день (строки YYYY-MM-DD сравниваются хронологически).
+function absenceOnDay(list: Absence[] | undefined, day: string): Absence | null {
+  if (!list) return null;
+  return list.find((a) => a.dateFrom <= day && day <= a.dateTo) ?? null;
+}
 
 function localKey(d: Date): string {
   const y = d.getFullYear();
@@ -70,13 +89,14 @@ export function CapacityCalendarClient() {
   toDate.setDate(toDate.getDate() + HORIZON_DAYS - 1);
   const to = localKey(toDate);
 
-  const { data, isLoading } = useSWR<Calendar>(
+  const { data, isLoading, mutate } = useSWR<Calendar>(
     `/api/capacity/calendar?from=${from}&to=${to}`,
     fetcher,
     { refreshInterval: 30_000, keepPreviousData: true },
   );
 
   const [sel, setSel] = useState<{ driverId: string; driverName: string; day: string } | null>(null);
+  const [absOpen, setAbsOpen] = useState(false); // модалка управления отпусками (№9)
 
   return (
     <main className="mx-auto w-4/5 max-w-[1600px] p-4">
@@ -88,6 +108,9 @@ export function CapacityCalendarClient() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="secondary" onClick={() => setAbsOpen(true)}>
+            Отпуска
+          </Button>
           <Button variant="secondary" onClick={() => setOffset((o) => o - HORIZON_DAYS)}>
             ‹ Раньше
           </Button>
@@ -110,6 +133,9 @@ export function CapacityCalendarClient() {
         </span>
         <span className="inline-flex items-center gap-1">
           <span className="h-3 w-3 rounded bg-red-100" /> перегруз (&gt;100%)
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="h-3 w-3 rounded bg-neutral-200" /> отпуск / нет на работе
         </span>
         {data ? <span>· рабочий день {formatMinutes(data.workdayMinutes)}</span> : null}
       </div>
@@ -153,6 +179,26 @@ export function CapacityCalendarClient() {
                   </th>
                   {data.days.map((day) => {
                     const cell = data.cells[d.id]?.[day] ?? { minutes: 0, count: 0 };
+                    const abs = absenceOnDay(data.absences[d.id], day);
+                    // Дни отпуска/больничного «гасим» (№9): наглядно, что водителя нет. Если на этот
+                    // день всё же висит задача — подсвечиваем как проблему (нужно перепланировать).
+                    if (abs) {
+                      return (
+                        <td key={day} className="p-1 text-center">
+                          <div
+                            className="flex h-14 w-full flex-col items-center justify-center gap-0.5 rounded-md bg-neutral-200 text-neutral-500"
+                            title={ABSENCE_LABEL[abs.type] + (abs.note ? ` · ${abs.note}` : "")}
+                          >
+                            <span className="text-[11px] font-medium leading-tight">{ABSENCE_SHORT[abs.type]}</span>
+                            {cell.count > 0 ? (
+                              <span className="text-[10px] font-semibold leading-tight text-red-600">
+                                {cell.count} зад.!
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
+                      );
+                    }
                     return (
                       <td key={day} className="p-1 text-center">
                         <button
@@ -190,7 +236,143 @@ export function CapacityCalendarClient() {
       )}
 
       <DayDetail sel={sel} onClose={() => setSel(null)} workdayMinutes={data?.workdayMinutes ?? 0} />
+
+      {absOpen ? (
+        <AbsenceManager
+          drivers={data?.drivers ?? []}
+          absences={data ? Object.values(data.absences).flat() : []}
+          onClose={() => setAbsOpen(false)}
+          onChanged={() => void mutate()}
+        />
+      ) : null}
     </main>
+  );
+}
+
+// Управление отпусками/отсутствиями (№9): форма добавления + список текущих с удалением. Заводят
+// админ и диспетчер. driverId выбирается явно (отпуск ставится за водителя — исключение из изоляции).
+function AbsenceManager({
+  drivers,
+  absences,
+  onClose,
+  onChanged,
+}: {
+  drivers: { id: string; name: string }[];
+  absences: Absence[];
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [driverId, setDriverId] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [type, setType] = useState<AbsenceKind>("VACATION");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const inputCls = "h-10 rounded-lg border border-neutral-300 px-3 text-sm outline-none focus:border-neutral-900";
+
+  async function add() {
+    if (!driverId || !from || !to) {
+      setError("Выберите водителя и период");
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    try {
+      await apiSend("/api/absences", "POST", {
+        driverId,
+        dateFrom: from,
+        dateTo: to,
+        type,
+        note: note.trim() || undefined,
+      });
+      setFrom("");
+      setTo("");
+      setNote("");
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: string) {
+    setError(null);
+    setBusy(true);
+    try {
+      await apiSend(`/api/absences/${id}`, "DELETE");
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const sorted = [...absences].sort((a, b) => a.dateFrom.localeCompare(b.dateFrom));
+
+  return (
+    <Modal open onClose={onClose} title="Отпуска и отсутствия">
+      <div className="flex flex-col gap-3">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <select value={driverId} onChange={(e) => setDriverId(e.target.value)} className={inputCls}>
+            <option value="">— водитель —</option>
+            {drivers.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+          <select value={type} onChange={(e) => setType(e.target.value as AbsenceKind)} className={inputCls}>
+            <option value="VACATION">Отпуск</option>
+            <option value="SICK">Больничный</option>
+            <option value="OTHER">Отсутствие</option>
+          </select>
+          <label className="flex items-center gap-2 text-sm text-neutral-600">
+            С <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={`${inputCls} flex-1`} />
+          </label>
+          <label className="flex items-center gap-2 text-sm text-neutral-600">
+            По <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={`${inputCls} flex-1`} />
+          </label>
+        </div>
+        <input
+          type="text"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Комментарий (по желанию)"
+          className={inputCls}
+        />
+        {error ? <p className="text-sm text-red-600">{error}</p> : null}
+        <div className="flex justify-end">
+          <Button disabled={busy} onClick={add}>
+            Добавить
+          </Button>
+        </div>
+
+        <div className="border-t border-neutral-100 pt-3">
+          <p className="mb-2 text-sm font-medium text-neutral-700">В этом окне календаря</p>
+          {sorted.length === 0 ? (
+            <p className="text-sm text-neutral-400">Записей нет.</p>
+          ) : (
+            <ul className="flex flex-col gap-1.5">
+              {sorted.map((a) => (
+                <li key={a.id} className="flex items-center justify-between gap-2 rounded-lg border border-neutral-200 px-3 py-2 text-sm">
+                  <span className="min-w-0 truncate text-neutral-700">
+                    {a.driverName} · {ABSENCE_LABEL[a.type]} · {a.dateFrom.slice(5)}–{a.dateTo.slice(5)}
+                    {a.note ? ` · ${a.note}` : ""}
+                  </span>
+                  <Button variant="ghost" className="h-8 shrink-0 px-2 text-xs" disabled={busy} onClick={() => remove(a.id)}>
+                    Убрать
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }
 

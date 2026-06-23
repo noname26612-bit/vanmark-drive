@@ -5,6 +5,7 @@
 // нет ручки, принимающей driverId извне для роли водителя.
 import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
+import { absenceDaysByDriver } from "./absence-service";
 import {
   computePay,
   computeActBonus,
@@ -287,6 +288,8 @@ export async function detectCandidatesForDate(
   // Отметки заводим только по водителям, участвующим в KPI (с денежным профилем). Задачи Николая
   // и внешнего перевозчика детектор пропускает — они вне расчёта (PRD §12, §2).
   const tracked = await trackedDriverIds();
+  // Дни отпуска/больничного за этот день (№9): в них «невыполненную точку» не штрафуем.
+  const absentDays = await absenceDaysByDriver(dayKey, dayKey);
   const [tasks, shifts, settings] = await Promise.all([
     prisma.task.findMany({
       where: {
@@ -360,12 +363,16 @@ export async function detectCandidatesForDate(
         hasSignedDoc: t.attachments.length > 0,
       }),
     );
-    push(
-      detectMissedStop(
-        { driverId: t.assigneeId, taskId: t.id, scheduledDate: t.scheduledDate, status: t.status },
-        asOf,
-      ),
+    const missed = detectMissedStop(
+      { driverId: t.assigneeId, taskId: t.id, scheduledDate: t.scheduledDate, status: t.status },
+      asOf,
     );
+    // В дни отпуска/больничного водителя «невыполненную точку» не штрафуем (№9, решение Артёма).
+    const inAbsence =
+      missed && t.assigneeId != null && t.scheduledDate != null
+        ? (absentDays.get(t.assigneeId)?.has(utcDateKey(t.scheduledDate)) ?? false)
+        : false;
+    if (!inAbsence) push(missed);
   }
 
   // Метрика смены: поздно открыл смену (позже порога 9:15).

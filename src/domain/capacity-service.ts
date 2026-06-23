@@ -4,6 +4,7 @@
 import { prisma } from "@/lib/prisma";
 import type { DriverSpecialization } from "@/generated/prisma/enums";
 import { Errors } from "./errors";
+import { listAbsencesInRange, type AbsenceView } from "./absence-service";
 import {
   estimateTask,
   type CapacityParams,
@@ -151,6 +152,7 @@ export type WorkloadCalendar = {
   days: string[]; // YYYY-MM-DD по возрастанию
   drivers: { id: string; name: string; specialization: DriverSpecialization }[];
   cells: Record<string, Record<string, WorkloadCell>>; // [driverId][dateKey] → загрузка
+  absences: Record<string, AbsenceView[]>; // [driverId] → отпуска/больничные, пересекающие период (№9)
 };
 
 function dayKey(d: Date): string {
@@ -175,7 +177,7 @@ export async function buildWorkloadCalendar(fromKey: string, toKey: string): Pro
     if (days.length > 31) throw Errors.validation("Слишком длинный период (макс. 31 день)");
   }
 
-  const [settings, drivers, tasks] = await Promise.all([
+  const [settings, drivers, tasks, absences] = await Promise.all([
     getCapacitySettings(),
     prisma.user.findMany({
       where: { role: "DRIVER", isActive: true },
@@ -195,6 +197,7 @@ export async function buildWorkloadCalendar(fromKey: string, toKey: string): Pro
         type: { select: { onSiteMinutes: true } },
       },
     }),
+    listAbsencesInRange(fromKey, toKey),
   ]);
 
   // Инициализируем полную сетку нулями, чтобы у клиента не было дыр.
@@ -215,7 +218,14 @@ export async function buildWorkloadCalendar(fromKey: string, toKey: string): Pro
     cell.count += 1;
   }
 
-  return { workdayMinutes: settings.workdayMinutes, days, drivers, cells };
+  // Отпуска/больничные по водителям (№9) — для затенения дней в календаре. Только списочные водители.
+  const absencesByDriver: Record<string, AbsenceView[]> = {};
+  for (const d of drivers) absencesByDriver[d.id] = [];
+  for (const a of absences) {
+    if (absencesByDriver[a.driverId]) absencesByDriver[a.driverId].push(a);
+  }
+
+  return { workdayMinutes: settings.workdayMinutes, days, drivers, cells, absences: absencesByDriver };
 }
 
 export function listDriversWithSpecialization() {
