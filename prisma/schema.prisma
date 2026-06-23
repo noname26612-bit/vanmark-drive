@@ -151,6 +151,10 @@ model Task {
   paymentType      PaymentType @default(NONE)
   paymentAmount    Int? // «доставка 5000 водителю»
   paymentNote      String?
+  // Факт оплаты при завершении ON_SITE-задачи (№8, решение Артёма 23.06): true — деньги получены,
+  // false — завершена без оплаты (с причиной paymentMissedReason), null — не относится / нет данных.
+  paymentReceived     Boolean?
+  paymentMissedReason String? // причина неоплаты (типовой вариант или свой текст), если paymentReceived=false
   scheduledDate    DateTime?   @db.Date // null — пул «Без даты»
   timeFrom         String? // «09:00»
   timeTo           String? // «17:00»

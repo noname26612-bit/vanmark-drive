@@ -56,7 +56,11 @@ type StatusExtra = {
   comment?: string;
   paymentConfirmed?: boolean;
   paymentAmount?: number | null;
+  paymentMissedReason?: string; // завершение без оплаты «на месте»: причина (№8)
 };
+
+// Типовые причины неоплаты «на месте» (№8, формулировки Артёма 23.06). «Другое» требует комментарий.
+const UNPAID_REASONS = ["Оплатят по счёту", "Оплата через офис", "Спор по сумме/работам", "Другое"];
 
 // Группирует справочник по разделам (для optgroup). Порядок сохраняется (сервер уже отдаёт по
 // разделу→позиции); позиции без раздела (categoryName=null) идут своей группой без заголовка.
@@ -103,7 +107,10 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
   const [comment, setComment] = useState("");
   // экран завершения
   const [completionOpen, setCompletionOpen] = useState(false);
-  const [paid, setPaid] = useState(false);
+  // Оплата при ON_SITE-завершении (№8): выбор «получено / не получено» + причина неоплаты.
+  const [payChoice, setPayChoice] = useState<"" | "paid" | "unpaid">("");
+  const [missReason, setMissReason] = useState(""); // выбранная типовая причина
+  const [missOther, setMissOther] = useState(""); // свой текст для «Другое»
   const [amountInput, setAmountInput] = useState("");
   const [doneComment, setDoneComment] = useState("");
   // Ведомость работ (этап 12): выбор работы (из справочника или свободная) + количество.
@@ -137,7 +144,10 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
   const wsEditable = requiresPricing && (ws === null || ws === "DRAFT");
   const worksheetTotal = t.workItems.reduce((s, w) => s + (w.price ?? 0) * w.quantity, 0);
   const onSite = t.paymentType === "ON_SITE";
-  const canComplete = !onSite || paid; // фото — по желанию (не блокирует); акт — мягкая отметка KPI
+  // Завершить можно: не ON_SITE; либо деньги получены; либо явно не получены с выбранной причиной (№8).
+  const missReady = missReason !== "" && (missReason !== "Другое" || missOther.trim() !== "");
+  const canComplete = !onSite || payChoice === "paid" || (payChoice === "unpaid" && missReady);
+  // фото — по желанию (не блокирует); акт — мягкая отметка KPI
 
   async function changeStatus(to: TaskStatus, extra: StatusExtra = {}) {
     setActionError(null);
@@ -157,6 +167,7 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
                 comment: extra.comment,
                 paymentConfirmed: extra.paymentConfirmed,
                 paymentAmount: extra.paymentAmount,
+                paymentMissedReason: extra.paymentMissedReason,
                 lat: coords?.lat,
                 lng: coords?.lng,
               }),
@@ -292,17 +303,21 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
 
   function openCompletion() {
     setAmountInput(t.paymentAmount != null ? String(t.paymentAmount) : "");
-    setPaid(false);
+    setPayChoice("");
+    setMissReason("");
+    setMissOther("");
     setDoneComment("");
     setActionError(null);
     setCompletionOpen(true);
   }
 
   function submitCompletion() {
+    const finalReason = missReason === "Другое" ? missOther.trim() : missReason;
     void changeStatus("DONE", {
       comment: doneComment.trim() || undefined,
-      paymentConfirmed: onSite ? paid : undefined,
-      paymentAmount: onSite ? (Number(amountInput) || null) : undefined,
+      paymentConfirmed: onSite ? payChoice === "paid" : undefined,
+      paymentAmount: onSite && payChoice === "paid" ? Number(amountInput) || null : undefined,
+      paymentMissedReason: onSite && payChoice === "unpaid" ? finalReason || undefined : undefined,
     });
   }
 
@@ -806,28 +821,73 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
               </button>
             </div>
 
-            {/* Оплата на месте — деньги получены */}
+            {/* Оплата на месте (№8): получено / не получено + причина. Без оплаты завершить можно —
+                но выбор обязателен, чтобы инфа не терялась (диспетчер увидит причину). */}
             {onSite ? (
               <div className="mt-4 rounded-xl border-2 border-amber-300 bg-amber-50 p-3">
-                <label className="flex items-center gap-3 text-base font-medium text-amber-900">
-                  <input
-                    type="checkbox"
-                    checked={paid}
-                    onChange={(e) => setPaid(e.target.checked)}
-                    className="h-5 w-5"
-                  />
-                  Деньги получены
-                </label>
-                <div className="mt-2 flex items-center gap-2">
-                  <span className="text-sm text-amber-900">Сумма, ₽</span>
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    value={amountInput}
-                    onChange={(e) => setAmountInput(e.target.value)}
-                    className="h-11 w-32 rounded-lg border border-amber-300 bg-white px-3 text-base outline-none"
-                  />
+                <p className="text-base font-medium text-amber-900">Оплата на месте</p>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPayChoice("paid")}
+                    className={`h-11 rounded-lg border text-sm font-medium ${
+                      payChoice === "paid"
+                        ? "border-green-600 bg-green-600 text-white"
+                        : "border-amber-300 bg-white text-amber-900"
+                    }`}
+                  >
+                    Деньги получены
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPayChoice("unpaid")}
+                    className={`h-11 rounded-lg border text-sm font-medium ${
+                      payChoice === "unpaid"
+                        ? "border-red-500 bg-red-500 text-white"
+                        : "border-amber-300 bg-white text-amber-900"
+                    }`}
+                  >
+                    Не получены
+                  </button>
                 </div>
+                {payChoice === "paid" ? (
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-sm text-amber-900">Сумма, ₽</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      value={amountInput}
+                      onChange={(e) => setAmountInput(e.target.value)}
+                      className="h-11 w-32 rounded-lg border border-amber-300 bg-white px-3 text-base outline-none"
+                    />
+                  </div>
+                ) : null}
+                {payChoice === "unpaid" ? (
+                  <div className="mt-2 flex flex-col gap-2">
+                    <span className="text-sm text-amber-900">Причина неоплаты</span>
+                    <select
+                      value={missReason}
+                      onChange={(e) => setMissReason(e.target.value)}
+                      className="h-11 rounded-lg border border-amber-300 bg-white px-3 text-base outline-none"
+                    >
+                      <option value="">— выберите —</option>
+                      {UNPAID_REASONS.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                    {missReason === "Другое" ? (
+                      <input
+                        type="text"
+                        value={missOther}
+                        onChange={(e) => setMissOther(e.target.value)}
+                        placeholder="Опишите причину"
+                        className="h-11 rounded-lg border border-amber-300 bg-white px-3 text-base outline-none"
+                      />
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             ) : null}
 

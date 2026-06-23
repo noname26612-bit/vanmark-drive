@@ -22,9 +22,11 @@ export async function POST(req: Request, { params }: Ctx) {
     const reason = typeof body.reason === "string" ? body.reason : undefined;
     const lat = typeof body.lat === "number" ? body.lat : undefined;
     const lng = typeof body.lng === "number" ? body.lng : undefined;
-    // DONE при оплате «на месте»: подтверждение получения денег (PRD §5).
+    // DONE при оплате «на месте»: подтверждение получения денег (PRD §5) либо причина неоплаты (№8).
     const paymentConfirmed = body.paymentConfirmed === true;
     const paymentAmount = typeof body.paymentAmount === "number" ? body.paymentAmount : undefined;
+    const paymentMissedReason =
+      typeof body.paymentMissedReason === "string" ? body.paymentMissedReason : undefined;
     const task = await transitionTask(id, toStatus, user, {
       comment,
       reason,
@@ -32,6 +34,7 @@ export async function POST(req: Request, { params }: Ctx) {
       lng,
       paymentConfirmed,
       paymentAmount,
+      paymentMissedReason,
     });
     return NextResponse.json(ok(task));
   } catch (e) {

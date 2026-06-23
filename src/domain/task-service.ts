@@ -617,6 +617,7 @@ export type TransitionOptions = {
   lng?: number | null;
   paymentConfirmed?: boolean; // DONE при оплате «на месте»: подтверждение получения денег (PRD §5)
   paymentAmount?: number | null; // фактически полученная сумма (по умолчанию — ожидаемая из задачи)
+  paymentMissedReason?: string | null; // DONE при ON_SITE без оплаты: причина неоплаты (№8)
 };
 
 export async function transitionTask(
@@ -636,9 +637,13 @@ export async function transitionTask(
   const reason = clean(opts.reason) ?? clean(opts.comment);
   if (verdict.reasonRequired && !reason) throw Errors.reasonRequired();
 
-  // Завершение (DONE): серверный гейт — только подтверждение оплаты «на месте» (PRD §5).
-  // Фото с этапа 11 — по желанию (не блокирует); требуемый акт — мягкая отметка KPI, не запрет.
-  if (toStatus === "DONE" && task.paymentType === "ON_SITE" && !opts.paymentConfirmed) {
+  // Завершение (DONE) при оплате «на месте» (№8, решение Артёма 23.06): жёсткого запрета завершить
+  // без денег больше нет. Но водитель обязан отметить ОДНО из двух — деньги получены ЛИБО не получены
+  // с причиной (чтобы инфа не терялась). Без выбора — просим определиться (это не возврат старого гейта).
+  // Фото — по желанию (не блокирует); требуемый акт — мягкая отметка KPI, не запрет.
+  const unpaidReason =
+    toStatus === "DONE" && task.paymentType === "ON_SITE" ? clean(opts.paymentMissedReason) : null;
+  if (toStatus === "DONE" && task.paymentType === "ON_SITE" && !opts.paymentConfirmed && !unpaidReason) {
     throw Errors.paymentRequired();
   }
 
@@ -666,6 +671,11 @@ export async function transitionTask(
   if (toStatus === "ON_HOLD") data.holdReason = reason;
   if (toStatus === "CANCELLED") data.cancelReason = reason;
   if (toStatus === "DONE") data.completedAt = new Date();
+  // Факт оплаты при ON_SITE-завершении (№8): получено / не получено + причина — сохраняем на задаче.
+  if (toStatus === "DONE" && task.paymentType === "ON_SITE") {
+    data.paymentReceived = opts.paymentConfirmed === true;
+    data.paymentMissedReason = opts.paymentConfirmed ? null : unpaidReason;
+  }
   if (task.status === "ON_HOLD" && toStatus === "ASSIGNED") data.holdReason = null;
 
   const result = await prisma.$transaction(async (tx) => {
@@ -691,6 +701,20 @@ export async function transitionTask(
           actorId: actor.id,
           kind: "payment_received",
           comment: amount != null ? `Деньги получены: ${amount} ₽` : "Деньги получены",
+          lat: opts.lat ?? null,
+          lng: opts.lng ?? null,
+        },
+      });
+    }
+    // Завершено без оплаты «на месте» (№8) — неизменяемая отметка с причиной: инфа не теряется,
+    // диспетчер её видит. Без штрафа KPI (решение Артёма) — это просто факт в журнале и на задаче.
+    if (toStatus === "DONE" && task.paymentType === "ON_SITE" && !opts.paymentConfirmed && unpaidReason) {
+      await tx.taskEvent.create({
+        data: {
+          taskId,
+          actorId: actor.id,
+          kind: "payment_unpaid",
+          comment: `Деньги не получены: ${unpaidReason}`,
           lat: opts.lat ?? null,
           lng: opts.lng ?? null,
         },

@@ -122,4 +122,7 @@ export type TaskDetailDTO = TaskDTO & {
   events: TaskEventDTO[];
   attachments: AttachmentDTO[];
   workItems: WorkItemDTO[];
+  // Факт оплаты при ON_SITE-завершении (№8): true получено / false не получено / null не относится.
+  paymentReceived: boolean | null;
+  paymentMissedReason: string | null;
 };

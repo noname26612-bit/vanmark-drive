@@ -22,7 +22,7 @@ export const Errors = {
   photoRequired: () =>
     new DomainError("PHOTO_REQUIRED", "Для завершения нужно фото", 422),
   paymentRequired: () =>
-    new DomainError("PAYMENT_REQUIRED", "Подтвердите получение денег", 422),
+    new DomainError("PAYMENT_REQUIRED", "Отметьте: деньги получены или укажите причину неоплаты", 422),
   activeTaskExists: (taskNumber?: number) =>
     new DomainError(
       "ACTIVE_TASK_EXISTS",

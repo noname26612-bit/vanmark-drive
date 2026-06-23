@@ -37,7 +37,11 @@ export function DriverTasksClient({ showPayroll = true }: { showPayroll?: boolea
     keepPreviousData: true,
   });
 
-  const active = tasks.filter((t) => !isTerminal(t.status));
+  // Активная задача (IN_PROGRESS, «В работе») — наверх списка (№6). Сортировка устойчивая: внутри
+  // групп сохраняется серверный порядок (priority→дата→время→номер), раскладка не дёргается на поллинге.
+  const active = tasks
+    .filter((t) => !isTerminal(t.status))
+    .sort((a, b) => (a.status === "IN_PROGRESS" ? 0 : 1) - (b.status === "IN_PROGRESS" ? 0 : 1));
   const done = tasks.filter((t) => isTerminal(t.status)); // в «Сегодня» это завершённые за день
   // Ошибка фонового поллинга, но задачи уже загружены — не сносим список (плохая сеть на объекте).
   const staleError = error && tasks.length > 0;
@@ -277,7 +281,13 @@ function TaskCard({
               </span>
             ) : null}
           </span>
-          <Badge className={STATUS_BADGE[task.status]}>{STATUS_LABEL[task.status]}</Badge>
+          <div className="flex items-center gap-1.5">
+            {/* Неяркая (графитовая) метка активной задачи — она же поднята наверх списка (№6). */}
+            {task.status === "IN_PROGRESS" ? (
+              <Badge className="border border-slate-300 text-slate-600">Активна</Badge>
+            ) : null}
+            <Badge className={STATUS_BADGE[task.status]}>{STATUS_LABEL[task.status]}</Badge>
+          </div>
         </div>
 
         {timeline || overdue || undated ? (

@@ -50,6 +50,7 @@ const KIND_LABEL: Record<string, string> = {
   auto_date: "Дата",
   comment: "Комментарий",
   payment_received: "Оплата",
+  payment_unpaid: "Не оплачено",
   worksheet_submitted: "Ведомость",
   worksheet_priced: "Расценка",
   worksheet_signed: "Акт",
@@ -188,6 +189,14 @@ export function TaskDetailClient({
   const pricingTotal = task.workItems.reduce((s, w) => {
     return s + (Number.parseInt(priceStr(w), 10) || 0) * w.quantity;
   }, 0);
+  // Итог по услугам из закреплённых цен (№7): остаётся виден после расценки/подписания и в завершённой
+  // заявке, когда редактируемый блок расценки уже скрыт. Сумма — из сохранённых WorkItem.price.
+  const finalServicesTotal = task.workItems.reduce((s, w) => s + (w.price ?? 0) * w.quantity, 0);
+  const showFinalServices =
+    task.type.requiresPricing &&
+    task.workItems.length > 0 &&
+    !pricingVisible &&
+    (task.worksheetStatus === "SIGNED" || (isTerminal && task.workItems.some((w) => w.price != null)));
 
   // Акт (этап 14, PRD §13): документы (DOCUMENT) отделены от фото — PDF открывается ссылкой, не <img>.
   const photos = task.attachments.filter((a) => a.kind === "PHOTO");
@@ -254,7 +263,20 @@ export function TaskDetailClient({
             {PAYMENT_LABEL[task.paymentType]}
             {task.paymentAmount ? ` · ${formatMoney(task.paymentAmount)}` : ""}
             {task.paymentNote ? ` · ${task.paymentNote}` : ""}
+            {/* Факт оплаты при завершении «на месте» (№8): заметная плашка, инфа не теряется. */}
+            {task.paymentReceived === false ? (
+              <span className="ml-2 inline-flex items-center rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+                Не оплачено{task.paymentMissedReason ? `: ${task.paymentMissedReason}` : ""}
+              </span>
+            ) : task.paymentReceived === true ? (
+              <span className="ml-2 inline-flex items-center rounded bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+                Оплачено
+              </span>
+            ) : null}
           </Row>
+        ) : null}
+        {showFinalServices ? (
+          <Row label="Услуги по ведомости">{finalServicesTotal.toLocaleString("ru")} ₽</Row>
         ) : null}
         <Row label="Пропуск">
           <Badge className={PASS_BADGE[task.passStatus]}>{PASS_LABEL[task.passStatus]}</Badge>
@@ -424,6 +446,39 @@ export function TaskDetailClient({
             <Button data-testid="save-pricing" disabled={busy} onClick={savePricing}>
               {task.worksheetStatus === "PRICED" ? "Сохранить цены" : "Подтвердить расценку"}
             </Button>
+          </div>
+        </section>
+      ) : null}
+
+      {/* Итоговый расчёт по услугам (№7): нередактируемый — остаётся виден после подписания акта и в
+          завершённой заявке (когда блок расценки уже скрыт). Источник — закреплённые цены позиций. */}
+      {showFinalServices ? (
+        <section className="mt-6" data-testid="final-services">
+          <h2 className="mb-2 text-sm font-semibold text-neutral-700">Итоговый расчёт по услугам</h2>
+          <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-neutral-200 text-xs text-neutral-400">
+                <tr>
+                  <th className="px-3 py-2">Работа</th>
+                  <th className="px-3 py-2">Кол-во</th>
+                  <th className="px-3 py-2">Цена, ₽</th>
+                  <th className="px-3 py-2 text-right">Сумма</th>
+                </tr>
+              </thead>
+              <tbody>
+                {task.workItems.map((w) => (
+                  <tr key={w.id} className="border-b border-neutral-100 last:border-0">
+                    <td className="px-3 py-2">{w.name}</td>
+                    <td className="px-3 py-2">{w.quantity}</td>
+                    <td className="px-3 py-2">{w.price != null ? w.price.toLocaleString("ru") : "—"}</td>
+                    <td className="px-3 py-2 text-right">{((w.price ?? 0) * w.quantity).toLocaleString("ru")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-2 text-right text-base font-semibold text-neutral-900">
+            Итого: {finalServicesTotal.toLocaleString("ru")} ₽
           </div>
         </section>
       ) : null}
