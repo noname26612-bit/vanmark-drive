@@ -1,0 +1,18 @@
+{
+  "_comment": "Ориентир для bubblewrap init (docs/TWA.md). packageId должен совпадать с TWA_PACKAGE_NAME в .env прода.",
+  "packageId": "ru.vmdrive.twa",
+  "host": "vmdrive24.ru",
+  "name": "VanMark Drive",
+  "launcherName": "VanMark",
+  "display": "standalone",
+  "orientation": "portrait",
+  "themeColor": "#4f46e5",
+  "navigationColor": "#4f46e5",
+  "backgroundColor": "#ffffff",
+  "startUrl": "/m",
+  "iconUrl": "https://vmdrive24.ru/icons/icon-512.png",
+  "maskableIconUrl": "https://vmdrive24.ru/icons/icon-512-maskable.png",
+  "webManifestUrl": "https://vmdrive24.ru/manifest.webmanifest",
+  "fallbackType": "customtabs",
+  "enableNotifications": true
+}

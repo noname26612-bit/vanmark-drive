@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireApiUser, errorResponse } from "@/lib/api-route";
+import { requireApiUser, errorResponse, idempotencyKey } from "@/lib/api-route";
 import { getAttachmentForDownload, deleteAttachment } from "@/domain/attachment-service";
+import { withIdempotency } from "@/domain/idempotency";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,11 +33,15 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 // DELETE /api/attachments/:id — удалить вложение до завершения (свой автор или диспетчер).
-export async function DELETE(_req: Request, { params }: Ctx) {
+// Офлайн-режим: Idempotency-Key — повтор удаления уже удалённого вернёт прежний ответ, не 404.
+export async function DELETE(req: Request, { params }: Ctx) {
   try {
     const user = await requireApiUser();
     const { id } = await params;
-    await deleteAttachment(id, user);
+    await withIdempotency(idempotencyKey(req), user, "attachment-delete", async () => {
+      await deleteAttachment(id, user);
+      return { ok: true };
+    });
     return NextResponse.json(ok({ ok: true }));
   } catch (e) {
     return errorResponse(e);

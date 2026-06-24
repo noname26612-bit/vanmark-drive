@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireApiUser, errorResponse, readJson } from "@/lib/api-route";
+import { requireApiUser, errorResponse, readJson, idempotencyKey, occurredAt } from "@/lib/api-route";
 import { addComment } from "@/domain/task-service";
+import { withIdempotency } from "@/domain/idempotency";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,6 +10,7 @@ export const dynamic = "force-dynamic";
 type Ctx = { params: Promise<{ id: string }> };
 
 // POST /api/tasks/:id/comments — комментарий (диспетчер или назначенный водитель).
+// Офлайн-режим: Idempotency-Key против дублей при досылке, X-Occurred-At — момент написания.
 export async function POST(req: Request, { params }: Ctx) {
   try {
     const user = await requireApiUser();
@@ -17,7 +19,9 @@ export async function POST(req: Request, { params }: Ctx) {
     const text = typeof body.text === "string" ? body.text : "";
     const lat = typeof body.lat === "number" ? body.lat : undefined;
     const lng = typeof body.lng === "number" ? body.lng : undefined;
-    await addComment(id, text, user, { lat, lng });
+    await withIdempotency(idempotencyKey(req), user, "comment", () =>
+      addComment(id, text, user, { lat, lng, occurredAt: occurredAt(req) }),
+    );
     return NextResponse.json(ok({ ok: true }), { status: 201 });
   } catch (e) {
     return errorResponse(e);

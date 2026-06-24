@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireApiUser, errorResponse, readJson } from "@/lib/api-route";
+import { requireApiUser, errorResponse, readJson, idempotencyKey, occurredAt } from "@/lib/api-route";
 import { transitionTask } from "@/domain/task-service";
+import { withIdempotency } from "@/domain/idempotency";
 import { parseStatus } from "@/lib/task-input";
 import { Errors } from "@/domain/errors";
 
@@ -11,6 +12,7 @@ export const dynamic = "force-dynamic";
 type Ctx = { params: Promise<{ id: string }> };
 
 // POST /api/tasks/:id/transition — смена статуса по матрице (водитель/диспетчер).
+// Офлайн-режим: Idempotency-Key защищает от повторной досылки, X-Occurred-At несёт момент действия.
 export async function POST(req: Request, { params }: Ctx) {
   try {
     const user = await requireApiUser();
@@ -27,15 +29,18 @@ export async function POST(req: Request, { params }: Ctx) {
     const paymentAmount = typeof body.paymentAmount === "number" ? body.paymentAmount : undefined;
     const paymentMissedReason =
       typeof body.paymentMissedReason === "string" ? body.paymentMissedReason : undefined;
-    const task = await transitionTask(id, toStatus, user, {
-      comment,
-      reason,
-      lat,
-      lng,
-      paymentConfirmed,
-      paymentAmount,
-      paymentMissedReason,
-    });
+    const task = await withIdempotency(idempotencyKey(req), user, "transition", () =>
+      transitionTask(id, toStatus, user, {
+        comment,
+        reason,
+        lat,
+        lng,
+        paymentConfirmed,
+        paymentAmount,
+        paymentMissedReason,
+        occurredAt: occurredAt(req),
+      }),
+    );
     return NextResponse.json(ok(task));
   } catch (e) {
     return errorResponse(e);

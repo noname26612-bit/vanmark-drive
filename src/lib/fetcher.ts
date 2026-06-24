@@ -32,17 +32,22 @@ export async function fetcher<T>(url: string): Promise<T> {
   return body.data as T;
 }
 
-/** Отправка мутации (POST/PATCH/DELETE). Возвращает data или бросает ApiError. */
+/**
+ * Отправка мутации (POST/PATCH/DELETE). Возвращает data или бросает ApiError.
+ * extraHeaders — для офлайн-досылки: Idempotency-Key (дедупликация повтора) и X-Occurred-At
+ * (момент действия на телефоне). См. src/lib/offline.
+ */
 export async function apiSend<T = unknown>(
   url: string,
   method: "POST" | "PUT" | "PATCH" | "DELETE",
   body?: unknown,
+  extraHeaders?: Record<string, string>,
 ): Promise<T> {
   let res: Response;
   try {
     res = await fetch(url, {
       method,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...extraHeaders },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
@@ -57,10 +62,14 @@ export async function apiSend<T = unknown>(
 }
 
 /** Загрузка файла multipart (Content-Type ставит браузер сам — с boundary). Бросает ApiError. */
-export async function apiUpload<T = unknown>(url: string, form: FormData): Promise<T> {
+export async function apiUpload<T = unknown>(
+  url: string,
+  form: FormData,
+  extraHeaders?: Record<string, string>,
+): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, { method: "POST", body: form });
+    res = await fetch(url, { method: "POST", body: form, headers: extraHeaders });
   } catch {
     throw new ApiError("Нет соединения", 0, "NETWORK");
   }

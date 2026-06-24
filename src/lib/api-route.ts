@@ -53,3 +53,13 @@ export async function readJson(req: Request): Promise<Record<string, unknown>> {
     return {};
   }
 }
+
+/** Ключ идемпотентности офлайн-досылки (заголовок Idempotency-Key). null — обычный онлайн-запрос. */
+export function idempotencyKey(req: Request): string | null {
+  return req.headers.get("Idempotency-Key");
+}
+
+/** Время момента действия на телефоне (офлайн), ISO — заголовок X-Occurred-At. null — нет. */
+export function occurredAt(req: Request): string | null {
+  return req.headers.get("X-Occurred-At");
+}
