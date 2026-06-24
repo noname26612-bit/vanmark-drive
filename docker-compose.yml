@@ -8,7 +8,9 @@ services:
       POSTGRES_PASSWORD: vanmark
       POSTGRES_DB: vanmark
     ports:
-      - "5432:5432"
+      # Только loopback: БД не публикуется в сеть. На проде этот dev-файл подмешивается к
+      # docker-compose.prod.yml, поэтому без привязки к 127.0.0.1 порт уходил на 0.0.0.0 (наружу).
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
