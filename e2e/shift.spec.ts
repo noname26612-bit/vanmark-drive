@@ -121,6 +121,73 @@ test("изоляция смен: водитель не подтверждает 
   await guest.close();
 });
 
+// Переоткрытие случайно закрытой смены водителем: CLOSED → OPEN, и задачу снова можно взять в работу.
+test("смена: водитель возобновляет случайно закрытую смену и снова берёт задачу", async ({ browser }) => {
+  test.slow();
+  const mctx = await browser.newContext();
+  const milena = await mctx.newPage();
+  await login(milena, "milena");
+  const id = await createAssignedTask(milena, "Алексей Писарев", "Сдача / забор из ТК");
+
+  const dctx = await browser.newContext();
+  const driver = await dctx.newPage();
+  await login(driver, "pisarev");
+
+  // Открыл → диспетчер подтвердил → водитель случайно закрыл.
+  const shiftId: string = (
+    await (await driver.request.post(`/api/my/shift`, { data: { op: "open", today } })).json()
+  ).data.id;
+  await milena.request.post(`/api/shifts/${shiftId}/confirm`, { data: {} });
+  let r = await driver.request.post(`/api/my/shift`, { data: { op: "close", today } });
+  expect((await r.json()).data.status).toBe("CLOSED");
+
+  // Пока закрыта — взять задачу нельзя.
+  r = await driver.request.post(`/api/tasks/${id}/transition`, { data: { toStatus: "IN_PROGRESS" } });
+  expect(r.status()).toBe(409);
+  expect((await r.json()).error.code).toBe("SHIFT_REQUIRED");
+
+  // Возобновил сам — подтверждённая смена возвращается в OPEN.
+  r = await driver.request.post(`/api/my/shift`, { data: { op: "reopen", today } });
+  expect(r.status()).toBe(200);
+  expect((await r.json()).data.status).toBe("OPEN");
+
+  // Теперь задачу можно взять в работу.
+  r = await driver.request.post(`/api/tasks/${id}/transition`, { data: { toStatus: "IN_PROGRESS" } });
+  expect(r.status()).toBe(200);
+
+  await mctx.close();
+  await dctx.close();
+});
+
+// Переоткрытие диспетчером по id; водителю диспетчерская ручка переоткрытия недоступна (изоляция).
+test("смена: диспетчер переоткрывает закрытую смену, водителю PATCH запрещён", async ({ browser }) => {
+  const dctx = await browser.newContext();
+  const driver = await dctx.newPage();
+  await login(driver, "pisarev");
+  const shiftId: string = (
+    await (await driver.request.post(`/api/my/shift`, { data: { op: "open", today } })).json()
+  ).data.id;
+
+  const mctx = await browser.newContext();
+  const milena = await mctx.newPage();
+  await login(milena, "milena");
+  await milena.request.post(`/api/shifts/${shiftId}/confirm`, { data: {} });
+  await driver.request.post(`/api/my/shift`, { data: { op: "close", today } });
+
+  // Диспетчер переоткрывает по id → OPEN.
+  const re = await milena.request.patch(`/api/shifts/${shiftId}`, { data: { op: "reopen" } });
+  expect(re.status()).toBe(200);
+  expect((await re.json()).data.status).toBe("OPEN");
+
+  // Водитель не может дёргать диспетчерскую ручку переоткрытия (403).
+  expect(
+    (await driver.request.patch(`/api/shifts/${shiftId}`, { data: { op: "reopen" } })).status(),
+  ).toBe(403);
+
+  await dctx.close();
+  await mctx.close();
+});
+
 // Этап D: без открытой смены задачу в работу взять нельзя (smena чистится в beforeEach).
 test("без открытой смены задачу в работу взять нельзя (SHIFT_REQUIRED)", async ({ browser }) => {
   test.slow();

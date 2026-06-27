@@ -107,6 +107,48 @@ export async function closeShift(driverId: string): Promise<ShiftView> {
   return toView(updated);
 }
 
+// Возврат закрытой смены в рабочее состояние: подтверждённую → OPEN, неподтверждённую → REQUESTED.
+// closedAt снимаем (смена снова идёт). openedAt НЕ трогаем — поэтому штраф «поздно открыл» (SHIFT_LATE,
+// по openedAt) и учёт отработанного (по задачам) остаются корректными, миграция БД не нужна.
+function reopenedStatus(confirmedAt: Date | null): ShiftStatus {
+  return confirmedAt ? "OPEN" : "REQUESTED";
+}
+
+/**
+ * Переоткрыть смену водителем (на случай случайного закрытия). driverId — ТОЛЬКО из сессии, смена за
+ * серверный день. Идемпотентно: если смена не закрыта — возвращаем как есть.
+ */
+export async function reopenShift(driverId: string): Promise<ShiftView> {
+  const date = serverShiftDate();
+  const shift = await prisma.shift.findUnique({ where: { driverId_date: { driverId, date } } });
+  if (!shift) throw Errors.notFound();
+  if (shift.status !== "CLOSED") return toView(shift);
+  const updated = await prisma.shift.update({
+    where: { id: shift.id },
+    data: { status: reopenedStatus(shift.confirmedAt), closedAt: null },
+  });
+  return toView(updated);
+}
+
+/**
+ * Переоткрыть смену диспетчером/админом по id (кнопка на доске). Гейт роли (диспетчер/админ) — в route
+ * handler. Идемпотентно: если смена не закрыта — возвращаем как есть.
+ */
+export async function reopenShiftById(shiftId: string): Promise<ShiftView> {
+  const shift = await prisma.shift.findUnique({
+    where: { id: shiftId },
+    include: { driver: { select: { name: true } } },
+  });
+  if (!shift) throw Errors.notFound();
+  if (shift.status !== "CLOSED") return toView(shift);
+  const updated = await prisma.shift.update({
+    where: { id: shift.id },
+    data: { status: reopenedStatus(shift.confirmedAt), closedAt: null },
+    include: { driver: { select: { name: true } } },
+  });
+  return toView(updated);
+}
+
 /** Закрыт ли месяц расчёта (есть снимок PayrollStatement) — правка времени тогда запрещена. */
 async function isPeriodClosed(period: string): Promise<boolean> {
   return (await prisma.payrollStatement.count({ where: { period } })) > 0;

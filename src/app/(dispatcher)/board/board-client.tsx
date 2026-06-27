@@ -255,7 +255,7 @@ export function BoardClient({
       </div>
 
       {/* Смены водителей (№5): по каждому — статус смены, время открытия и полоса «в работе/простой». */}
-      <ShiftWorkloadBlock drivers={drivers} shifts={shifts ?? []} />
+      <ShiftWorkloadBlock drivers={drivers} shifts={shifts ?? []} onChange={refresh} />
 
       {actionError ? <p className="mb-3 text-sm text-red-600">{actionError}</p> : null}
       {staleError ? (
@@ -502,7 +502,15 @@ function shiftChip(shift: ShiftDTO | null): { label: string; cls: string } {
 
 // Блок «Смены водителей» (№5): по каждому водителю статус смены, время открытия и заполняющаяся
 // полоса рабочего времени — «в работе» (зелёным) и «простой» (серым) от длительности смены.
-function ShiftWorkloadBlock({ drivers, shifts }: { drivers: DriverDTO[]; shifts: ShiftDTO[] }) {
+function ShiftWorkloadBlock({
+  drivers,
+  shifts,
+  onChange,
+}: {
+  drivers: DriverDTO[];
+  shifts: ShiftDTO[];
+  onChange: () => Promise<unknown>;
+}) {
   // «Сейчас» для живой полосы открытой смены — тикает раз в 30 с (поллинг доски тоже перерисует).
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -519,15 +527,42 @@ function ShiftWorkloadBlock({ drivers, shifts }: { drivers: DriverDTO[]; shifts:
       <h2 className="mb-2 text-sm font-semibold text-slate-700">Смены водителей</h2>
       <div className="grid gap-2 sm:grid-cols-2">
         {rows.map((d) => (
-          <ShiftWorkloadRow key={d.id} name={d.name} shift={byDriver.get(d.id) ?? null} now={now} />
+          <ShiftWorkloadRow
+            key={d.id}
+            name={d.name}
+            shift={byDriver.get(d.id) ?? null}
+            now={now}
+            onChange={onChange}
+          />
         ))}
       </div>
     </section>
   );
 }
 
-function ShiftWorkloadRow({ name, shift, now }: { name: string; shift: ShiftDTO | null; now: number }) {
+function ShiftWorkloadRow({
+  name,
+  shift,
+  now,
+  onChange,
+}: {
+  name: string;
+  shift: ShiftDTO | null;
+  now: number;
+  onChange: () => Promise<unknown>;
+}) {
   const chip = shiftChip(shift);
+  const [reopening, setReopening] = useState(false);
+  async function reopen() {
+    if (!shift) return;
+    setReopening(true);
+    try {
+      await apiSend(`/api/shifts/${shift.id}`, "PATCH", { op: "reopen" });
+      await onChange();
+    } finally {
+      setReopening(false);
+    }
+  }
   if (!shift) {
     return (
       <div className="rounded-lg border border-slate-100 px-3 py-2">
@@ -550,7 +585,19 @@ function ShiftWorkloadRow({ name, shift, now }: { name: string; shift: ShiftDTO 
     <div className="rounded-lg border border-slate-100 px-3 py-2">
       <div className="flex items-center justify-between gap-2">
         <span className="truncate text-sm font-medium text-slate-800">{name}</span>
-        <span className={chip.cls}>{chip.label}</span>
+        <span className="flex shrink-0 items-center gap-2">
+          {shift.status === "CLOSED" ? (
+            <Button
+              variant="ghost"
+              className="h-7 px-2 text-xs text-indigo-700"
+              onClick={() => void reopen()}
+              disabled={reopening}
+            >
+              Переоткрыть
+            </Button>
+          ) : null}
+          <span className={chip.cls}>{chip.label}</span>
+        </span>
       </div>
       <div className="mt-1 text-xs text-slate-500">
         Открыта в {shiftHHMM(shift.openedAt)}
