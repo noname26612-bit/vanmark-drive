@@ -17,7 +17,8 @@ export type AssigneeDTO = { id: string; name: string; login: string } | null;
 
 // onPayroll — есть активный денежный профиль (штатный «на окладе»). Признак «работает каждый день»
 // для блока «Смены водителей»: штатных показываем всегда, подменных/внешних — только при смене (Артём 24.06).
-export type DriverDTO = { id: string; name: string; canLogin: boolean; onPayroll: boolean };
+// isExternal — наёмный перевозчик (02.07): без смен, в форме заявки доступна стоимость поездки (этап 3).
+export type DriverDTO = { id: string; name: string; canLogin: boolean; isExternal: boolean; onPayroll: boolean };
 
 export type TaskDTO = {
   id: string;

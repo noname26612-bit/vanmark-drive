@@ -84,7 +84,8 @@ model User {
   phone         String?
   role          Role
   isActive      Boolean  @default(true)
-  canLogin      Boolean  @default(true)   // false — внешний перевозчик (наёмный): статусы ведёт диспетчер
+  canLogin      Boolean  @default(true)   // false — вход запрещён; включает админ («Водители — доступ»)
+  isExternal    Boolean  @default(false)  // наёмный перевозчик (02.07): без смен (SHIFT_REQUIRED не применяется), вне KPI, carrierCost в заявке
   tasks         Task[]   @relation("assignee")
   createdTasks  Task[]   @relation("creator")
   events        TaskEvent[]
