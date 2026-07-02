@@ -36,6 +36,9 @@ async function createAssignedTask(
   await milena.locator('[data-testid="create-type"]').selectOption({ label: typeLabel });
   await milena.getByPlaceholder("ЛБМ 200 + нож, 0,7 мм").fill(title);
   await milena.getByPlaceholder("Москва, ул. ..., д. ...").fill("Адрес для e2e");
+  await milena.locator('[data-testid="create-org"]').fill("ООО Тест");
+  await milena.locator('[data-testid="create-contact-name"]').fill("Иван Тест");
+  await milena.locator('[data-testid="create-contact-phone"]').fill("+70000000000");
   if (opts.waiveAct) {
     await milena.locator('[data-testid="create-requires-act"]').uncheck();
     await milena.locator('[data-testid="create-act-waived-note"]').fill(opts.waiveAct.note);

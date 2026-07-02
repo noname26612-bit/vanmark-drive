@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { ChevronLeft, ChevronRight, RefreshCw, Move, GripVertical } from "lucide-react";
 import { fetcher, apiSend } from "@/lib/fetcher";
@@ -346,24 +346,34 @@ function Cell({
 }
 
 function PlanCard({ task }: { task: TaskDTO }) {
+  const router = useRouter();
   const draggable = !TERMINAL.includes(task.status);
+  // Провал в заявку — кликом по любой части плашки (решение Артёма 02.07.2026).
+  const openTask = () => router.push(`/tasks/${task.id}`);
   return (
     <div
       draggable={draggable}
       data-testid="plan-card"
+      role="link"
+      tabIndex={0}
+      aria-label={`Заявка №${task.number}: ${task.title}`}
       onDragStart={(e) => e.dataTransfer.setData("text/plain", task.id)}
-      className={`relative rounded border border-neutral-200 bg-white p-1 pl-2 text-xs shadow-sm ${
-        draggable ? "cursor-grab active:cursor-grabbing" : "opacity-70"
+      onClick={openTask}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openTask();
+        }
+      }}
+      className={`relative cursor-pointer rounded border border-neutral-200 bg-white p-1 pl-2 text-xs shadow-sm hover:bg-neutral-50 ${
+        draggable ? "active:cursor-grabbing" : "opacity-70"
       }`}
     >
       <span className={`absolute left-0 top-0 h-full w-1 rounded-l ${STATUS_BAR[task.status]}`} />
-      <Link
-        href={`/tasks/${task.id}`}
-        className="flex items-center gap-1 font-medium text-neutral-900 hover:underline"
-      >
+      <span className="flex items-center gap-1 font-medium text-neutral-900">
         <TypeIcon name={task.type.icon} className="h-3.5 w-3.5 text-neutral-500" />№{task.number}
         {task.priority ? <span className="text-red-500">●</span> : null}
-      </Link>
+      </span>
       <span className="mt-0.5 block truncate text-neutral-700">{task.title}</span>
       {task.timeFrom || task.timeTo ? (
         <span className="text-neutral-500">

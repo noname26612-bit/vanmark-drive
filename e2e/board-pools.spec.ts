@@ -45,7 +45,16 @@ test("доска: пулы «Без даты» + «Ближайшие 3 дня»
 
   const mk = async (title: string, scheduledDate: string, assigneeId?: string) => {
     const res = await page.request.post("/api/tasks", {
-      data: { typeId, title, address: "адрес для пула", scheduledDate, ...(assigneeId ? { assigneeId } : {}) },
+      data: {
+        typeId,
+        title,
+        address: "адрес для пула",
+        orgName: "ООО Тест",
+        contactName: "Иван Тест",
+        contactPhone: "+70000000000",
+        scheduledDate,
+        ...(assigneeId ? { assigneeId } : {}),
+      },
     });
     expect(res.ok()).toBeTruthy();
   };

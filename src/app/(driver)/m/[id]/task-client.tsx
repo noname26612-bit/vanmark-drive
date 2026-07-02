@@ -975,14 +975,15 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
           >
             <p className="text-lg font-semibold text-neutral-900">Почему ждём?</p>
             <p className="mt-0.5 text-sm text-neutral-500">
-              Например: нет пропуска, ждём запчасти, клиент недоступен.
+              Можно указать причину (нет пропуска, ждём запчасти, клиент недоступен) — или просто
+              поставить на паузу.
             </p>
             <textarea
               autoFocus
               rows={3}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              placeholder="Причина"
+              placeholder="Причина (по желанию)"
               className="mt-3 w-full rounded-lg border border-neutral-300 p-3 text-base outline-none focus:border-neutral-900"
             />
             <div className="mt-3 flex gap-2">
@@ -995,8 +996,8 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
               </button>
               <button
                 type="button"
-                disabled={busy || !reason.trim()}
-                onClick={() => void changeStatus("ON_HOLD", { reason: reason.trim() })}
+                disabled={busy}
+                onClick={() => void changeStatus("ON_HOLD", { reason: reason.trim() || undefined })}
                 className="h-12 flex-1 rounded-lg bg-amber-500 text-base font-semibold text-white disabled:opacity-50"
               >
                 На паузу

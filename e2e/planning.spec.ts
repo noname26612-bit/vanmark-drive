@@ -42,7 +42,14 @@ test("планирование: пул «Без даты» → ячейка во
 
   // Создаём задачу без даты.
   const created = await page.request.post("/api/tasks", {
-    data: { typeId, title, address: "адрес планирования" },
+    data: {
+      typeId,
+      title,
+      address: "адрес планирования",
+      orgName: "ООО Тест",
+      contactName: "Иван Тест",
+      contactPhone: "+70000000000",
+    },
   });
   expect(created.ok()).toBeTruthy();
   const taskId: string = (await created.json()).data.id;

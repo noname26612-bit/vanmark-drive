@@ -24,6 +24,9 @@ test("дата опциональна: создание без даты → на
   await page.getByRole("button", { name: "Задача" }).click();
   await page.getByPlaceholder("ЛБМ 200 + нож, 0,7 мм").fill(title);
   await page.getByPlaceholder("Москва, ул. ..., д. ...").fill("Адрес без даты 1");
+  await page.locator('[data-testid="create-org"]').fill("ООО Тест");
+  await page.locator('[data-testid="create-contact-name"]').fill("Иван Тест");
+  await page.locator('[data-testid="create-contact-phone"]').fill("+70000000000");
   await page.getByTestId("create-no-date").check();
   await expect(page.getByTestId("create-date")).toBeDisabled();
   await page.getByRole("button", { name: "Создать", exact: true }).click();
