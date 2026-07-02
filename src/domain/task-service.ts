@@ -709,12 +709,17 @@ export async function transitionTask(
   if (toStatus === "IN_PROGRESS" && task.assigneeId) {
     // Требование открытой смены — только когда ВОДИТЕЛЬ берёт СВОЮ задачу (решение Артёма 19.06.2026).
     // Диспетчер ведёт статусы за исполнителя (в т.ч. внешнего перевозчика без смены) — его не блокируем.
+    // Внешний перевозчик (User.isExternal, 02.07) смен не ведёт — гейт к нему не применяется; признак
+    // читается из БД, не из запроса, поэтому гейт штатных не ослабляется.
     if (actor.role === "DRIVER" && actor.id === task.assigneeId) {
-      const shift = await prisma.shift.findFirst({
-        where: { driverId: task.assigneeId, status: { in: ["REQUESTED", "OPEN"] } },
-        select: { id: true },
-      });
-      if (!shift) throw Errors.shiftRequired();
+      const me = await prisma.user.findUnique({ where: { id: actor.id }, select: { isExternal: true } });
+      if (!me?.isExternal) {
+        const shift = await prisma.shift.findFirst({
+          where: { driverId: task.assigneeId, status: { in: ["REQUESTED", "OPEN"] } },
+          select: { id: true },
+        });
+        if (!shift) throw Errors.shiftRequired();
+      }
     }
     // Одна активная задача (этап B): у исполнителя не больше одной задачи «В работе» одновременно.
     // Правило по assigneeId — работает и когда водитель берёт сам, и когда диспетчер ведёт за исполнителя.

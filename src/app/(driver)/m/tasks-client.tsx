@@ -30,7 +30,14 @@ function isTerminal(s: TaskStatus): boolean {
   return s === "DONE" || s === "CANCELLED";
 }
 
-export function DriverTasksClient({ showPayroll = true }: { showPayroll?: boolean }) {
+// showShift=false — внешний перевозчик (02.07): смен не ведёт, блок смены скрыт.
+export function DriverTasksClient({
+  showPayroll = true,
+  showShift = true,
+}: {
+  showPayroll?: boolean;
+  showShift?: boolean;
+}) {
   const today = todayISO();
   const [tab, setTab] = useState<Tab>("today");
   const key = `/api/my/tasks?date=${today}&scope=${tab}`;
@@ -93,8 +100,9 @@ export function DriverTasksClient({ showPayroll = true }: { showPayroll?: boolea
         </div>
       ) : null}
 
-      {/* Смена водителя (этап C): открыть утром (фактическое начало дня) → диспетчер подтвердит → закрыть. */}
-      <ShiftBlock today={today} />
+      {/* Смена водителя (этап C): открыть утром (фактическое начало дня) → диспетчер подтвердит → закрыть.
+          Внешнему перевозчику не показываем — смен не ведёт (02.07). */}
+      {showShift ? <ShiftBlock today={today} /> : null}
 
       {/* Вкладки — крупные тач-цели */}
       <div className="mb-3 grid grid-cols-2 gap-1 rounded-xl bg-neutral-100 p-1">

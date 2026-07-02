@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
 import { requireDriver, errorResponse, readJson } from "@/lib/api-route";
 import { getMyShift, openShift, closeShift, reopenShift } from "@/domain/shift-service";
+import { isExternalDriver } from "@/domain/users";
 import { Errors } from "@/domain/errors";
 
 export const runtime = "nodejs";
@@ -21,10 +22,12 @@ export async function GET(req: Request) {
 
 // POST /api/my/shift { op: "open"|"close"|"reopen" } — открыть/закрыть/переоткрыть смену (driverId из
 // сессии). reopen — на случай случайного закрытия. День смены берётся на сервере из времени МСК
-// (preflight-аудит В2): клиентскому `today` не доверяем.
+// (preflight-аудит В2): клиентскому `today` не доверяем. Внешний перевозчик смен не ведёт (02.07) —
+// операции запрещены даже прямым запросом (UI блок смены ему не показывает).
 export async function POST(req: Request) {
   try {
     const user = await requireDriver();
+    if (await isExternalDriver(user.id)) throw Errors.forbidden();
     const body = await readJson(req);
     if (body.op === "open") return NextResponse.json(ok(await openShift(user.id)));
     if (body.op === "close") return NextResponse.json(ok(await closeShift(user.id)));

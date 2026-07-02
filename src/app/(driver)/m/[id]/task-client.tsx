@@ -88,7 +88,8 @@ function groupCatalog(items: WorkCatalogItemDTO[]): { name: string | null; items
   return groups;
 }
 
-export function DriverTaskClient({ taskId }: { taskId: string }) {
+// isExternal — внешний перевозчик (02.07): смен не ведёт, гейт «Сначала откройте смену» не применяется.
+export function DriverTaskClient({ taskId, isExternal = false }: { taskId: string; isExternal?: boolean }) {
   const key = `/api/tasks/${taskId}`;
   const online = useOnline();
   // cachedFetcher: при связи кэширует ответ, без связи отдаёт сохранённое — карточка открывается офлайн.
@@ -109,8 +110,9 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
   );
   // Открытая смена нужна, чтобы брать задачу в работу (этап D). Кэшируем статус: смену открывают
   // утром онлайн, а взять задачу могут уже офлайн на объекте — нужен последний известный статус.
+  // Внешний перевозчик смен не ведёт (02.07) — статус не грузим вовсе (ключ null).
   const { data: myShift } = useSWR<{ status: string } | null>(
-    `/api/my/shift?date=${todayISO()}`,
+    isExternal ? null : `/api/my/shift?date=${todayISO()}`,
     cachedFetcher,
     { refreshInterval: 10_000 },
   );
@@ -389,7 +391,7 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
   const activeOther = myToday.find((x) => x.status === "IN_PROGRESS" && x.id !== t.id);
   const blockedByActive = next?.to === "IN_PROGRESS" && !!activeOther;
   // Открытая смена (этап D): без неё взять задачу в работу нельзя.
-  const shiftOpen = myShift?.status === "REQUESTED" || myShift?.status === "OPEN";
+  const shiftOpen = isExternal || myShift?.status === "REQUESTED" || myShift?.status === "OPEN";
   const blockedNoShift = next?.to === "IN_PROGRESS" && !shiftOpen;
 
   return (

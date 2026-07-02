@@ -25,6 +25,7 @@ type SeedUser = {
   name: string;
   role: Role;
   canLogin?: boolean; // по умолчанию true
+  isExternal?: boolean; // наёмный перевозчик (02.07): без смен, стоимость поездки в заявке
   position?: string; // должность для отображения в шапке (напр. «Директор»); не право
 };
 
@@ -43,7 +44,7 @@ const USERS: SeedUser[] = [
   { login: "nikolay", name: "Николай", role: "DRIVER" },
   // Внешний перевозчик — наёмный, не штатный: задачи на него ведёт диспетчер, сам не входит.
   // Логин (sultan) — исторический внутренний ключ, на нём завязаны демо-задачи; в UI имя нейтральное.
-  { login: "sultan", name: "Внешний перевозчик", role: "DRIVER", canLogin: false },
+  { login: "sultan", name: "Внешний перевозчик", role: "DRIVER", canLogin: false, isExternal: true },
 ];
 
 // Типы задач (PRD §3, новый список — решение Артёма 18.06.2026). Порядок = sortOrder = очередь
@@ -93,11 +94,12 @@ function passwordFor(login: string, fallback: string): string {
 async function main(defaultPassword: string): Promise<void> {
   for (const u of USERS) {
     const canLogin = u.canLogin ?? true;
+    const isExternal = u.isExternal ?? false;
     const passwordHash = await hashPassword(passwordFor(u.login, defaultPassword));
     await prisma.user.upsert({
       where: { login: u.login },
-      update: { name: u.name, role: u.role, canLogin, isActive: true, passwordHash, position: u.position ?? null },
-      create: { login: u.login, name: u.name, role: u.role, canLogin, passwordHash, position: u.position ?? null },
+      update: { name: u.name, role: u.role, canLogin, isExternal, isActive: true, passwordHash, position: u.position ?? null },
+      create: { login: u.login, name: u.name, role: u.role, canLogin, isExternal, passwordHash, position: u.position ?? null },
     });
     console.log(`  ✓ ${u.login} — ${u.name} (${u.role}${canLogin ? "" : ", без входа"})`);
   }

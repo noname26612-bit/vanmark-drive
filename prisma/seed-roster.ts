@@ -48,10 +48,11 @@ async function ensureUser(
 }
 
 export async function seedRoster(prisma: PrismaClient): Promise<void> {
-  // 1) Переименование внешнего перевозчика (только имя; логин/canLogin/пароль не трогаем).
+  // 1) Переименование внешнего перевозчика + признак isExternal (02.07: без смен, стоимость поездки
+  // в заявке). Логин/canLogin/пароль не трогаем — вход включает админ в «Водители — доступ».
   const renamed = await prisma.user.updateMany({
     where: { login: EXTERNAL.login },
-    data: { name: EXTERNAL.name },
+    data: { name: EXTERNAL.name, isExternal: true },
   });
   console.log(
     renamed.count > 0

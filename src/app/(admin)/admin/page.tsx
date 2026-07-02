@@ -15,6 +15,7 @@ export default function AdminPage() {
         <AdminLink href="/admin/capacity" title="Календарь загрузки — настройки" desc="База, рабочий день, скорость, пробки, специализация" />
         <AdminLink href="/admin/work-catalog" title="Работы (ведомость)" desc="Справочник работ для ведомости водителя" />
         <AdminLink href="/admin/pay" title="Настройка оплаты (KPI)" desc="Оклады, премии, веса штрафов, прогрессия" />
+        <AdminLink href="/admin/drivers" title="Водители — доступ" desc="Кому разрешён вход (внешний перевозчик)" />
       </div>
     </main>
   );
