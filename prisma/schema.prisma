@@ -322,6 +322,9 @@ model Shift {
   openedAtAdjustedById String? // кто поправил (диспетчер/админ), uuid без навигации
   openedAtAdjustedAt   DateTime?
   openedAtAdjustNote   String? // причина правки (напр. «не было связи»)
+  // Смена открыта офлайн (O7): openedAt зафиксирован временем телефона (X-Occurred-At из очереди досылки),
+  // а не сервером. Милена видит пометку и при подтверждении может поправить время (№3).
+  openedOffline Boolean @default(false)
   confirmedById String? // диспетчер, подтвердивший открытие
   confirmedAt   DateTime?
   closedAt      DateTime?

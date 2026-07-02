@@ -5,6 +5,7 @@
 import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
 import { detectShiftLate, periodOf, parseHHMM, dateKeyInTz, KPI_TZ } from "./kpi";
+import { resolveOccurredAt } from "./occurred-at";
 import type { ShiftStatus } from "@/generated/prisma/enums";
 
 export type Actor = { id: string; role: string };
@@ -20,6 +21,7 @@ export type ShiftView = {
   openedAtReported: string | null; // что нажал водитель (если правили), иначе null
   openedAtAdjustedAt: string | null;
   openedAtAdjustNote: string | null;
+  openedOffline: boolean; // открыта офлайн (O7): openedAt — время телефона, Милене видна пометка
   confirmedAt: string | null;
   closedAt: string | null;
   // Отработано за день по задачам (В работе → Завершено + текущая активная), мин — для полосы на
@@ -36,6 +38,7 @@ type ShiftRow = {
   openedAtReported: Date | null;
   openedAtAdjustedAt: Date | null;
   openedAtAdjustNote: string | null;
+  openedOffline: boolean;
   confirmedAt: Date | null;
   closedAt: Date | null;
   driver?: { name: string } | null;
@@ -60,6 +63,7 @@ function toView(s: ShiftRow): ShiftView {
     openedAtReported: s.openedAtReported ? s.openedAtReported.toISOString() : null,
     openedAtAdjustedAt: s.openedAtAdjustedAt ? s.openedAtAdjustedAt.toISOString() : null,
     openedAtAdjustNote: s.openedAtAdjustNote,
+    openedOffline: s.openedOffline,
     confirmedAt: s.confirmedAt ? s.confirmedAt.toISOString() : null,
     closedAt: s.closedAt ? s.closedAt.toISOString() : null,
   };
@@ -72,37 +76,65 @@ export async function getMyShift(driverId: string, today: string): Promise<Shift
   return shift ? toView(shift) : null;
 }
 
-/** День смены вычисляется на СЕРВЕРЕ из текущего момента в МСК (preflight-аудит В2): клиентскому
- *  `today` не доверяем — иначе подделанная/сбитая зона телефона пишет смену не на тот день и обходит
- *  штраф «поздно открыл» (детектор SHIFT_LATE и учёт простоя выбирают смены по date). Открытие/закрытие
- *  смены и так online-only (PRD §15), серверное время доступно. */
-function serverShiftDate(): Date {
-  return parseDate(dateKeyInTz(new Date(), KPI_TZ));
+/** День смены вычисляется на СЕРВЕРЕ (preflight-аудит В2): клиентскому `today` не доверяем — иначе
+ *  подделанная/сбитая зона телефона пишет смену не на тот день и обходит штраф «поздно открыл»
+ *  (детектор SHIFT_LATE и учёт простоя выбирают смены по date). С O7 смена работает и офлайн: момент
+ *  действия берём из X-Occurred-At, но только через resolveOccurredAt (clamp [now−36ч; now+2мин],
+ *  мусор/вне окна → время сервера) — день считается от ДОСТОВЕРНОГО момента в МСК. */
+function shiftDateOf(at: Date): Date {
+  return parseDate(dateKeyInTz(at, KPI_TZ));
 }
 
+// Порог детекта «открыта офлайн» (O7): онлайн-нажатие доходит за доли секунды, досылка из офлайн-очереди —
+// через минуты/часы. Разница now−occurredAt больше порога ⇒ время открытия зафиксировал телефон, не сервер.
+const OFFLINE_LAG_MS = 60_000;
+
 /**
- * Открыть смену (водитель). Фиксирует фактическое начало рабочего дня = момент нажатия. Повторное
- * открытие в тот же день — идемпотентно (возвращаем текущую смену, не пересоздаём и не сдвигаем время).
+ * Открыть смену (водитель). Фиксирует фактическое начало рабочего дня = момент нажатия (occurredAtRaw
+ * из офлайн-очереди; онлайн он равен «сейчас»). Повторное открытие в тот же день — идемпотентно
+ * (возвращаем текущую смену, не пересоздаём и не сдвигаем время) — досылка после вмешательства
+ * диспетчера не даёт конфликта.
  */
-export async function openShift(driverId: string): Promise<ShiftView> {
-  const date = serverShiftDate();
+export async function openShift(driverId: string, occurredAtRaw?: string | null): Promise<ShiftView> {
+  const now = new Date();
+  const at = resolveOccurredAt(occurredAtRaw, now);
+  const date = shiftDateOf(at);
   const existing = await prisma.shift.findUnique({ where: { driverId_date: { driverId, date } } });
   if (existing) return toView(existing);
   const created = await prisma.shift.create({
-    data: { driverId, date, status: "REQUESTED", openedAt: new Date() },
+    data: {
+      driverId,
+      date,
+      status: "REQUESTED",
+      openedAt: at,
+      openedOffline: now.getTime() - at.getTime() > OFFLINE_LAG_MS,
+    },
   });
   return toView(created);
 }
 
-/** Закрыть смену (водитель). Допустимо из REQUESTED и OPEN. Повторное закрытие — идемпотентно. */
-export async function closeShift(driverId: string): Promise<ShiftView> {
-  const date = serverShiftDate();
-  const shift = await prisma.shift.findUnique({ where: { driverId_date: { driverId, date } } });
-  if (!shift) throw Errors.notFound();
+/**
+ * Закрыть смену (водитель). Допустимо из REQUESTED и OPEN. Повторное закрытие — идемпотентно.
+ * Офлайн-досылка (O7): closedAt = момент нажатия; если на день нажатия смены нет (закрытие уехало за
+ * полночь) — закрываем последнюю незакрытую смену водителя. Совсем нет смены → мягкая доменная ошибка
+ * (в очереди станет «конфликтом» с человеческой причиной, а не тупиком).
+ */
+export async function closeShift(driverId: string, occurredAtRaw?: string | null): Promise<ShiftView> {
+  const now = new Date();
+  const at = resolveOccurredAt(occurredAtRaw, now);
+  const date = shiftDateOf(at);
+  const byDate = await prisma.shift.findUnique({ where: { driverId_date: { driverId, date } } });
+  const shift =
+    byDate ??
+    (await prisma.shift.findFirst({
+      where: { driverId, status: { in: ["REQUESTED", "OPEN"] } },
+      orderBy: { date: "desc" },
+    }));
+  if (!shift) throw Errors.validation("Смена не найдена — сначала откройте смену");
   if (shift.status === "CLOSED") return toView(shift);
   const updated = await prisma.shift.update({
     where: { id: shift.id },
-    data: { status: "CLOSED", closedAt: new Date() },
+    data: { status: "CLOSED", closedAt: at },
   });
   return toView(updated);
 }
@@ -115,13 +147,16 @@ function reopenedStatus(confirmedAt: Date | null): ShiftStatus {
 }
 
 /**
- * Переоткрыть смену водителем (на случай случайного закрытия). driverId — ТОЛЬКО из сессии, смена за
- * серверный день. Идемпотентно: если смена не закрыта — возвращаем как есть.
+ * Переоткрыть смену водителем (на случай случайного закрытия). driverId — ТОЛЬКО из сессии; день — от
+ * достоверного момента нажатия (O7: работает и из офлайн-очереди). Если на день нажатия смены нет —
+ * берём последнюю смену водителя (досылка уехала за полночь). Идемпотентно: не закрыта — как есть.
  */
-export async function reopenShift(driverId: string): Promise<ShiftView> {
-  const date = serverShiftDate();
-  const shift = await prisma.shift.findUnique({ where: { driverId_date: { driverId, date } } });
-  if (!shift) throw Errors.notFound();
+export async function reopenShift(driverId: string, occurredAtRaw?: string | null): Promise<ShiftView> {
+  const at = resolveOccurredAt(occurredAtRaw);
+  const date = shiftDateOf(at);
+  const byDate = await prisma.shift.findUnique({ where: { driverId_date: { driverId, date } } });
+  const shift = byDate ?? (await prisma.shift.findFirst({ where: { driverId }, orderBy: { date: "desc" } }));
+  if (!shift) throw Errors.validation("Смена не найдена — сначала откройте смену");
   if (shift.status !== "CLOSED") return toView(shift);
   const updated = await prisma.shift.update({
     where: { id: shift.id },
