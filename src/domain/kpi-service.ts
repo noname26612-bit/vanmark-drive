@@ -964,6 +964,7 @@ export async function getKpiSettings(): Promise<KpiSettingsView> {
     floor: (s?.floor as PayoutFloor) ?? "SALARY",
     actBonusAmount: s?.actBonusAmount ?? 5000,
     actBonusThresholdPercent: s?.actBonusThresholdPercent ?? 80,
+    monthNormHours: s?.monthNormHours ?? 176,
   };
 }
 
@@ -973,13 +974,16 @@ export async function updateKpiSettings(input: {
   floor: PayoutFloor;
   actBonusAmount: number;
   actBonusThresholdPercent: number;
+  monthNormHours: number;
 }): Promise<KpiSettingsView> {
   const progressionPercent = Math.min(1000, Math.max(100, Math.trunc(input.progressionPercent))); // ≥100% (без прогрессии — 100)
   const progressionStartIndex = Math.max(1, Math.trunc(input.progressionStartIndex));
   const floor: PayoutFloor = input.floor === "ZERO" ? "ZERO" : "SALARY";
   const actBonusAmount = Math.max(0, Math.trunc(input.actBonusAmount)); // ₽; 0 — бонус выключен
   const actBonusThresholdPercent = Math.min(100, Math.max(1, Math.trunc(input.actBonusThresholdPercent))); // 1..100%
-  const data = { progressionPercent, progressionStartIndex, floor, actBonusAmount, actBonusThresholdPercent };
+  // Нормо-часы месяца для цены часа (Сводка v2, 02.07): разумные границы 1..400 (176 = 8 ч × 22 дня).
+  const monthNormHours = Math.min(400, Math.max(1, Math.trunc(input.monthNormHours)));
+  const data = { progressionPercent, progressionStartIndex, floor, actBonusAmount, actBonusThresholdPercent, monthNormHours };
   const saved = await prisma.kpiSettings.upsert({
     where: { id: "singleton" },
     update: data,
@@ -991,5 +995,6 @@ export async function updateKpiSettings(input: {
     floor: saved.floor as PayoutFloor,
     actBonusAmount: saved.actBonusAmount,
     actBonusThresholdPercent: saved.actBonusThresholdPercent,
+    monthNormHours: saved.monthNormHours,
   };
 }

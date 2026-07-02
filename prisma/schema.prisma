@@ -459,6 +459,9 @@ model KpiSettings {
   floor                    PayoutFloor @default(SALARY) // нижний порог итога (решение Артёма)
   actBonusAmount           Int         @default(5000) // бонус за комплектность актов, ₽ (этап 15, PRD §12.6)
   actBonusThresholdPercent Int         @default(80) // порог комплектности актов для бонуса, % (этап 15)
+  // Нормо-часы месяца для стоимости часа водителя (Сводка v2, 02.07): час = baseSalary / monthNormHours.
+  // 176 = 8 ч × 22 рабочих дня. Используется ТОЛЬКО в аналитике «простой в рублях» (видна админу).
+  monthNormHours           Int         @default(176)
   updatedAt                DateTime    @updatedAt
 }
 

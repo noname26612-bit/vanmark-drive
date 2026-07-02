@@ -1,12 +1,24 @@
 "use client";
 
+// Сводка v2 (решение Артёма 02.07): аналитика занятости вместо разбивки по типам работ.
+// Каждая цифра кликабельна — раскрывает список задач/смен/пометок за ней (lazy, /api/summary/details).
+// Рублёвая цена простоя (от оклада) видна только админу — диспетчеру сервер отдаёт null (№10).
 import { useState } from "react";
+import Link from "next/link";
 import useSWR from "swr";
 import { fetcher } from "@/lib/fetcher";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 import { GRANULARITIES, normalizeAnchor, shiftAnchor, formatWindowLabel, type Granularity } from "@/domain/summary";
-import type { SummaryOverview, DriverSummaryView, SummaryTotals, CarrierSummary } from "@/lib/summary-dto";
+import type {
+  SummaryOverview,
+  DriverSummaryView,
+  SummaryTotals,
+  SummaryMoney,
+  SummaryDetailMetric,
+  SummaryDetailRow,
+  CarrierSummary,
+} from "@/lib/summary-dto";
 
 const GRAN_LABEL: Record<Granularity, string> = { day: "День", week: "Неделя", month: "Месяц" };
 
@@ -19,6 +31,10 @@ function formatOnSite(min: number | null): string {
   return m ? `${h} ч ${m} мин` : `${h} ч`;
 }
 
+function money(v: number): string {
+  return `${v.toLocaleString("ru-RU")} ₽`;
+}
+
 /** Русское склонение: plural(2, ["ремонт","ремонта","ремонтов"]) → "ремонта". */
 function plural(n: number, forms: [string, string, string]): string {
   const a = Math.abs(n) % 100;
@@ -29,9 +45,8 @@ function plural(n: number, forms: [string, string, string]): string {
   return forms[2];
 }
 
-function structureLabel(repair: number, delivery: number): string {
-  return `${repair} ${plural(repair, ["ремонт", "ремонта", "ремонтов"])} · ${delivery} ${plural(delivery, ["доставка", "доставки", "доставок"])}`;
-}
+// Раскрытая детализация: метрика + необязательный водитель (клик в его карточке).
+type OpenDetail = { metric: SummaryDetailMetric; driverId?: string; title: string } | null;
 
 export function SummaryClient({ initialAnchor }: { initialAnchor: string }) {
   const [granularity, setGranularity] = useState<Granularity>("week");
@@ -55,7 +70,9 @@ export function SummaryClient({ initialAnchor }: { initialAnchor: string }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-neutral-900">Сводка по водителям</h1>
-          <p className="mt-1 text-sm text-neutral-500">Что наработали за период — по дате закрытия задач.</p>
+          <p className="mt-1 text-sm text-neutral-500">
+            Занятость, время и деньги за период — по дате закрытия задач. Цифры кликабельны.
+          </p>
         </div>
         <a
           href={exportUrl}
@@ -107,17 +124,389 @@ export function SummaryClient({ initialAnchor }: { initialAnchor: string }) {
         <p className="mt-6 text-sm text-neutral-500">Нет активных водителей.</p>
       ) : (
         <>
-          <ComparePanel drivers={data.drivers} />
-          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          <div className="mt-5 grid gap-3 lg:grid-cols-2">
             {data.drivers.map((d) => (
-              <DriverCard key={d.driverId} driver={d} />
+              <DriverCard key={d.driverId} driver={d} granularity={granularity} anchor={anchor} />
             ))}
           </div>
           <TotalsBar totals={data.totals} label={label} />
+          <MoneyBlock money={data.money} payrollVisible={data.payrollVisible} granularity={granularity} anchor={anchor} />
           <CarrierSection granularity={granularity} anchor={anchor} />
         </>
       )}
     </main>
+  );
+}
+
+/** Кликабельная цифра-метрика: раскрывает список за ней. 0 — приглушённо. */
+function ClickStat({
+  label,
+  value,
+  tone = "muted",
+  active,
+  onClick,
+}: {
+  label: string;
+  value: number;
+  tone?: "warn" | "danger" | "muted";
+  active: boolean;
+  onClick: () => void;
+}) {
+  const has = value > 0;
+  const dot = !has ? "bg-neutral-300" : tone === "warn" ? "bg-amber-500" : tone === "danger" ? "bg-red-500" : "bg-neutral-400";
+  const num = !has ? "text-neutral-400" : tone === "warn" ? "text-amber-700" : tone === "danger" ? "text-red-600" : "text-neutral-700";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-neutral-50",
+        active && "bg-neutral-100",
+      )}
+    >
+      <span className={cn("h-2 w-2 rounded-full", dot)} />
+      <span className="text-neutral-500">{label}</span>
+      <span className={cn("font-medium", num)}>{value}</span>
+    </button>
+  );
+}
+
+/** Мини-график занятости по дням окна: колонка = день, серым — смена, зелёным — отработано. */
+function DayLoadChart({ driver }: { driver: DriverSummaryView }) {
+  const days = driver.days;
+  if (days.length <= 1) return null; // для разреза «день» график не нужен
+  const max = Math.max(60, ...days.map((d) => d.shiftMinutes, 0), ...days.map((d) => d.workedMinutes));
+  return (
+    <div className="mt-3">
+      <div className="mb-1 text-xs text-neutral-500">Занятость по дням</div>
+      <div className="flex h-14 items-end gap-px">
+        {days.map((d) => {
+          const shiftPct = Math.round((d.shiftMinutes / max) * 100);
+          const workedPct = Math.round((d.workedMinutes / max) * 100);
+          const title = `${d.dateKey.slice(8)}.${d.dateKey.slice(5, 7)}: смена ${formatOnSite(d.shiftMinutes)}, в работе ${formatOnSite(d.workedMinutes)}`;
+          return (
+            <div key={d.dateKey} title={title} className="relative flex-1 self-stretch rounded-sm bg-neutral-50">
+              <div
+                className="absolute inset-x-0 bottom-0 rounded-sm bg-neutral-200"
+                style={{ height: `${shiftPct}%` }}
+              />
+              <div
+                className="absolute inset-x-0 bottom-0 rounded-sm bg-green-500/80"
+                style={{ height: `${workedPct}%` }}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DriverCard({
+  driver,
+  granularity,
+  anchor,
+}: {
+  driver: DriverSummaryView;
+  granularity: Granularity;
+  anchor: string;
+}) {
+  const [open, setOpen] = useState<OpenDetail>(null);
+  const toggle = (metric: SummaryDetailMetric, title: string) =>
+    setOpen((o) => (o && o.metric === metric ? null : { metric, driverId: driver.driverId, title }));
+
+  const overPlan =
+    driver.planFactCount > 0 && driver.planMinutes > 0
+      ? Math.round(((driver.factMinutes - driver.planMinutes) / driver.planMinutes) * 100)
+      : null;
+
+  return (
+    <div className="rounded-xl border border-neutral-200 bg-white p-4">
+      <div className="flex items-center justify-between">
+        <span className="font-medium text-neutral-900">
+          {driver.driverName}
+          {driver.isExternal ? <span className="ml-2 text-xs text-neutral-400">внешний · смен нет</span> : null}
+        </span>
+        <button
+          type="button"
+          onClick={() => toggle("done", "Выполненные задачи")}
+          className="flex items-baseline gap-1.5 rounded-md px-1.5 py-0.5 transition-colors hover:bg-neutral-50"
+        >
+          <span className="text-2xl font-semibold text-neutral-900">{driver.doneCount}</span>
+          <span className="text-xs text-neutral-500">выполнено</span>
+        </button>
+      </div>
+
+      {/* Загрузка за период: отработано / длительность смен (штатные). */}
+      {!driver.isExternal ? (
+        <div className="mt-3">
+          <div className="mb-1.5 flex items-center justify-between text-xs text-neutral-500">
+            <button
+              type="button"
+              className="rounded px-0.5 transition-colors hover:bg-neutral-50 hover:text-neutral-700"
+              onClick={() => toggle("shifts", "Смены за период")}
+            >
+              Загрузка (от смен, по закрытым)
+            </button>
+            <span className="font-medium text-neutral-700">
+              {driver.loadPercent != null ? `${driver.loadPercent}%` : "смен нет"}
+            </span>
+          </div>
+          <div className="flex h-2.5 overflow-hidden rounded bg-neutral-100">
+            <div className="bg-green-500" style={{ width: `${Math.min(100, driver.loadPercent ?? 0)}%` }} />
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mt-3.5 flex flex-wrap gap-x-4 gap-y-2 text-sm">
+        <ClickStat
+          label="Поздние смены"
+          value={driver.lateCount}
+          tone="warn"
+          active={open?.metric === "late"}
+          onClick={() => toggle("late", "Поздние открытия смены")}
+        />
+        <ClickStat
+          label="Невып. точки"
+          value={driver.missedStopCount}
+          tone="danger"
+          active={open?.metric === "missed"}
+          onClick={() => toggle("missed", "Невыполненные точки")}
+        />
+        <ClickStat
+          label="Отмены"
+          value={driver.cancelledCount}
+          active={open?.metric === "cancelled"}
+          onClick={() => toggle("cancelled", "Отмены")}
+        />
+        <ClickStat
+          label="Переносы"
+          value={driver.rescheduledCount}
+          active={open?.metric === "rescheduled"}
+          onClick={() => toggle("rescheduled", "Переносы")}
+        />
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-x-4 border-t border-neutral-100 pt-2.5 text-sm">
+        <TimeStat label="На задаче (ср.)" value={formatOnSite(driver.avgOnSiteMinutes)} />
+        <TimeStat label="Отработано" value={formatOnSite(driver.workedMinutes)} />
+        <button
+          type="button"
+          onClick={() => toggle("shifts", "Смены за период")}
+          className="flex flex-col rounded-md text-left transition-colors hover:bg-neutral-50"
+        >
+          <span className="text-xs text-neutral-500">Простой</span>
+          <span className="font-medium text-neutral-800">{formatOnSite(driver.idleMinutes)}</span>
+        </button>
+      </div>
+
+      {/* План/факт (v2): по задачам, где есть и оценка, и факт. */}
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 border-t border-neutral-100 pt-2 text-sm">
+        <button
+          type="button"
+          onClick={() => toggle("plan-fact", "План / факт по задачам")}
+          className={cn(
+            "rounded-md px-1 py-0.5 text-left transition-colors hover:bg-neutral-50",
+            open?.metric === "plan-fact" && "bg-neutral-100",
+          )}
+        >
+          <span className="text-neutral-500">План/факт: </span>
+          {driver.planFactCount > 0 ? (
+            <span className="font-medium text-neutral-800">
+              {formatOnSite(driver.planMinutes)} → {formatOnSite(driver.factMinutes)}
+              {overPlan != null ? (
+                <span className={cn("ml-1", overPlan > 0 ? "text-amber-700" : "text-green-700")}>
+                  ({overPlan > 0 ? "+" : ""}
+                  {overPlan}%)
+                </span>
+              ) : null}
+            </span>
+          ) : (
+            <span className="text-neutral-400">нет данных</span>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => toggle("idle-notes", "Пометки о простое")}
+          className={cn(
+            "rounded-md px-1 py-0.5 text-left transition-colors hover:bg-neutral-50",
+            open?.metric === "idle-notes" && "bg-neutral-100",
+          )}
+        >
+          <span className="text-neutral-500">Простой (пометки): </span>
+          <span className={cn("font-medium", driver.idleNotedMinutes > 0 ? "text-amber-700" : "text-neutral-400")}>
+            {driver.idleNotedMinutes > 0 ? formatOnSite(driver.idleNotedMinutes) : "нет"}
+          </span>
+        </button>
+      </div>
+
+      {!driver.isExternal ? <DayLoadChart driver={driver} /> : null}
+
+      {open ? (
+        <DetailList
+          metric={open.metric}
+          title={open.title}
+          granularity={granularity}
+          anchor={anchor}
+          driverId={open.driverId}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function TimeStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col">
+      <span className="text-xs text-neutral-500">{label}</span>
+      <span className="font-medium text-neutral-800">{value}</span>
+    </div>
+  );
+}
+
+/** Ленивый список за цифрой (drill-down v2). Строки с задачей ведут в её карточку. */
+function DetailList({
+  metric,
+  title,
+  granularity,
+  anchor,
+  driverId,
+}: {
+  metric: SummaryDetailMetric;
+  title: string;
+  granularity: Granularity;
+  anchor: string;
+  driverId?: string;
+}) {
+  const url = `/api/summary/details?metric=${metric}&granularity=${granularity}&date=${anchor}${
+    driverId ? `&driverId=${driverId}` : ""
+  }`;
+  const { data, isLoading } = useSWR<SummaryDetailRow[]>(url, fetcher);
+  return (
+    <div className="mt-3 rounded-lg border border-neutral-200 bg-neutral-50 p-2">
+      <div className="px-1 pb-1 text-xs font-medium text-neutral-500">{title}</div>
+      {isLoading && !data ? (
+        <p className="px-1 py-1 text-sm text-neutral-400">Загрузка…</p>
+      ) : !data || data.length === 0 ? (
+        <p className="px-1 py-1 text-sm text-neutral-400">Пусто за период.</p>
+      ) : (
+        <ul className="divide-y divide-neutral-100 overflow-hidden rounded-md bg-white">
+          {data.map((r, i) => (
+            <li key={i} className="flex items-center gap-2 px-2.5 py-1.5 text-sm">
+              <span className="shrink-0 text-xs text-neutral-400">
+                {r.dateKey.slice(8)}.{r.dateKey.slice(5, 7)}
+              </span>
+              {r.taskId ? (
+                <Link href={`/tasks/${r.taskId}`} className="min-w-0 flex-1 truncate font-medium text-neutral-800 hover:underline">
+                  {r.number ? `№${r.number} · ` : ""}
+                  {r.title}
+                </Link>
+              ) : (
+                <span className="min-w-0 flex-1 truncate text-neutral-700">{r.title}</span>
+              )}
+              {!driverId && r.driverName ? (
+                <span className="shrink-0 text-xs text-neutral-400">{r.driverName}</span>
+              ) : null}
+              {r.extra ? <span className="hidden shrink-0 text-xs text-neutral-500 sm:inline">{r.extra}</span> : null}
+              {r.minutes != null ? (
+                <span className="shrink-0 font-medium text-neutral-700">{formatOnSite(r.minutes)}</span>
+              ) : null}
+              {r.amount != null ? <span className="shrink-0 font-semibold text-neutral-900">{money(r.amount)}</span> : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function TotalsBar({ totals, label }: { totals: SummaryTotals; label: string }) {
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neutral-300 bg-neutral-50 px-4 py-2.5 text-sm">
+      <span className="font-medium text-neutral-800">Итого · {label}</span>
+      <span className="text-neutral-500">
+        выполнено <b className="font-medium text-neutral-800">{totals.doneCount}</b> · загрузка{" "}
+        <b className="font-medium text-neutral-800">
+          {totals.loadPercent != null ? `${totals.loadPercent}%` : "—"}
+        </b>{" "}
+        · простой <b className="font-medium text-neutral-800">{formatOnSite(totals.idleMinutes)}</b> · пометки{" "}
+        <b className="font-medium text-neutral-800">
+          {totals.idleNotedMinutes > 0 ? formatOnSite(totals.idleNotedMinutes) : "—"}
+        </b>
+      </span>
+    </div>
+  );
+}
+
+/** «Деньги за период» (v2): получено по задачам vs затраты. Цена простоя — только админу (№10). */
+function MoneyBlock({
+  money: m,
+  payrollVisible,
+  granularity,
+  anchor,
+}: {
+  money: SummaryMoney;
+  payrollVisible: boolean;
+  granularity: Granularity;
+  anchor: string;
+}) {
+  const [open, setOpen] = useState<OpenDetail>(null);
+  const toggle = (metric: SummaryDetailMetric, title: string) =>
+    setOpen((o) => (o && o.metric === metric ? null : { metric, title }));
+  const row = (
+    label: string,
+    value: string,
+    metric: SummaryDetailMetric | null,
+    title: string,
+    tone: "in" | "out" = "in",
+  ) => (
+    <button
+      type="button"
+      disabled={!metric}
+      onClick={() => metric && toggle(metric, title)}
+      className={cn(
+        "flex w-full items-center justify-between rounded-md px-1.5 py-1 text-left text-sm",
+        metric && "transition-colors hover:bg-neutral-50",
+        open && metric === open.metric && "bg-neutral-100",
+      )}
+    >
+      <span className="text-neutral-500">{label}</span>
+      <span className={cn("font-medium", tone === "in" ? "text-green-700" : "text-red-700")}>{value}</span>
+    </button>
+  );
+  return (
+    <section className="mt-6 rounded-xl border border-neutral-200 bg-white p-4">
+      <h2 className="text-lg font-semibold text-neutral-900">Деньги за период</h2>
+      <div className="mt-3 grid gap-x-8 gap-y-1 sm:grid-cols-2">
+        <div>
+          <div className="mb-1 text-xs font-medium uppercase tracking-wide text-neutral-400">Получено</div>
+          {row("Оплаты на месте", money(m.paymentsReceived), "payments", "Полученные оплаты")}
+          {row("Расценённые работы", money(m.pricedWorks), "priced-works", "Расценённые ведомости")}
+          <div className="mt-1 flex items-center justify-between border-t border-neutral-100 px-1.5 pt-1.5 text-sm">
+            <span className="font-medium text-neutral-800">Итого получено</span>
+            <span className="font-semibold text-green-700">{money(m.receivedTotal)}</span>
+          </div>
+        </div>
+        <div>
+          <div className="mb-1 text-xs font-medium uppercase tracking-wide text-neutral-400">Затраты и потери</div>
+          {row("Внешний перевозчик", money(m.carrierCost), "carrier", "Поездки внешнего перевозчика", "out")}
+          {payrollVisible && m.idleCost != null ? (
+            row("Цена простоя (от оклада)", money(m.idleCost), "shifts", "Смены за период", "out")
+          ) : (
+            <div className="flex items-center justify-between px-1.5 py-1 text-sm">
+              <span className="text-neutral-500">Цена простоя (от оклада)</span>
+              <span className="text-neutral-400" title="Доступно администратору">
+                — для администратора
+              </span>
+            </div>
+          )}
+          {payrollVisible && m.idleNotedCost != null
+            ? row("Цена простоя по пометкам", money(m.idleNotedCost), "idle-notes", "Пометки о простое", "out")
+            : null}
+        </div>
+      </div>
+      {open ? <DetailList metric={open.metric} title={open.title} granularity={granularity} anchor={anchor} /> : null}
+    </section>
   );
 }
 
@@ -130,9 +519,8 @@ function CarrierSection({ granularity, anchor }: { granularity: Granularity; anc
   );
   const [open, setOpen] = useState(false);
   if (!data || data.taskCount === 0) return null;
-  const money = (v: number) => `${v.toLocaleString("ru-RU")} ₽`;
   return (
-    <section className="mt-6 rounded-xl border border-neutral-200 bg-white p-4">
+    <section className="mt-4 rounded-xl border border-neutral-200 bg-white p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold text-neutral-900">Внешний перевозчик</h2>
         <a
@@ -172,7 +560,9 @@ function CarrierSection({ granularity, anchor }: { granularity: Granularity; anc
         <ul className="mt-2 divide-y divide-neutral-100 rounded-lg border border-neutral-200">
           {data.tasks.map((t) => (
             <li key={t.taskId} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
-              <span className="text-neutral-500">{t.dateKey.slice(8)}.{t.dateKey.slice(5, 7)}</span>
+              <span className="text-neutral-500">
+                {t.dateKey.slice(8)}.{t.dateKey.slice(5, 7)}
+              </span>
               <a href={`/tasks/${t.taskId}`} className="min-w-0 flex-1 truncate font-medium text-neutral-800 hover:underline">
                 №{t.number} · {t.title}
               </a>
@@ -182,147 +572,5 @@ function CarrierSection({ granularity, anchor }: { granularity: Granularity; anc
         </ul>
       ) : null}
     </section>
-  );
-}
-
-/** Полоса «ремонты / доставки» одного водителя. */
-function StructureBar({ repair, delivery }: { repair: number; delivery: number }) {
-  const total = repair + delivery;
-  if (total === 0) return <div className="h-2.5 rounded bg-neutral-100" />;
-  const repairPct = (repair / total) * 100;
-  return (
-    <div className="flex h-2.5 overflow-hidden rounded bg-neutral-100">
-      <div className="bg-neutral-700" style={{ width: `${repairPct}%` }} />
-      <div className="bg-neutral-400" style={{ width: `${100 - repairPct}%` }} />
-    </div>
-  );
-}
-
-/** Метрика-проблема с цветной точкой: 0 — приглушённо, >0 — акцент по тону. */
-function ProblemChip({ label, value, tone }: { label: string; value: number; tone: "warn" | "danger" | "muted" }) {
-  const active = value > 0;
-  const dot = !active
-    ? "bg-neutral-300"
-    : tone === "warn"
-      ? "bg-amber-500"
-      : tone === "danger"
-        ? "bg-red-500"
-        : "bg-neutral-400";
-  const num = !active
-    ? "text-neutral-400"
-    : tone === "warn"
-      ? "text-amber-700"
-      : tone === "danger"
-        ? "text-red-600"
-        : "text-neutral-700";
-  return (
-    <span className="inline-flex items-center gap-2">
-      <span className={cn("h-2 w-2 rounded-full", dot)} />
-      <span className="text-neutral-500">{label}</span>
-      <span className={cn("font-medium", num)}>{value}</span>
-    </span>
-  );
-}
-
-function DriverCard({ driver }: { driver: DriverSummaryView }) {
-  return (
-    <div className="rounded-xl border border-neutral-200 bg-white p-4">
-      <div className="flex items-center justify-between">
-        <span className="font-medium text-neutral-900">{driver.driverName}</span>
-        <span className="flex items-baseline gap-1.5">
-          <span className="text-2xl font-semibold text-neutral-900">{driver.doneCount}</span>
-          <span className="text-xs text-neutral-500">выполнено</span>
-        </span>
-      </div>
-
-      <div className="mt-3">
-        <div className="mb-1.5 flex items-center justify-between text-xs text-neutral-500">
-          <span>Структура работ</span>
-          <span>{structureLabel(driver.repairCount, driver.deliveryCount)}</span>
-        </div>
-        <StructureBar repair={driver.repairCount} delivery={driver.deliveryCount} />
-      </div>
-
-      <div className="mt-3.5 flex flex-wrap gap-x-5 gap-y-2 text-sm">
-        <ProblemChip label="Поздние смены" value={driver.lateCount} tone="warn" />
-        <ProblemChip label="Невып. точки" value={driver.missedStopCount} tone="danger" />
-        <ProblemChip label="Отмены" value={driver.cancelledCount} tone="muted" />
-        <ProblemChip label="Переносы" value={driver.rescheduledCount} tone="muted" />
-      </div>
-
-      <div className="mt-3 grid grid-cols-3 gap-x-4 border-t border-neutral-100 pt-2.5 text-sm">
-        <TimeStat label="На задаче (ср.)" value={formatOnSite(driver.avgOnSiteMinutes)} />
-        <TimeStat label="Отработано" value={formatOnSite(driver.workedMinutes)} />
-        <TimeStat label="Простой" value={formatOnSite(driver.idleMinutes)} />
-      </div>
-    </div>
-  );
-}
-
-function TimeStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex flex-col">
-      <span className="text-xs text-neutral-500">{label}</span>
-      <span className="font-medium text-neutral-800">{value}</span>
-    </div>
-  );
-}
-
-/** Сравнение водителей за период: длина полосы = выполнено в общем масштабе, сегменты — ремонты/доставки. */
-function ComparePanel({ drivers }: { drivers: DriverSummaryView[] }) {
-  const maxDone = Math.max(1, ...drivers.map((d) => d.doneCount));
-  return (
-    <div className="mt-6 rounded-xl border border-neutral-200 bg-white p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <span className="text-sm font-medium text-neutral-700">Кто сколько закрыл за период</span>
-        <span className="flex items-center gap-3 text-xs text-neutral-500">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm bg-neutral-700" /> Ремонты
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm bg-neutral-400" /> Доставки
-          </span>
-        </span>
-      </div>
-      <div className="flex flex-col gap-2.5">
-        {drivers.map((d) => {
-          const repairPct = d.doneCount > 0 ? (d.repairCount / maxDone) * 100 : 0;
-          const deliveryPct = d.doneCount > 0 ? (d.deliveryCount / maxDone) * 100 : 0;
-          return (
-            <div key={d.driverId} className="flex items-center gap-3">
-              <span className="w-36 shrink-0 truncate text-sm text-neutral-700" title={d.driverName}>
-                {d.driverName}
-              </span>
-              <div className="flex h-3.5 flex-1 overflow-hidden rounded bg-neutral-100">
-                <div className="bg-neutral-700" style={{ width: `${repairPct}%` }} />
-                <div className="bg-neutral-400" style={{ width: `${deliveryPct}%` }} />
-              </div>
-              <span
-                className={cn(
-                  "w-6 shrink-0 text-right text-sm font-medium",
-                  d.doneCount > 0 ? "text-neutral-800" : "text-neutral-400",
-                )}
-              >
-                {d.doneCount}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function TotalsBar({ totals, label }: { totals: SummaryTotals; label: string }) {
-  return (
-    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neutral-300 bg-neutral-50 px-4 py-2.5 text-sm">
-      <span className="font-medium text-neutral-800">Итого · {label}</span>
-      <span className="text-neutral-500">
-        выполнено <b className="font-medium text-neutral-800">{totals.doneCount}</b> · поздние смены{" "}
-        <b className="font-medium text-neutral-800">{totals.lateCount}</b> · невып. точки{" "}
-        <b className="font-medium text-neutral-800">{totals.missedStopCount}</b> · простой{" "}
-        <b className="font-medium text-neutral-800">{formatOnSite(totals.idleMinutes)}</b>
-      </span>
-    </div>
   );
 }

@@ -313,6 +313,7 @@ model KpiSettings {
   floor                 PayoutFloor @default(SALARY) // нижний порог итога
   actBonusAmount           Int      @default(5000) // бонус за комплектность актов, ₽ (этап 15, §12.6)
   actBonusThresholdPercent Int      @default(80)   // порог комплектности актов для бонуса, %
+  monthNormHours           Int      @default(176)  // нормо-часы месяца: цена часа = оклад/норма (Сводка v2, только админ)
   updatedAt             DateTime    @updatedAt
 }
 

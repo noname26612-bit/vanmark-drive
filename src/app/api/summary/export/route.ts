@@ -11,11 +11,12 @@ export const dynamic = "force-dynamic";
 // для Excel. Только диспетчер/админ (тот же гейт, что и overview — данные по всем водителям).
 export async function GET(req: Request) {
   try {
-    await requireDispatcher();
+    const user = await requireDispatcher();
     const sp = new URL(req.url).searchParams;
     const granularity = sp.get("granularity") || "week";
     const date = sp.get("date") || dateKeyInTz(new Date(), KPI_TZ);
-    const overview = await getDriverSummary(granularity, date);
+    // Рублёвая колонка в CSV — только у админа (№10).
+    const overview = await getDriverSummary(granularity, date, { payrollVisible: user.role === "ADMIN" });
     return new NextResponse(buildSummaryCsv(overview), {
       status: 200,
       headers: {

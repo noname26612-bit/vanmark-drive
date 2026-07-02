@@ -164,6 +164,7 @@ function SettingsSection() {
   const [floor, setFloor] = useState<string | null>(null);
   const [bonusAmount, setBonusAmount] = useState<string | null>(null);
   const [bonusThreshold, setBonusThreshold] = useState<string | null>(null);
+  const [normHours, setNormHours] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -174,12 +175,14 @@ function SettingsSection() {
   const floorVal = floor ?? data.floor;
   const bonusAmountVal = bonusAmount ?? String(data.actBonusAmount);
   const bonusThresholdVal = bonusThreshold ?? String(data.actBonusThresholdPercent);
+  const normHoursVal = normHours ?? String(data.monthNormHours);
   const dirty =
     Number(percentVal) !== data.progressionPercent ||
     Number(startVal) !== data.progressionStartIndex ||
     floorVal !== data.floor ||
     Number(bonusAmountVal) !== data.actBonusAmount ||
-    Number(bonusThresholdVal) !== data.actBonusThresholdPercent;
+    Number(bonusThresholdVal) !== data.actBonusThresholdPercent ||
+    Number(normHoursVal) !== data.monthNormHours;
 
   async function save() {
     setError(null);
@@ -191,12 +194,14 @@ function SettingsSection() {
         floor: floorVal,
         actBonusAmount: Math.trunc(Number(bonusAmountVal)),
         actBonusThresholdPercent: Math.trunc(Number(bonusThresholdVal)),
+        monthNormHours: Math.trunc(Number(normHoursVal)),
       });
       setPercent(null);
       setStartIndex(null);
       setFloor(null);
       setBonusAmount(null);
       setBonusThreshold(null);
+      setNormHours(null);
       await mutate();
     } catch (e) {
       setError((e as Error).message);
@@ -227,6 +232,9 @@ function SettingsSection() {
         </Field>
         <Field label="Порог комплектности актов, %" hint="80 = бонус при ≥80% актовых задач с актом">
           <Input type="number" min={1} max={100} value={bonusThresholdVal} onChange={(e) => setBonusThreshold(e.target.value)} />
+        </Field>
+        <Field label="Нормо-часы месяца" hint="176 = 8 ч × 22 дня; для цены простоя в Сводке (видна админу)">
+          <Input type="number" min={1} max={400} value={normHoursVal} onChange={(e) => setNormHours(e.target.value)} />
         </Field>
         <div className="flex items-end sm:col-span-2">
           <Button disabled={!dirty || busy} onClick={save}>

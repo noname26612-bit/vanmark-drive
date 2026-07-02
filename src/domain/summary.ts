@@ -109,6 +109,30 @@ export function averageMinutes(durationsMs: number[]): number | null {
   return Math.round(sum / durationsMs.length / 60000);
 }
 
+// ───────────────────────────── Сводка v2 (02.07): занятость и деньги ─────────────────────────────
+
+/** Все ключи дней окна по порядку (для мини-графика: дни без смен тоже строки). */
+export function windowDayKeys(w: Window): string[] {
+  const keys: string[] = [];
+  for (let k = w.fromKey; k <= w.toKey; k = dayShift(k, 1)) keys.push(k);
+  return keys;
+}
+
+/** Коэффициент загрузки, %: отработано / длительность смен. Смен нет (0 мин) → null, не 0. */
+export function loadPercent(workedMinutes: number, shiftMinutes: number): number | null {
+  if (shiftMinutes <= 0) return null;
+  return Math.round((workedMinutes / shiftMinutes) * 100);
+}
+
+/**
+ * Цена простоя, ₽: минуты × стоимость часа (оклад / нормо-часы месяца). Округление до рубля.
+ * Некорректные входы (нет оклада/нормы) → 0. Используется ТОЛЬКО в admin-ветке Сводки (№10).
+ */
+export function idleCostRub(idleMinutes: number, baseSalary: number, monthNormHours: number): number {
+  if (idleMinutes <= 0 || baseSalary <= 0 || monthNormHours <= 0) return 0;
+  return Math.round((idleMinutes / 60) * (baseSalary / monthNormHours));
+}
+
 /** Человекочитаемый заголовок периода: «14.06.2026» / «08.06 – 14.06.2026» / «июнь 2026». */
 export function formatWindowLabel(granularity: Granularity, anchor: string): string {
   const w = windowKeys(granularity, anchor);

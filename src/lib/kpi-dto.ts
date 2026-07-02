@@ -99,6 +99,7 @@ export type KpiSettingsView = {
   floor: PayoutFloor;
   actBonusAmount: number; // сумма бонуса за комплектность актов, ₽ (этап 15)
   actBonusThresholdPercent: number; // порог комплектности для бонуса, % (этап 15)
+  monthNormHours: number; // нормо-часы месяца для цены часа водителя (Сводка v2, 02.07)
 };
 
 // Подписи видов нарушений для интерфейса (русский, кратко).
