@@ -110,6 +110,9 @@ export function CreateTaskModal({
   editTask?: TaskDTO | null;
 }) {
   const isEdit = editTask !== null;
+  // Редактирование завершённой/отменённой заявки: дату менять нельзя (решение Артёма 02.07.2026) —
+  // перенос закрытой заявки запрещён на сервере, поэтому поле «Дата» в этом режиме скрываем.
+  const isTerminalEdit = editTask?.status === "DONE" || editTask?.status === "CANCELLED";
   const firstType = types[0]?.id ?? "";
   const [form, setForm] = useState<FormState>(() =>
     editTask ? formFromTask(editTask) : emptyForm(firstType, defaultDate, types[0]?.requiresSignedDoc ?? false),
@@ -237,6 +240,40 @@ export function CreateTaskModal({
           />
         </Field>
 
+        {/* Обязательные при создании (решение Артёма 02.07.2026): организация, контактное лицо,
+            телефон — вверху формы. При редактировании не блокируем (старые заявки могут быть без них). */}
+        <Field label="Организация" required={!isEdit}>
+          <Input
+            data-testid="create-org"
+            value={form.orgName}
+            onChange={(e) => set("orgName", e.target.value)}
+            placeholder="ООО «...»"
+            required={!isEdit}
+          />
+        </Field>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Контактное лицо" required={!isEdit}>
+            <Input
+              data-testid="create-contact-name"
+              value={form.contactName}
+              onChange={(e) => set("contactName", e.target.value)}
+              placeholder="Имя"
+              required={!isEdit}
+            />
+          </Field>
+          <Field label="Телефон" required={!isEdit}>
+            <Input
+              data-testid="create-contact-phone"
+              value={form.contactPhone}
+              onChange={(e) => set("contactPhone", e.target.value)}
+              placeholder="+7 ..."
+              required={!isEdit}
+            />
+          </Field>
+        </div>
+
+        {!isTerminalEdit ? (
         <div className="grid grid-cols-2 gap-3">
           <Field label="Дата">
             <DateField
@@ -280,6 +317,7 @@ export function CreateTaskModal({
             </Field>
           ) : null}
         </div>
+        ) : null}
 
         <div className="rounded-lg border border-neutral-200 p-3">
           <label className="flex items-center gap-2 text-sm font-medium text-neutral-800">
@@ -317,21 +355,6 @@ export function CreateTaskModal({
             <Field label="Оборудование">
               <Input value={form.equipment} onChange={(e) => set("equipment", e.target.value)} />
             </Field>
-            <Field label="Организация-клиент">
-              <Input value={form.orgName} onChange={(e) => set("orgName", e.target.value)} />
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Контакт: имя">
-                <Input value={form.contactName} onChange={(e) => set("contactName", e.target.value)} />
-              </Field>
-              <Field label="Контакт: телефон">
-                <Input
-                  value={form.contactPhone}
-                  onChange={(e) => set("contactPhone", e.target.value)}
-                  placeholder="+7 ..."
-                />
-              </Field>
-            </div>
             <Field label="Ссылка на точку (Яндекс/2ГИС)">
               <Input value={form.addressLink} onChange={(e) => set("addressLink", e.target.value)} />
             </Field>

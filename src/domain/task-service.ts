@@ -14,6 +14,7 @@ import { resolveOccurredAt } from "./occurred-at";
 import { notifyTaskAssignee } from "@/lib/push";
 import { geocodeAddress } from "@/lib/geocode";
 import { computeEstimate } from "./capacity-service";
+import { syncUnsignedDocMark } from "./kpi-service";
 import type { LatLng } from "./capacity";
 
 export type Actor = { id: string; role: Role };
@@ -289,9 +290,17 @@ export async function createTask(
   const typeId = input.typeId;
   const title = clean(input.title);
   const address = clean(input.address);
+  const orgName = clean(input.orgName);
+  const contactName = clean(input.contactName);
+  const contactPhone = clean(input.contactPhone);
   if (!typeId) throw Errors.validation("Не выбран тип задачи");
   if (!title) throw Errors.validation("Не указано название");
   if (!address) throw Errors.validation("Не указан адрес");
+  // Обязательны при СОЗДАНИИ (решение Артёма 02.07.2026): организация, контакт, телефон.
+  // Редактирование (updateTaskFields) остаётся мягким — старые заявки могут быть без этих полей.
+  if (!orgName) throw Errors.validation("Не указана организация");
+  if (!contactName) throw Errors.validation("Не указано контактное лицо");
+  if (!contactPhone) throw Errors.validation("Не указан контактный телефон");
 
   // Тип задаёт дефолт требования акта; диспетчер может снять его галочкой «акт не нужен» (PRD §4).
   const type = await prisma.taskType.findUnique({
@@ -330,9 +339,9 @@ export async function createTask(
         address,
         description: clean(input.description),
         equipment: clean(input.equipment),
-        orgName: clean(input.orgName),
-        contactName: clean(input.contactName),
-        contactPhone: clean(input.contactPhone),
+        orgName,
+        contactName,
+        contactPhone,
         addressLink: clean(input.addressLink),
         invoiceNumber: clean(input.invoiceNumber),
         paymentType: input.paymentType ?? "NONE",
@@ -381,6 +390,10 @@ export async function updateTaskFields(
   if (!isDispatcherRole(actor.role)) throw Errors.forbidden();
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw Errors.notFound();
+  // Редактирование закрытых заявок (решение Артёма 02.07.2026): правка полей разрешена и для
+  // завершённых/отменённых, НО без смены даты (перенос завершённой запрещён — как в planTask).
+  const terminal = task.status === "DONE" || task.status === "CANCELLED";
+  const actRequirementTouched = fields.requiresAct !== undefined;
 
   const data: Prisma.TaskUpdateInput = {};
   const set = <K extends keyof CreateTaskInput>(key: K, apply: (v: NonNullable<CreateTaskInput[K]> | null) => void) => {
@@ -412,7 +425,8 @@ export async function updateTaskFields(
   if (fields.paymentType !== undefined) data.paymentType = fields.paymentType;
   if (fields.paymentAmount !== undefined) data.paymentAmount = fields.paymentAmount ?? null;
   set("paymentNote", (v) => (data.paymentNote = v));
-  if (fields.scheduledDate !== undefined) data.scheduledDate = parseDate(fields.scheduledDate);
+  // Дату завершённой/отменённой заявки не двигаем (подстраховка от прямого API-вызова; в форме поле скрыто).
+  if (fields.scheduledDate !== undefined && !terminal) data.scheduledDate = parseDate(fields.scheduledDate);
   set("timeFrom", (v) => (data.timeFrom = v));
   set("timeTo", (v) => (data.timeTo = v));
   set("timeNote", (v) => (data.timeNote = v));
@@ -471,6 +485,9 @@ export async function updateTaskFields(
     });
     return updated;
   });
+  // Смена требования акта могла повлиять на KPI-нарушение «без акта»: пересчитываем открытый месяц
+  // (снятие → гасим подтверждённый штраф, возврат → возвращаем кандидата). Закрытый снимок не трогаем.
+  if (actRequirementTouched) await syncUnsignedDocMark(taskId, actor);
   notifyTaskAssignee(result, "changed", actor.id);
   return result;
 }

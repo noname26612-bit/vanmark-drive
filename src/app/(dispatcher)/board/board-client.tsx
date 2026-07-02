@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import {
   Plus,
@@ -895,6 +896,10 @@ function BoardCard({
   showAssign?: boolean; // селект-исполнитель показываем только в пулах (в колонке водителя он лишний)
   onQuickAssign: (taskId: string, assigneeId: string) => void;
 }) {
+  const router = useRouter();
+  // Провал в заявку — кликом по любой части плашки (решение Артёма 02.07.2026). Вложенный select
+  // исполнителя гасит всплытие (stopPropagation ниже), поэтому общий клик его не перехватывает.
+  const openTask = () => router.push(`/tasks/${task.id}`);
   const hasTime = task.timeFrom || task.timeTo || task.timeNote;
   // Признак комплектности акта на доске (этап 14, «хвост»): показываем ТОЛЬКО на завершённой актовой
   // задаче — это сигнал Милене «акт приложен ✓ / не приложен». На текущих задачах акт ещё рано — не шумим.
@@ -908,18 +913,25 @@ function BoardCard({
     <div
       draggable
       data-testid="board-card"
+      role="link"
+      tabIndex={0}
+      aria-label={`Заявка №${task.number}: ${task.title}`}
       onDragStart={(e) => e.dataTransfer.setData("text/plain", task.id)}
-      className="relative cursor-grab border-b border-slate-200 bg-white py-1.5 pl-3 pr-2 last:border-b-0 hover:bg-slate-50 active:cursor-grabbing"
+      onClick={openTask}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openTask();
+        }
+      }}
+      className="relative cursor-pointer border-b border-slate-200 bg-white py-1.5 pl-3 pr-2 last:border-b-0 hover:bg-slate-50 active:cursor-grabbing"
     >
       <span className={`absolute left-0 top-0 h-full w-[3px] ${STATUS_BAR[task.status]}`} />
       <div className="flex items-center justify-between gap-2">
-        <Link
-          href={`/tasks/${task.id}`}
-          className="flex min-w-0 items-center gap-1.5 text-sm font-semibold tabular-nums text-slate-900 hover:underline"
-        >
+        <span className="flex min-w-0 items-center gap-1.5 text-sm font-semibold tabular-nums text-slate-900">
           <TypeIcon name={task.type.icon} className="h-4 w-4 shrink-0 text-slate-500" />№{task.number}
           {task.priority ? <span className="text-red-500">●</span> : null}
-        </Link>
+        </span>
         <div className="flex shrink-0 items-center gap-1.5">
           {/* В пуле «Ближайшие 3 дня» показываем день — задачи разных дат вперемешку. */}
           {showDate && task.scheduledDate ? (
@@ -930,12 +942,7 @@ function BoardCard({
           <StatusBadge status={task.status} />
         </div>
       </div>
-      <Link
-        href={`/tasks/${task.id}`}
-        className="mt-0.5 block truncate text-sm text-slate-800 hover:underline"
-      >
-        {task.title}
-      </Link>
+      <span className="mt-0.5 block truncate text-sm text-slate-800">{task.title}</span>
       <div className="flex items-center justify-between gap-2">
         <p className="min-w-0 flex-1 truncate text-xs text-slate-500">{task.address}</p>
         {hasTime ? (

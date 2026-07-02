@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { Plus } from "lucide-react";
 import { fetcher } from "@/lib/fetcher";
@@ -24,6 +25,7 @@ export function AllTasksClient({
   drivers: DriverDTO[];
   types: TaskTypeDTO[];
 }) {
+  const router = useRouter();
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
   const [assigneeId, setAssigneeId] = useState("");
@@ -124,9 +126,17 @@ export function AllTasksClient({
               </tr>
             ) : (
               tasks.map((t) => (
-                <tr key={t.id} className="border-b border-neutral-100 last:border-0 hover:bg-neutral-50">
+                <tr
+                  key={t.id}
+                  onClick={() => router.push(`/tasks/${t.id}`)}
+                  className="cursor-pointer border-b border-neutral-100 last:border-0 hover:bg-neutral-50"
+                >
                   <td className="px-3 py-2 font-medium">
-                    <Link href={`/tasks/${t.id}`} className="hover:underline">
+                    <Link
+                      href={`/tasks/${t.id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="hover:underline"
+                    >
                       {t.priority ? <span className="mr-1 text-red-500">●</span> : null}№{t.number}
                     </Link>
                   </td>
@@ -137,7 +147,11 @@ export function AllTasksClient({
                     </span>
                   </td>
                   <td className="px-3 py-2">
-                    <Link href={`/tasks/${t.id}`} className="text-neutral-800 hover:underline">
+                    <Link
+                      href={`/tasks/${t.id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-neutral-800 hover:underline"
+                    >
                       {t.title}
                     </Link>
                   </td>

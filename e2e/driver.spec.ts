@@ -27,6 +27,9 @@ async function createAssignedTask(
   await milena.locator('[data-testid="create-type"]').selectOption({ label: typeLabel });
   await milena.getByPlaceholder("ЛБМ 200 + нож, 0,7 мм").fill(title);
   await milena.getByPlaceholder("Москва, ул. ..., д. ...").fill("Адрес для e2e");
+  await milena.locator('[data-testid="create-org"]').fill("ООО Тест");
+  await milena.locator('[data-testid="create-contact-name"]').fill("Иван Тест");
+  await milena.locator('[data-testid="create-contact-phone"]').fill("+70000000000");
   await milena.getByRole("button", { name: "Создать", exact: true }).click();
   await milena.getByRole("link", { name: title }).click();
   await milena.waitForURL(/\/tasks\/[0-9a-f-]+$/);
@@ -163,6 +166,36 @@ test("одна активная задача: вторую нельзя взят
 
   // Прибираемся: не оставляем pisarev с активной задачей для других тестов на общей БД.
   await driver.request.post(`/api/tasks/${t2.id}/transition`, { data: { toStatus: "DONE" } });
+
+  await mctx.close();
+  await dctx.close();
+});
+
+// Доработка 4 (решение Артёма 02.07.2026): паузу можно ставить БЕЗ обязательной причины.
+test("пауза без причины: водитель ставит ON_HOLD без комментария", async ({ browser }) => {
+  test.slow();
+  const mctx = await browser.newContext();
+  const milena = await mctx.newPage();
+  await login(milena, "milena");
+  const t = await createAssignedTask(milena, "Алексей Писарев", "Сдача / забор из ТК");
+
+  const dctx = await browser.newContext();
+  const driver = await dctx.newPage();
+  await login(driver, "pisarev");
+
+  // Берём в работу.
+  const inProg = await driver.request.post(`/api/tasks/${t.id}/transition`, { data: { toStatus: "IN_PROGRESS" } });
+  expect(inProg.status()).toBe(200);
+
+  // Пауза БЕЗ причины: раньше сервер отвечал 422 REASON_REQUIRED, теперь проходит.
+  const hold = await driver.request.post(`/api/tasks/${t.id}/transition`, { data: { toStatus: "ON_HOLD" } });
+  expect(hold.status()).toBe(200);
+  expect((await hold.json()).data.status).toBe("ON_HOLD");
+
+  // Отмена по-прежнему требует причину — у водителя такого перехода нет, проверяем у диспетчера ниже (tasks.spec).
+  // Прибираемся: возобновляем и завершаем, чтобы не оставлять «на паузе»/активную на общей БД.
+  await driver.request.post(`/api/tasks/${t.id}/transition`, { data: { toStatus: "IN_PROGRESS" } });
+  await driver.request.post(`/api/tasks/${t.id}/transition`, { data: { toStatus: "DONE" } });
 
   await mctx.close();
   await dctx.close();
