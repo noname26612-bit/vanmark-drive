@@ -13,8 +13,8 @@ export type EdgeRule = {
 // from -> to -> правило. Отсутствие ребра = переход запрещён всем.
 // Переработка механики водителя (этап A): рабочая цепочка схлопнута до IN_PROGRESS «В работе»
 // (прежние ACCEPTED→EN_ROUTE→ON_SITE — одно состояние). До взятия (NEW/ASSIGNED) водитель статуса
-// не ведёт. Цепочка водителя: ASSIGNED → IN_PROGRESS → DONE; пауза ON_HOLD «На паузе» (с причиной)
-// освобождает слот и возвращается в работу через IN_PROGRESS. Legacy-статусы рёбер не имеют —
+// не ведёт. Цепочка водителя: ASSIGNED → IN_PROGRESS → DONE; пауза ON_HOLD «На паузе» (причина по
+// желанию) освобождает слот и возвращается в работу через IN_PROGRESS. Legacy-статусы рёбер не имеют —
 // в них перейти нельзя (они существуют только в истории).
 const MATRIX: Partial<Record<TaskStatus, Partial<Record<TaskStatus, EdgeRule>>>> = {
   NEW: {
@@ -29,7 +29,7 @@ const MATRIX: Partial<Record<TaskStatus, Partial<Record<TaskStatus, EdgeRule>>>>
   },
   IN_PROGRESS: {
     DONE: { driver: true }, // завершение; при оплате «на месте» — подтверждение денег в сервисе (PRD §5)
-    ON_HOLD: { driver: true }, // В* — пауза только с причиной (см. reasonRequiredFor)
+    ON_HOLD: { driver: true }, // пауза (причина по желанию — см. reasonRequiredFor); освобождает слот
     RESCHEDULED: { driver: false },
     CANCELLED: { driver: false },
   },
@@ -55,9 +55,11 @@ export function isValidTransition(from: TaskStatus, to: TaskStatus): boolean {
   return transitionRule(from, to) !== null;
 }
 
-/** Статусы, для которых обязательна причина (пишется в задачу и в журнал). */
+/** Статусы, для которых обязательна причина (пишется в задачу и в журнал).
+ *  Пауза (ON_HOLD) — причина по желанию (решение Артёма 02.07.2026): водитель ставит паузу
+ *  без обязательного комментария. Отмена (CANCELLED) — причина по-прежнему обязательна (история). */
 export function reasonRequiredFor(to: TaskStatus): boolean {
-  return to === "ON_HOLD" || to === "CANCELLED";
+  return to === "CANCELLED";
 }
 
 export function isDispatcherRole(role: Role): boolean {

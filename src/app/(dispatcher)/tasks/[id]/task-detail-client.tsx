@@ -145,6 +145,20 @@ export function TaskDetailClient({
     run(() => apiSend(key + "/transition", "POST", { toStatus, reason: r }));
   const assign = (assigneeId: string) =>
     run(() => apiSend(key, "PATCH", { op: "assign", assigneeId: assigneeId || null }));
+  // Плашка «Нужен акт» (решение Артёма 02.07.2026): тумблер прямо в карточке, доступен и для завершённых.
+  // Один PATCH меняет требование у всех и пересчитывает KPI открытого месяца (сервер: syncUnsignedDocMark).
+  const toggleAct = (next: boolean) =>
+    run(() =>
+      apiSend(key, "PATCH", {
+        op: "edit",
+        requiresAct: next,
+        actWaivedNote: next ? null : (task?.actWaivedNote ?? null),
+      }),
+    );
+  const saveActWaivedNote = (note: string) =>
+    run(() =>
+      apiSend(key, "PATCH", { op: "edit", requiresAct: false, actWaivedNote: note.trim() || null }),
+    );
   const reschedule = () =>
     run(() => apiSend(key, "PATCH", { op: "reschedule", scheduledDate: newDate, comment }));
   const sendComment = () =>
@@ -201,6 +215,10 @@ export function TaskDetailClient({
     task.status === "DONE",
   );
   const showActSection = task.requiresSignedDoc || docs.length > 0;
+  // Плашку-тумблер показываем, если акт для задачи вообще релевантен (тип с актом, требование стоит,
+  // причина уже вписана или документ приложен). Для «неактовых» типов (доставки) не шумим.
+  const showActToggle =
+    task.type.requiresSignedDoc || task.requiresSignedDoc || !!task.actWaivedNote || docs.length > 0;
 
   return (
     <div className="mx-auto max-w-3xl p-4">
@@ -273,19 +291,23 @@ export function TaskDetailClient({
           <Badge className={PASS_BADGE[task.passStatus]}>{PASS_LABEL[task.passStatus]}</Badge>
         </Row>
         {task.description ? <Row label="Описание">{task.description}</Row> : null}
-        {act ? (
-          <Row label="Акт">
-            <span className="inline-flex items-center gap-1.5">
-              <Badge className={act.className}>{act.label}</Badge>
-              {task.actWaivedNote ? (
-                <span className="text-neutral-500">· {task.actWaivedNote}</span>
-              ) : null}
-            </span>
-          </Row>
-        ) : null}
         {task.holdReason ? <Row label="Причина паузы">{task.holdReason}</Row> : null}
         {task.cancelReason ? <Row label="Причина отмены">{task.cancelReason}</Row> : null}
       </div>
+
+      {/* Плашка «Нужен акт» — быстрый тумблер прямо в заявке (решение Артёма 02.07.2026). Доступна и для
+          завершённых. Меняет требование у всех (PATCH) и пересчитывает KPI открытого месяца. */}
+      {showActToggle ? (
+        <ActPanel
+          key={`act-${task.requiresSignedDoc}-${task.actWaivedNote ?? ""}`}
+          requiresSignedDoc={task.requiresSignedDoc}
+          initialNote={task.actWaivedNote ?? ""}
+          actLabel={act?.label ?? null}
+          busy={busy}
+          onToggle={toggleAct}
+          onSaveNote={saveActWaivedNote}
+        />
+      ) : null}
 
       {/* Действия */}
       {!isTerminal ? (
@@ -330,7 +352,16 @@ export function TaskDetailClient({
           </Button>
         </div>
       ) : (
-        <p className="mt-4 text-sm text-neutral-400">Задача завершена — действий нет.</p>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {/* Редактирование закрытых заявок (решение Артёма 02.07.2026): диспетчер/руководитель/админ
+              правят поля завершённой/отменённой заявки. Смена исполнителя и даты недоступна. */}
+          <Button variant="secondary" disabled={busy} onClick={() => setEditOpen(true)}>
+            Редактировать
+          </Button>
+          <span className="self-center text-sm text-neutral-400">
+            {task.status === "CANCELLED" ? "Заявка отменена" : "Заявка завершена"} — доступно редактирование.
+          </span>
+        </div>
       )}
       {actionError ? <p className="mt-2 text-sm text-red-600">{actionError}</p> : null}
 
@@ -595,7 +626,10 @@ export function TaskDetailClient({
         title={action === "cancel" ? "Отменить задачу" : "Поставить на паузу"}
       >
         <div className="flex flex-col gap-3">
-          <Field label="Причина" required>
+          <Field
+            label={action === "cancel" ? "Причина" : "Причина (по желанию)"}
+            required={action === "cancel"}
+          >
             <Textarea
               autoFocus
               rows={3}
@@ -607,7 +641,7 @@ export function TaskDetailClient({
           {actionError ? <p className="text-sm text-red-600">{actionError}</p> : null}
           <Button
             variant={action === "cancel" ? "danger" : "primary"}
-            disabled={busy || !reason.trim()}
+            disabled={busy || (action === "cancel" && !reason.trim())}
             onClick={() => transition(action === "cancel" ? "CANCELLED" : "ON_HOLD", reason)}
             className="self-start"
           >
@@ -649,6 +683,64 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div className="flex flex-col">
       <span className="text-xs text-neutral-400">{label}</span>
       <span className="text-sm text-neutral-800">{children}</span>
+    </div>
+  );
+}
+
+// Плашка «Нужен акт» в карточке заявки (решение Артёма 02.07.2026). Отдельный компонент — чтобы черновик
+// причины хранить локально без useEffect; key по requiresSignedDoc/actWaivedNote пересоздаёт её при
+// серверном обновлении (после сохранения показывается актуальное). Менять требование могут диспетчер/
+// руководитель/админ — карточка доступна только им (изоляция в API), в т.ч. для завершённых заявок.
+function ActPanel({
+  requiresSignedDoc,
+  initialNote,
+  actLabel,
+  busy,
+  onToggle,
+  onSaveNote,
+}: {
+  requiresSignedDoc: boolean;
+  initialNote: string;
+  actLabel: string | null;
+  busy: boolean;
+  onToggle: (next: boolean) => void;
+  onSaveNote: (note: string) => void;
+}) {
+  const [note, setNote] = useState(initialNote);
+  return (
+    <div className="mt-4 rounded-xl border border-neutral-200 bg-white p-4" data-testid="act-toggle">
+      <label className="flex items-center gap-3 text-base font-medium text-neutral-900">
+        <input
+          type="checkbox"
+          data-testid="act-toggle-checkbox"
+          checked={requiresSignedDoc}
+          disabled={busy}
+          onChange={(e) => onToggle(e.target.checked)}
+          className="h-5 w-5"
+        />
+        Нужен подписанный акт
+      </label>
+      {requiresSignedDoc ? (
+        <p className="mt-2 text-sm text-neutral-500">
+          {actLabel ? `Статус: ${actLabel}. ` : ""}Снимите галочку, если по этой заявке акт не нужен.
+        </p>
+      ) : (
+        <div className="mt-3 flex flex-wrap items-end gap-2">
+          <div className="min-w-0 flex-1">
+            <label className="mb-1 block text-sm text-neutral-500">Почему без акта (по желанию)</label>
+            <Input
+              data-testid="act-waived-note"
+              value={note}
+              disabled={busy}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="напр. «подпишут по ЭДО»"
+            />
+          </div>
+          <Button variant="secondary" disabled={busy} onClick={() => onSaveNote(note)}>
+            Сохранить
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
