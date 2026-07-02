@@ -113,6 +113,7 @@ model User {
   uiPrefs         UiPreference[] // настройки интерфейса (раскладка доски/планирования)
   shifts          Shift[]            @relation("shiftDriver") // смены водителя (этап C)
   absences        DriverAbsence[]    @relation("driverAbsence") // отпуска/больничные водителя (№9)
+  idleNotes       DriverIdleNote[]   @relation("idleNoteDriver") // пометки диспетчера о простое (02.07)
 }
 
 // Справочник типов задач (PRD §3). Новые типы заводит админ без правки кода.
@@ -347,6 +348,27 @@ model DriverAbsence {
 
   @@index([driverId, dateFrom])
   @@index([dateFrom, dateTo])
+}
+
+// Пометка диспетчера о простое водителя (решение Артёма 02.07): «смену открыл в 9:00, на точке был
+// в 10:30 — 90 мин простоя». Реестр (можно удалять, пока не оштрафовано), НЕ журнал. Водителю НЕ
+// видна ни в одном ответе — только диспетчер/админ (Сводка, доска). Привязка к дате+водителю (не к
+// смене): пометку можно внести задним числом и она не ломается при переоткрытии смены. Из пометки
+// одним действием создаётся ручной штраф KPI (MANUAL) — kpiMarkId связывает их; note штрафа —
+// автотекст БЕЗ комментария Милены (note MANUAL водитель видит в «Мой расчёт»).
+model DriverIdleNote {
+  id          String   @id @default(uuid())
+  driverId    String
+  driver      User     @relation("idleNoteDriver", fields: [driverId], references: [id])
+  date        DateTime @db.Date // день простоя (МСК-дата, как Shift.date)
+  minutes     Int // длительность простоя, мин (1..720)
+  note        String? // причина/комментарий Милены — водителю НЕ виден
+  kpiMarkId   String?  @unique // созданный из пометки MANUAL-штраф; null — не штрафовали
+  createdById String // диспетчер/админ (uuid без навигации, как принято)
+  createdAt   DateTime @default(now())
+
+  @@index([date])
+  @@index([driverId, date])
 }
 
 // ───────────────────────────── KPI и зарплата (Фаза 1.5) ─────────────────────────────
