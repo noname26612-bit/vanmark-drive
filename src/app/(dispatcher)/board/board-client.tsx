@@ -18,6 +18,8 @@ import { fetcher, apiSend } from "@/lib/fetcher";
 import { mergeOrder, moveTo } from "@/lib/pool-order";
 import { persistUiPref } from "@/lib/ui-prefs-client";
 import type { AttentionDTO, DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
+import type { IdleNoteView } from "@/lib/idle-note-dto";
+import { Modal } from "@/components/ui/modal";
 import {
   STATUS_BAR,
   PASS_BADGE,
@@ -255,7 +257,7 @@ export function BoardClient({
       </div>
 
       {/* Смены водителей (№5): по каждому — статус смены, время открытия и полоса «в работе/простой». */}
-      <ShiftWorkloadBlock drivers={drivers} shifts={shifts ?? []} onChange={refresh} />
+      <ShiftWorkloadBlock drivers={drivers} shifts={shifts ?? []} today={today} onChange={refresh} />
 
       {actionError ? <p className="mb-3 text-sm text-red-600">{actionError}</p> : null}
       {staleError ? (
@@ -502,13 +504,17 @@ function shiftChip(shift: ShiftDTO | null): { label: string; cls: string } {
 
 // Блок «Смены водителей» (№5): по каждому водителю статус смены, время открытия и заполняющаяся
 // полоса рабочего времени — «в работе» (зелёным) и «простой» (серым) от длительности смены.
+// Пометки о простое (02.07): кнопка «Простой» открывает модалку внесения/разбора; метка с суммой
+// минут за день. Водитель пометок не видит (диспетчерские ручки).
 function ShiftWorkloadBlock({
   drivers,
   shifts,
+  today,
   onChange,
 }: {
   drivers: DriverDTO[];
   shifts: ShiftDTO[];
+  today: string;
   onChange: () => Promise<unknown>;
 }) {
   // «Сейчас» для живой полосы открытой смены — тикает раз в 30 с (поллинг доски тоже перерисует).
@@ -517,6 +523,13 @@ function ShiftWorkloadBlock({
     const t = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(t);
   }, []);
+  // Пометки о простое за сегодня (02.07) — метка в строке + список в модалке.
+  const { data: idleNotes = [], mutate: mutateNotes } = useSWR<IdleNoteView[]>(
+    `/api/idle-notes?from=${today}&to=${today}`,
+    fetcher,
+    LIVE,
+  );
+  const [idleFor, setIdleFor] = useState<DriverDTO | null>(null);
   const byDriver = new Map(shifts.map((s) => [s.driverId, s]));
   // Постоянно показываем штатных на окладе (работают каждый день); подменного/внешнего — только в день,
   // когда у него есть смена (решение Артёма 24.06). Так ряд не засоряется «Смена не открыта» у тех,
@@ -532,10 +545,21 @@ function ShiftWorkloadBlock({
             name={d.name}
             shift={byDriver.get(d.id) ?? null}
             now={now}
+            idleNotedMinutes={idleNotes.filter((n) => n.driverId === d.id).reduce((s, n) => s + n.minutes, 0)}
+            onIdle={() => setIdleFor(d)}
             onChange={onChange}
           />
         ))}
       </div>
+      {idleFor ? (
+        <IdleNotesModal
+          driver={idleFor}
+          today={today}
+          notes={idleNotes.filter((n) => n.driverId === idleFor.id)}
+          onClose={() => setIdleFor(null)}
+          onChanged={() => void mutateNotes()}
+        />
+      ) : null}
     </section>
   );
 }
@@ -544,11 +568,15 @@ function ShiftWorkloadRow({
   name,
   shift,
   now,
+  idleNotedMinutes,
+  onIdle,
   onChange,
 }: {
   name: string;
   shift: ShiftDTO | null;
   now: number;
+  idleNotedMinutes: number;
+  onIdle: () => void;
   onChange: () => Promise<unknown>;
 }) {
   const chip = shiftChip(shift);
@@ -563,12 +591,33 @@ function ShiftWorkloadRow({
       setReopening(false);
     }
   }
+  // Кнопка «Простой» + метка суммы за день (02.07) — и в строке без смены (пометка возможна всегда).
+  const idleControls = (
+    <>
+      {idleNotedMinutes > 0 ? (
+        <button
+          type="button"
+          onClick={onIdle}
+          className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
+          title="Пометки о простое за сегодня"
+        >
+          Пометка: {fmtDur(idleNotedMinutes)}
+        </button>
+      ) : null}
+      <Button variant="ghost" className="h-7 px-2 text-xs text-slate-600" onClick={onIdle}>
+        Простой
+      </Button>
+    </>
+  );
   if (!shift) {
     return (
       <div className="rounded-lg border border-slate-100 px-3 py-2">
         <div className="flex items-center justify-between gap-2">
           <span className="truncate text-sm font-medium text-slate-800">{name}</span>
-          <span className={chip.cls}>{chip.label}</span>
+          <span className="flex shrink-0 items-center gap-2">
+            {idleControls}
+            <span className={chip.cls}>{chip.label}</span>
+          </span>
         </div>
         <div className="mt-2 h-2.5 rounded bg-slate-100" />
       </div>
@@ -586,6 +635,7 @@ function ShiftWorkloadRow({
       <div className="flex items-center justify-between gap-2">
         <span className="truncate text-sm font-medium text-slate-800">{name}</span>
         <span className="flex shrink-0 items-center gap-2">
+          {idleControls}
           {shift.status === "CLOSED" ? (
             <Button
               variant="ghost"
@@ -617,6 +667,184 @@ function ShiftWorkloadRow({
         </span>
       </div>
     </div>
+  );
+}
+
+/**
+ * Модалка пометок о простое (02.07): внести новую (дата/минуты/причина) + разобрать существующие
+ * за сегодня (удалить / создать штраф). Водитель пометку не видит; штраф (если создать) появится
+ * у него в «Мой расчёт» с автотекстом без комментария Милены.
+ */
+function IdleNotesModal({
+  driver,
+  today,
+  notes,
+  onClose,
+  onChanged,
+}: {
+  driver: DriverDTO;
+  today: string;
+  notes: IdleNoteView[];
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [date, setDate] = useState(today);
+  const [minutes, setMinutes] = useState("");
+  const [note, setNote] = useState("");
+  const [fineForId, setFineForId] = useState<string | null>(null);
+  const [fineAmount, setFineAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(fn: () => Promise<unknown>) {
+    setError(null);
+    setBusy(true);
+    try {
+      await fn();
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`Простой — ${driver.name}`}>
+      <div className="flex flex-col gap-3 text-sm">
+        <p className="text-neutral-500">
+          Водитель пометку не видит. Штраф (если создать) появится в его расчёте.
+        </p>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-neutral-500">Дата</span>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="h-9 rounded-lg border border-neutral-300 px-2 text-sm outline-none"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-neutral-500">Минуты</span>
+            <input
+              type="number"
+              min={1}
+              max={720}
+              value={minutes}
+              onChange={(e) => setMinutes(e.target.value)}
+              placeholder="90"
+              data-testid="idle-minutes"
+              className="h-9 w-24 rounded-lg border border-neutral-300 px-2 text-sm outline-none"
+            />
+          </label>
+          <label className="flex min-w-40 flex-1 flex-col gap-1">
+            <span className="text-xs text-neutral-500">Причина (видит только офис)</span>
+            <input
+              type="text"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Напр.: выехал в 9:00, на точке в 10:30"
+              data-testid="idle-note"
+              className="h-9 rounded-lg border border-neutral-300 px-2 text-sm outline-none"
+            />
+          </label>
+          <Button
+            className="h-9"
+            disabled={busy || !minutes.trim()}
+            data-testid="idle-save"
+            onClick={() =>
+              void run(async () => {
+                await apiSend("/api/idle-notes", "POST", {
+                  driverId: driver.id,
+                  date,
+                  minutes: Number.parseInt(minutes, 10),
+                  note: note.trim() || undefined,
+                });
+                setMinutes("");
+                setNote("");
+              })
+            }
+          >
+            Внести
+          </Button>
+        </div>
+
+        {notes.length > 0 ? (
+          <ul className="divide-y divide-neutral-100 rounded-lg border border-neutral-200">
+            {notes.map((n) => (
+              <li key={n.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                <span className="font-medium text-neutral-800">{fmtDur(n.minutes)}</span>
+                <span className="min-w-0 flex-1 truncate text-neutral-500">{n.note ?? "без причины"}</span>
+                {n.kpiMarkId ? (
+                  <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+                    Штраф создан
+                  </span>
+                ) : fineForId === n.id ? (
+                  <span className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      min={1}
+                      value={fineAmount}
+                      onChange={(e) => setFineAmount(e.target.value)}
+                      placeholder="₽"
+                      data-testid="idle-fine-amount"
+                      className="h-8 w-20 rounded-lg border border-neutral-300 px-2 text-sm outline-none"
+                      autoFocus
+                    />
+                    <Button
+                      variant="secondary"
+                      className="h-8 px-2 text-xs"
+                      disabled={busy || !fineAmount.trim()}
+                      data-testid="idle-fine-confirm"
+                      onClick={() =>
+                        void run(async () => {
+                          await apiSend(`/api/idle-notes/${n.id}/fine`, "POST", {
+                            amount: Number.parseInt(fineAmount, 10),
+                          });
+                          setFineForId(null);
+                          setFineAmount("");
+                        })
+                      }
+                    >
+                      ОК
+                    </Button>
+                  </span>
+                ) : (
+                  <>
+                    <Button
+                      variant="ghost"
+                      className="h-8 px-2 text-xs text-red-700"
+                      disabled={busy}
+                      onClick={() => setFineForId(n.id)}
+                    >
+                      Оштрафовать…
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      className="h-8 px-2 text-xs text-neutral-500"
+                      disabled={busy}
+                      onClick={() => void run(() => apiSend(`/api/idle-notes/${n.id}`, "DELETE"))}
+                    >
+                      Удалить
+                    </Button>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-neutral-400">За сегодня пометок нет.</p>
+        )}
+
+        {error ? <p className="text-red-600">{error}</p> : null}
+        <div className="flex justify-end">
+          <Button variant="ghost" onClick={onClose}>
+            Закрыть
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
