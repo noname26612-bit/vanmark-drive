@@ -49,6 +49,7 @@ const KIND_LABEL: Record<string, string> = {
   auto_date: "Дата",
   comment: "Комментарий",
   payment_received: "Оплата",
+  act_missing_reason: "Акт",
   worksheet_submitted: "Ведомость",
   worksheet_priced: "Расценка",
   worksheet_repriced: "Цена исправлена",
@@ -62,10 +63,18 @@ type StatusExtra = {
   paymentConfirmed?: boolean;
   paymentAmount?: number | null;
   paymentMissedReason?: string; // завершение без оплаты «на месте»: причина (№8)
+  actMissedReason?: string; // завершение актовой задачи без акта: причина (акты до 20:00, 02.07)
 };
 
 // Типовые причины неоплаты «на месте» (№8, формулировки Артёма 23.06). «Другое» требует комментарий.
 const UNPAID_REASONS = ["Оплатят по счёту", "Оплата через офис", "Спор по сумме/работам", "Другое"];
+
+// Причины «завершаю без акта» (акты до 20:00, формулировки Артёма 02.07). Выбор обязателен,
+// но информационен: завершение не блокирует, Милена видит причину в кандидате нарушения.
+const ACT_MISSED_REASONS = [
+  "Акт не нужен (распоряжение офиса)",
+  "Не могу приложить (личная причина)",
+];
 
 // Группирует справочник по разделам (для optgroup). Порядок сохраняется (сервер уже отдаёт по
 // разделу→позиции); позиции без раздела (categoryName=null) идут своей группой без заголовка.
@@ -122,6 +131,7 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
   const [payChoice, setPayChoice] = useState<"" | "paid" | "unpaid">("");
   const [missReason, setMissReason] = useState(""); // выбранная типовая причина
   const [missOther, setMissOther] = useState(""); // свой текст для «Другое»
+  const [actReasonChoice, setActReasonChoice] = useState(""); // причина «завершаю без акта» (02.07)
   const [amountInput, setAmountInput] = useState("");
   const [doneComment, setDoneComment] = useState("");
   // Ведомость работ (этап 12): выбор работы (из справочника или свободная) + количество.
@@ -162,7 +172,11 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
   const onSite = t.paymentType === "ON_SITE";
   // Завершить можно: не ON_SITE; либо деньги получены; либо явно не получены с выбранной причиной (№8).
   const missReady = missReason !== "" && (missReason !== "Другое" || missOther.trim() !== "");
-  const canComplete = !onSite || payChoice === "paid" || (payChoice === "unpaid" && missReady);
+  const payReady = !onSite || payChoice === "paid" || (payChoice === "unpaid" && missReady);
+  // Акты до 20:00 (02.07): актовая задача без акта (ни на сервере, ни в офлайн-очереди) — при
+  // завершении обязателен выбор причины. Информационно: завершение не блокируется.
+  const actReasonNeeded = requiresSignedDoc && docs.length === 0 && pendingDocs === 0;
+  const canComplete = payReady && (!actReasonNeeded || actReasonChoice !== "");
   // фото — по желанию (не блокирует); акт — мягкая отметка KPI
 
   async function changeStatus(to: TaskStatus, extra: StatusExtra = {}) {
@@ -183,6 +197,7 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
           paymentConfirmed: extra.paymentConfirmed,
           paymentAmount: extra.paymentAmount,
           paymentMissedReason: extra.paymentMissedReason, // завершение без оплаты «на месте» (№8)
+          actMissedReason: extra.actMissedReason, // завершение без акта: причина (02.07)
           lat: coords?.lat,
           lng: coords?.lng,
         },
@@ -329,6 +344,7 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
     setPayChoice("");
     setMissReason("");
     setMissOther("");
+    setActReasonChoice("");
     setDoneComment("");
     setActionError(null);
     setCompletionOpen(true);
@@ -341,6 +357,7 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
       paymentConfirmed: onSite ? payChoice === "paid" : undefined,
       paymentAmount: onSite && payChoice === "paid" ? Number(amountInput) || null : undefined,
       paymentMissedReason: onSite && payChoice === "unpaid" ? finalReason || undefined : undefined,
+      actMissedReason: actReasonNeeded ? actReasonChoice || undefined : undefined,
     });
   }
 
@@ -937,6 +954,43 @@ export function DriverTaskClient({ taskId }: { taskId: string }) {
                     ) : null}
                   </div>
                 ) : null}
+              </div>
+            ) : null}
+
+            {/* Акт не приложен (акты до 20:00, 02.07): приложить сейчас или выбрать причину.
+                Выбор обязателен, но завершение не блокирует — Милена увидит причину в нарушении. */}
+            {actReasonNeeded ? (
+              <div className="mt-4 rounded-xl border-2 border-amber-300 bg-amber-50 p-3">
+                <p className="text-base font-medium text-amber-900">Подписанный акт</p>
+                <p className="mt-0.5 text-sm text-amber-800">
+                  По задаче нужен акт, он не приложен. Приложите фото акта (до 20:00) или укажите
+                  причину.
+                </p>
+                <button
+                  type="button"
+                  disabled={photoBusy}
+                  onClick={() => docRef.current?.click()}
+                  className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-amber-300 bg-white text-sm font-medium text-amber-900 disabled:opacity-50"
+                >
+                  <Camera className="h-5 w-5" />
+                  Приложить акт сейчас
+                </button>
+                <div className="mt-2 flex flex-col gap-2">
+                  {ACT_MISSED_REASONS.map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setActReasonChoice(r)}
+                      className={`min-h-11 rounded-lg border px-3 py-2 text-left text-sm font-medium ${
+                        actReasonChoice === r
+                          ? "border-neutral-900 bg-neutral-900 text-white"
+                          : "border-amber-300 bg-white text-amber-900"
+                      }`}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : null}
 

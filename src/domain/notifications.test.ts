@@ -3,6 +3,7 @@ import {
   buildTaskPayload,
   buildMorningPayload,
   buildPassWarningPayload,
+  buildActViolationsPayload,
   pluralTasks,
   validateSubscriptionInput,
 } from "./notifications";
@@ -55,6 +56,14 @@ describe("buildMorningPayload / buildPassWarningPayload", () => {
   it("предупреждение о пропусках", () => {
     expect(buildPassWarningPayload(2).body).toBe("2 задачи на завтра без заказанного пропуска");
     expect(buildPassWarningPayload(2).url).toBe("/board");
+  });
+
+  it("вечерний обход актов (20:05): счёт, склонение, ведёт на /kpi", () => {
+    expect(buildActViolationsPayload(1).body).toBe("1 задача без акта к 20:00 — разберите нарушения");
+    expect(buildActViolationsPayload(3).body).toBe("3 задачи без акта к 20:00 — разберите нарушения");
+    expect(buildActViolationsPayload(1).title).toBe("Акты не приложены");
+    expect(buildActViolationsPayload(1).url).toBe("/kpi");
+    expect(buildActViolationsPayload(1).tag).toBe("act-deadline");
   });
 });
 

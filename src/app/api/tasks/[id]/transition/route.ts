@@ -29,6 +29,9 @@ export async function POST(req: Request, { params }: Ctx) {
     const paymentAmount = typeof body.paymentAmount === "number" ? body.paymentAmount : undefined;
     const paymentMissedReason =
       typeof body.paymentMissedReason === "string" ? body.paymentMissedReason : undefined;
+    // DONE актовой задачи без акта: причина водителя (акты до 20:00, 02.07).
+    const actMissedReason =
+      typeof body.actMissedReason === "string" ? body.actMissedReason : undefined;
     const task = await withIdempotency(idempotencyKey(req), user, "transition", () =>
       transitionTask(id, toStatus, user, {
         comment,
@@ -38,6 +41,7 @@ export async function POST(req: Request, { params }: Ctx) {
         paymentConfirmed,
         paymentAmount,
         paymentMissedReason,
+        actMissedReason,
         occurredAt: occurredAt(req),
       }),
     );

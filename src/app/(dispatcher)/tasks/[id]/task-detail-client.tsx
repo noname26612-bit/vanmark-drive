@@ -53,6 +53,7 @@ const KIND_LABEL: Record<string, string> = {
   comment: "Комментарий",
   payment_received: "Оплата",
   payment_unpaid: "Не оплачено",
+  act_missing_reason: "Акт не приложен",
   worksheet_submitted: "Ведомость",
   worksheet_priced: "Расценка",
   worksheet_repriced: "Цена исправлена",

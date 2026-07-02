@@ -41,9 +41,14 @@ async function createAssignedTask(milena: Page, title: string): Promise<string> 
 }
 
 async function advanceToDone(req: APIRequestContext, taskId: string): Promise<void> {
-  for (const toStatus of ["IN_PROGRESS", "DONE"]) {
-    const r = await req.post(`/api/tasks/${taskId}/transition`, { data: { toStatus } });
-    expect(r.status(), `переход в ${toStatus}`).toBe(200);
+  // Завершение без акта: водитель обязан указать причину (акты до 20:00, 02.07) — задача остаётся
+  // «завершена без акта» для бейджа, причина этому не мешает.
+  for (const body of [
+    { toStatus: "IN_PROGRESS" },
+    { toStatus: "DONE", actMissedReason: "Не могу приложить (личная причина)" },
+  ]) {
+    const r = await req.post(`/api/tasks/${taskId}/transition`, { data: body });
+    expect(r.status(), `переход в ${body.toStatus}`).toBe(200);
   }
 }
 

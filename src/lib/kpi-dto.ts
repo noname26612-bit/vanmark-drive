@@ -40,6 +40,10 @@ export type MarkDetailView = MarkView & {
   taskCompletedAt: string | null; // ISO
   taskRequiresSignedDoc: boolean | null;
   taskHasDocument: boolean | null; // приложен ли подписанный акт (DOCUMENT)
+  // Акты до 20:00 (02.07): разбор дедлайна для UNSIGNED_DOCS.
+  actDeadlineAt: string | null; // ISO — момент дедлайна (20:00 дня завершения / следующего дня)
+  docAttachedAt: string | null; // ISO — когда фактически приложили акт; null — не приложен
+  actMissedReason: string | null; // причина водителя при завершении без акта
   // Смена (SHIFT_LATE)
   shiftDate: string | null; // YYYY-MM-DD
   shiftOpenedAt: string | null; // ISO — фактическое открытие смены водителем

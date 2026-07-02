@@ -643,6 +643,7 @@ export type TransitionOptions = {
   paymentConfirmed?: boolean; // DONE при оплате «на месте»: подтверждение получения денег (PRD §5)
   paymentAmount?: number | null; // фактически полученная сумма (по умолчанию — ожидаемая из задачи)
   paymentMissedReason?: string | null; // DONE при ON_SITE без оплаты: причина неоплаты (№8)
+  actMissedReason?: string | null; // DONE актовой задачи без акта: причина водителя (акты до 20:00, 02.07)
   // Офлайн-режим: ISO-время момента действия на телефоне. Пишется в TaskEvent.at (и completedAt при
   // DONE) вместо времени досылки, с проверкой достоверности (src/domain/occurred-at.ts).
   occurredAt?: string | null;
@@ -673,6 +674,18 @@ export async function transitionTask(
     toStatus === "DONE" && task.paymentType === "ON_SITE" ? clean(opts.paymentMissedReason) : null;
   if (toStatus === "DONE" && task.paymentType === "ON_SITE" && !opts.paymentConfirmed && !unpaidReason) {
     throw Errors.paymentRequired();
+  }
+
+  // Акты до 20:00 (решение Артёма 02.07): водитель, завершая актовую задачу БЕЗ приложенного акта,
+  // обязан выбрать причину. Причина информационная — завершение не блокируется, кандидата KPI создаст
+  // детектор независимо от неё. Диспетчера не спрашиваем (он «и есть офис», ведёт статусы за внешних).
+  let actReason: string | null = null;
+  if (toStatus === "DONE" && task.requiresSignedDoc && actor.role === "DRIVER") {
+    const docs = await prisma.attachment.count({ where: { taskId, kind: "DOCUMENT" } });
+    if (docs === 0) {
+      actReason = clean(opts.actMissedReason);
+      if (!actReason) throw Errors.actReasonRequired();
+    }
   }
 
   // Взятие/возобновление работы (→IN_PROGRESS): требуется открытая смена + одна активная задача.
@@ -707,6 +720,9 @@ export async function transitionTask(
     data.paymentReceived = opts.paymentConfirmed === true;
     data.paymentMissedReason = opts.paymentConfirmed ? null : unpaidReason;
   }
+  // Причина «завершил без акта» — снимок на задаче (как paymentMissedReason): детектор KPI дотянется
+  // простым select, Милена увидит в note кандидата.
+  if (actReason) data.actMissedReason = actReason;
   if (task.status === "ON_HOLD" && toStatus === "ASSIGNED") data.holdReason = null;
 
   const result = await prisma.$transaction(async (tx) => {
@@ -751,6 +767,20 @@ export async function transitionTask(
           lat: opts.lat ?? null,
           lng: opts.lng ?? null,
           at, // офлайн: момент действия на телефоне, не досылки
+        },
+      });
+    }
+    // Завершено без акта (акты до 20:00, 02.07) — неизменяемая отметка с причиной водителя.
+    if (actReason) {
+      await tx.taskEvent.create({
+        data: {
+          taskId,
+          actorId: actor.id,
+          kind: "act_missing_reason",
+          comment: `Акт не приложен: ${actReason}`,
+          lat: opts.lat ?? null,
+          lng: opts.lng ?? null,
+          at,
         },
       });
     }

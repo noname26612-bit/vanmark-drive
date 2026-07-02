@@ -6,16 +6,21 @@
 import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
 import { absenceDaysByDriver } from "./absence-service";
+import { sendPushToUser } from "@/lib/push";
+import { buildActViolationsPayload } from "./notifications";
 import {
   computePay,
   computeActBonus,
   periodBoundsUtc,
+  actDeadline,
   detectShiftLate,
   detectUnsignedDoc,
   detectMissedStop,
   dateKeyInTz,
   utcDateKey,
   KPI_TZ,
+  AUTO_KINDS,
+  type AutoKind,
   type CalcConfig,
   type CalcMark,
   type BreakdownItem,
@@ -275,26 +280,34 @@ async function buildPayroll(
 /**
  * Прогон детекторов за день asOf: создаёт KpiMark со status=CANDIDATE для найденных нарушений.
  * Идемпотентно (createMany skipDuplicates по @@unique([taskId, kind])) — повторный прогон не
- * плодит дубли и не воскрешает уже отклонённые/подтверждённые отметки. Вызывается из cron (~23:30)
- * и из тестов вручную.
+ * плодит дубли и не воскрешает уже отклонённые/подтверждённые отметки. Вызывается из cron
+ * (полный прогон ~23:30; вечерний 20:05 — только акты, см. runActDeadlineDetection) и из тестов.
+ * opts.kinds сужает прогон до части детекторов (вечером MISSED_STOP дал бы ложных кандидатов
+ * по задачам, которые водитель ещё доделает).
  */
 export async function detectCandidatesForDate(
   asOf: Date = new Date(),
+  opts?: { kinds?: AutoKind[] },
 ): Promise<{ found: number; created: number; byKind: Record<KpiMarkKind, number> }> {
+  const kinds = new Set<AutoKind>(opts?.kinds ?? AUTO_KINDS);
   const dayKey = dateKeyInTz(asOf, KPI_TZ);
   const scheduledDay = new Date(`${dayKey}T00:00:00.000Z`); // @db.Date хранится UTC-полночью
   const dayEnd = new Date(scheduledDay.getTime() + 24 * 60 * 60 * 1000);
+  // Акты до 20:00: у задачи, завершённой после 20:00, дедлайн — 20:00 СЛЕДУЮЩЕГО дня, поэтому
+  // прогон должен видеть и вчерашние завершения (окно completedAt на сутки назад).
+  const completedFrom = new Date(scheduledDay.getTime() - 24 * 60 * 60 * 1000);
 
   // Отметки заводим только по водителям, участвующим в KPI (с денежным профилем). Задачи Николая
   // и внешнего перевозчика детектор пропускает — они вне расчёта (PRD §12, §2).
   const tracked = await trackedDriverIds();
   // Дни отпуска/больничного за этот день (№9): в них «невыполненную точку» не штрафуем.
   const absentDays = await absenceDaysByDriver(dayKey, dayKey);
+  const needShifts = kinds.has("SHIFT_LATE");
   const [tasks, shifts, settings] = await Promise.all([
     prisma.task.findMany({
       where: {
         assigneeId: { in: tracked },
-        OR: [{ scheduledDate: scheduledDay }, { completedAt: { gte: scheduledDay, lt: dayEnd } }],
+        OR: [{ scheduledDate: scheduledDay }, { completedAt: { gte: completedFrom, lt: dayEnd } }],
       },
       select: {
         id: true,
@@ -303,14 +316,23 @@ export async function detectCandidatesForDate(
         status: true,
         completedAt: true,
         requiresSignedDoc: true, // требование акта на уровне задачи (этап 11), не из типа
-        attachments: { where: { kind: "DOCUMENT" }, take: 1, select: { id: true } },
+        actMissedReason: true, // причина водителя «завершил без акта» — в note кандидата
+        // Момент приложения акта: самое раннее DOCUMENT-вложение (жёсткий дедлайн 20:00).
+        attachments: {
+          where: { kind: "DOCUMENT" },
+          orderBy: { createdAt: "asc" },
+          take: 1,
+          select: { createdAt: true },
+        },
       },
     }),
     // Смены за день (этап D) — для метрики «поздно открыл смену». Только подтверждённые/закрытые.
-    prisma.shift.findMany({
-      where: { date: scheduledDay, driverId: { in: tracked }, status: { in: ["OPEN", "CLOSED"] } },
-      select: { id: true, driverId: true, openedAt: true, status: true },
-    }),
+    needShifts
+      ? prisma.shift.findMany({
+          where: { date: scheduledDay, driverId: { in: tracked }, status: { in: ["OPEN", "CLOSED"] } },
+          select: { id: true, driverId: true, openedAt: true, status: true },
+        })
+      : Promise.resolve([]),
     prisma.capacitySettings.findUnique({ where: { id: "singleton" } }),
   ]);
   const startMinutes = settings?.shiftStartMinutes ?? 540;
@@ -353,16 +375,23 @@ export async function detectCandidatesForDate(
 
   // Задачные метрики: без акта + невыполненная точка (опоздание на объект больше не детектируется — этап D).
   for (const t of tasks) {
-    push(
-      detectUnsignedDoc({
-        driverId: t.assigneeId,
-        taskId: t.id,
-        requiresSignedDoc: t.requiresSignedDoc,
-        status: t.status,
-        completedAt: t.completedAt,
-        hasSignedDoc: t.attachments.length > 0,
-      }),
-    );
+    if (kinds.has("UNSIGNED_DOCS")) {
+      push(
+        detectUnsignedDoc(
+          {
+            driverId: t.assigneeId,
+            taskId: t.id,
+            requiresSignedDoc: t.requiresSignedDoc,
+            status: t.status,
+            completedAt: t.completedAt,
+            firstDocAt: t.attachments[0]?.createdAt ?? null,
+            actMissedReason: t.actMissedReason,
+          },
+          asOf,
+        ),
+      );
+    }
+    if (!kinds.has("MISSED_STOP")) continue;
     const missed = detectMissedStop(
       { driverId: t.assigneeId, taskId: t.id, scheduledDate: t.scheduledDate, status: t.status },
       asOf,
@@ -394,6 +423,34 @@ export async function detectCandidatesForDate(
 export async function runKpiDetection(): Promise<void> {
   const r = await detectCandidatesForDate();
   console.log(`[kpi] детектор: найдено ${r.found}, создано ${r.created} кандидатов`, r.byKind);
+}
+
+/**
+ * Вечерний прогон «акты до 20:00» (~20:05, ARCHITECTURE §8): только UNSIGNED_DOCS — чтобы кандидаты
+ * появились к вечернему обходу Милены, а MISSED_STOP не плодил ложных по задачам, которые водитель
+ * ещё доделает. После прогона — пуш диспетчерам, если за сегодня есть неразобранные кандидаты по актам
+ * (occurredAt = дедлайн 20:00 сегодняшнего дня).
+ */
+export async function runActDeadlineDetection(): Promise<void> {
+  const now = new Date();
+  const r = await detectCandidatesForDate(now, { kinds: ["UNSIGNED_DOCS"] });
+  const dayKey = dateKeyInTz(now, KPI_TZ);
+  const dayStart = new Date(`${dayKey}T00:00:00.000+03:00`);
+  const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+  const todayCount = await prisma.kpiMark.count({
+    where: {
+      kind: "UNSIGNED_DOCS",
+      status: "CANDIDATE",
+      occurredAt: { gte: dayStart, lt: dayEnd },
+    },
+  });
+  console.log(`[kpi] акты 20:00: найдено ${r.found}, создано ${r.created}, за сегодня ${todayCount}`);
+  if (todayCount === 0) return;
+  const dispatchers = await prisma.user.findMany({
+    where: { role: "DISPATCHER", isActive: true },
+    select: { id: true },
+  });
+  await Promise.all(dispatchers.map((u) => sendPushToUser(u.id, buildActViolationsPayload(todayCount))));
 }
 
 // ───────────────────────────── Диспетчер: учёт и расчёт ─────────────────────────────
@@ -445,8 +502,10 @@ async function buildDriverMarksOnly(
 /**
  * Лайв-актуализация кандидатов (доработка №2, решение Артёма 23.06): перед показом перепроверяем
  * task-кандидатов (UNSIGNED_DOCS/MISSED_STOP) против ТЕКУЩЕГО состояния задачи тем же детектором.
- * Если нарушение больше не подтверждается (задача доведена до «Выполнено» / приложен акт) — кандидата
- * не показываем. SHIFT_LATE не перепроверяем (факт «поздно открыл смену» не исправляется задним числом).
+ * Если нарушение больше не подтверждается (задача доведена до «Выполнено» / акт приложен ДО дедлайна
+ * 20:00) — кандидата не показываем. Жёсткий дедлайн (02.07): акт, приложенный ПОСЛЕ 20:00, кандидата
+ * больше не снимает — гонка «файл загрузился между 20:00 и прогоном» решается в пользу водителя по
+ * createdAt вложения. SHIFT_LATE не перепроверяем (факт не исправляется задним числом).
  * Ничего не удаляем из БД: CANDIDATE-строки остаются (детектор идемпотентен, зря не воскресит), просто
  * скрываем устаревших из выдачи. Решённые вручную (CONFIRMED/DISMISSED) сюда не попадают (фильтр статуса).
  */
@@ -468,7 +527,13 @@ async function recheckTaskCandidates(candidates: MarkView[]): Promise<MarkView[]
       status: true,
       completedAt: true,
       scheduledDate: true,
-      attachments: { where: { kind: "DOCUMENT" }, take: 1, select: { id: true } },
+      actMissedReason: true,
+      attachments: {
+        where: { kind: "DOCUMENT" },
+        orderBy: { createdAt: "asc" },
+        take: 1,
+        select: { createdAt: true },
+      },
     },
   });
   const byId = new Map(tasks.map((t) => [t.id, t]));
@@ -479,14 +544,18 @@ async function recheckTaskCandidates(candidates: MarkView[]): Promise<MarkView[]
     if (!t) return true; // задачи нет в выборке — не прячем по ошибке
     if (c.kind === "UNSIGNED_DOCS") {
       return (
-        detectUnsignedDoc({
-          driverId: t.assigneeId,
-          taskId: t.id,
-          requiresSignedDoc: t.requiresSignedDoc,
-          status: t.status,
-          completedAt: t.completedAt,
-          hasSignedDoc: t.attachments.length > 0,
-        }) !== null
+        detectUnsignedDoc(
+          {
+            driverId: t.assigneeId,
+            taskId: t.id,
+            requiresSignedDoc: t.requiresSignedDoc,
+            status: t.status,
+            completedAt: t.completedAt,
+            firstDocAt: t.attachments[0]?.createdAt ?? null,
+            actMissedReason: t.actMissedReason,
+          },
+          asOf,
+        ) !== null
       );
     }
     return (
@@ -570,7 +639,13 @@ export async function getMarkDetail(markId: string): Promise<MarkDetailView> {
             scheduledDate: true,
             completedAt: true,
             requiresSignedDoc: true,
-            attachments: { where: { kind: "DOCUMENT" }, take: 1, select: { id: true } },
+            actMissedReason: true,
+            attachments: {
+              where: { kind: "DOCUMENT" },
+              orderBy: { createdAt: "asc" },
+              take: 1,
+              select: { createdAt: true },
+            },
           },
         },
         driver: { select: { name: true } },
@@ -596,6 +671,11 @@ export async function getMarkDetail(markId: string): Promise<MarkDetailView> {
     taskCompletedAt: t?.completedAt ? t.completedAt.toISOString() : null,
     taskRequiresSignedDoc: t ? t.requiresSignedDoc : null,
     taskHasDocument: t ? t.attachments.length > 0 : null,
+    // Акты до 20:00 (02.07): дедлайн, фактический момент приложения и причина водителя.
+    actDeadlineAt:
+      mark.kind === "UNSIGNED_DOCS" && t?.completedAt ? actDeadline(t.completedAt).toISOString() : null,
+    docAttachedAt: t?.attachments[0]?.createdAt ? t.attachments[0].createdAt.toISOString() : null,
+    actMissedReason: t?.actMissedReason ?? null,
     shiftDate: s?.date ? utcDateKey(s.date) : null,
     shiftOpenedAt: s?.openedAt ? s.openedAt.toISOString() : null,
     shiftConfirmedAt: s?.confirmedAt ? s.confirmedAt.toISOString() : null,

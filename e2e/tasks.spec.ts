@@ -17,8 +17,9 @@ test("диспетчер: создание → назначение → пере
 
   await page.getByRole("button", { name: "Задача" }).click();
 
-  // доступны все 11 типов (10 рабочих + «Прочее»)
-  await expect(page.locator('[data-testid="create-type"] option')).toHaveCount(11);
+  // Доступны все сидовые типы (10 рабочих + «Прочее»). Не точный счёт: общая dev-БД накапливает
+  // типы из прогонов админки типов (память e2e-shared-dev-db) — ассертим «не меньше», не «ровно».
+  expect(await page.locator('[data-testid="create-type"] option').count()).toBeGreaterThanOrEqual(11);
 
   const title = `E2E задача ${Date.now()}`;
   await page.getByPlaceholder("ЛБМ 200 + нож, 0,7 мм").fill(title);

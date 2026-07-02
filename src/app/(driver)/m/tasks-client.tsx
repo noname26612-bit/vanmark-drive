@@ -58,8 +58,32 @@ export function DriverTasksClient({ showPayroll = true }: { showPayroll?: boolea
   // Ошибка фонового поллинга, но задачи уже загружены — не сносим список (плохая сеть на объекте).
   const staleError = error && tasks.length > 0;
 
+  // Умный баннер «акты до 20:00» (решение Артёма 02.07): только когда актуально — есть завершённые
+  // сегодня актовые задачи без приложенного акта (и акт не ждёт отправки в офлайн-очереди).
+  // До 18:00 — нейтральный, с 18:00 — янтарный (дедлайн близко).
+  const pendingDocFor = (t: TaskDTO): boolean =>
+    pending.some((a) => a.taskId === t.id && a.kind === "attachment" && a.blobMeta?.kind === "DOCUMENT");
+  const actsToAttach =
+    tab === "today"
+      ? tasks.filter(
+          (t) => display(t) === "DONE" && t.requiresSignedDoc && !t.hasSignedDoc && !pendingDocFor(t),
+        ).length
+      : 0;
+  const actsUrgent = new Date().getHours() >= 18;
+
   return (
     <main className="px-3 pb-10 pt-3">
+      {actsToAttach > 0 ? (
+        <p
+          className={`mb-3 rounded-xl border px-3 py-2.5 text-base font-medium ${
+            actsUrgent ? "border-amber-300 bg-amber-50 text-amber-900" : "border-neutral-200 bg-white text-neutral-700"
+          }`}
+        >
+          {actsToAttach === 1 ? "Акт по 1 задаче" : `Акты по ${actsToAttach} задачам`} — приложите до
+          20:00
+        </p>
+      ) : null}
+
       {/* Ссылка на личный расчёт зарплаты (Фаза 1.5) — только у водителей с денежным профилем. */}
       {showPayroll ? (
         <div className="mb-3 flex justify-end">

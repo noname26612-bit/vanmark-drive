@@ -44,18 +44,23 @@ async function createAssignedTask(milena: Page, driverLabel: string, typeLabel: 
 }
 
 // Доводит назначенную задачу до «Выполнено» руками водителя; опционально прикладывает акт (DOCUMENT).
+// Акты до 20:00 (02.07): акт прикладываем ДО завершения, а при завершении без акта обязательна причина.
 async function completeActTask(milena: Page, driverReq: APIRequestContext, withAct: boolean): Promise<void> {
   const id = await createAssignedTask(milena, "Алексей Каширский", "Доставка / забор из ремонта"); // акт нужен, расценки нет
-  for (const toStatus of ["IN_PROGRESS", "DONE"]) {
-    const r = await driverReq.post(`/api/tasks/${id}/transition`, { data: { toStatus } });
-    expect(r.status(), `переход в ${toStatus}`).toBe(200);
-  }
+  const r1 = await driverReq.post(`/api/tasks/${id}/transition`, { data: { toStatus: "IN_PROGRESS" } });
+  expect(r1.status(), "переход в IN_PROGRESS").toBe(200);
   if (withAct) {
     const up = await driverReq.post(`/api/tasks/${id}/attachments`, {
       multipart: { file: { name: "akt.jpg", mimeType: "image/jpeg", buffer: JPEG }, kind: "DOCUMENT" },
     });
     expect(up.status()).toBe(201);
   }
+  const r2 = await driverReq.post(`/api/tasks/${id}/transition`, {
+    data: withAct
+      ? { toStatus: "DONE" }
+      : { toStatus: "DONE", actMissedReason: "Не могу приложить (личная причина)" },
+  });
+  expect(r2.status(), "переход в DONE").toBe(200);
 }
 
 async function myActBonus(req: APIRequestContext, period: string) {

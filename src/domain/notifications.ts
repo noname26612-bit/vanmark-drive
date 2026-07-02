@@ -59,6 +59,17 @@ export function buildMorningPayload(taskCount: number): PushPayload {
   };
 }
 
+// Вечерний обход актов (20:05, решение Артёма 02.07): диспетчеру — по скольким задачам акт
+// не приложен к дедлайну 20:00. Тап ведёт на экран KPI, где кандидаты разбираются.
+export function buildActViolationsPayload(taskCount: number): PushPayload {
+  return {
+    title: "Акты не приложены",
+    body: `${taskCount} ${pluralTasks(taskCount)} без акта к 20:00 — разберите нарушения`,
+    url: "/kpi",
+    tag: "act-deadline",
+  };
+}
+
 // Предупреждение диспетчеру о незаказанных пропусках на завтра (16:00, PRD §6/§7).
 export function buildPassWarningPayload(taskCount: number): PushPayload {
   return {

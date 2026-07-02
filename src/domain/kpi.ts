@@ -131,30 +131,66 @@ export function detectShiftLate(
   };
 }
 
-/** Без акта: ремонтная задача завершена без подписанного документа-вложения. PRD §12.1. */
+// ─── Без акта: дедлайн 20:00 (решение Артёма 02.07, PRD §12.1) ───
+
+/** Дедлайн приложения акта: 20:00 МСК. Минуты от полуночи стенных часов. */
+export const ACT_DEADLINE_MINUTES = 20 * 60;
+
+/** Следующий календарный день для ключа YYYY-MM-DD (через полдень UTC — вдали от границ зоны). */
+function nextDateKey(dateKey: string): string {
+  const d = noonUtc(dateKey);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return utcDateKey(d);
+}
+
+/**
+ * Момент дедлайна акта для задачи, завершённой в completedAt: 20:00 того же календарного дня (МСК).
+ * Завершена в 20:00 и позже — дедлайн переносится на 20:00 следующего дня (иначе нарушение возникало
+ * бы в самый момент завершения, без шанса приложить акт). Москва — фиксированный UTC+3, как во всём
+ * модуле (см. periodBoundsUtc).
+ */
+export function actDeadline(completedAt: Date, tz: string = KPI_TZ): Date {
+  const w = wallParts(completedAt, tz);
+  const dayKey = w.minutes >= ACT_DEADLINE_MINUTES ? nextDateKey(w.dateKey) : w.dateKey;
+  const hh = String(Math.floor(ACT_DEADLINE_MINUTES / 60)).padStart(2, "0");
+  const mm = String(ACT_DEADLINE_MINUTES % 60).padStart(2, "0");
+  return new Date(`${dayKey}T${hh}:${mm}:00.000+03:00`);
+}
+
+/**
+ * Без акта: актовая задача завершена, а акт не приложен до дедлайна 20:00. Дедлайн ЖЁСТКИЙ
+ * (решение Артёма 02.07): смотрим МОМЕНТ приложения (firstDocAt) — акт после 20:00 нарушение
+ * не снимает (Милена может отклонить кандидата вручную). До наступления дедлайна нарушения нет.
+ */
 export type UnsignedDocInput = {
   driverId: string | null;
   taskId: string;
   requiresSignedDoc: boolean;
   status: string;
   completedAt: Date | null;
-  hasSignedDoc: boolean; // есть ли вложение kind=DOCUMENT
+  firstDocAt: Date | null; // createdAt самого раннего вложения kind=DOCUMENT; null — акта нет
+  actMissedReason?: string | null; // причина водителя при завершении без акта — только для note
 };
 
-export function detectUnsignedDoc(t: UnsignedDocInput, tz: string = KPI_TZ): Candidate | null {
+export function detectUnsignedDoc(t: UnsignedDocInput, asOf: Date, tz: string = KPI_TZ): Candidate | null {
   if (!t.driverId) return null;
-  if (!t.requiresSignedDoc) return null; // метрика только для ремонтных типов
-  if (t.status !== "DONE") return null; // нарушение фиксируется при завершении
-  if (t.hasSignedDoc) return null;
-  const occurredAt = t.completedAt ?? new Date();
+  if (!t.requiresSignedDoc) return null; // метрика только для актовых типов
+  if (t.status !== "DONE") return null; // нарушение фиксируется по завершённой задаче
+  if (!t.completedAt) return null; // без момента завершения дедлайн не построить (DONE всегда ставит completedAt)
+  const deadline = actDeadline(t.completedAt, tz);
+  if (asOf < deadline) return null; // дедлайн ещё не наступил — не спешим
+  if (t.firstDocAt && t.firstDocAt <= deadline) return null; // акт приложен вовремя
+  // occurredAt = дедлайн (детерминированно): повторные прогоны дают тот же момент и период.
   return {
     kind: "UNSIGNED_DOCS",
     driverId: t.driverId,
     taskId: t.taskId,
     shiftId: null,
-    occurredAt,
-    period: periodOf(occurredAt, tz),
-    note: "Завершено без подписанного акта",
+    occurredAt: deadline,
+    period: periodOf(deadline, tz),
+    note:
+      "Акт не приложен до 20:00" +
+      (t.actMissedReason ? ` · Причина водителя: ${t.actMissedReason}` : ""),
   };
 }
 
