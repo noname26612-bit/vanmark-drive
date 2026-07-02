@@ -617,6 +617,88 @@ export async function resolveMark(markId: string, status: "CONFIRMED" | "DISMISS
 }
 
 /**
+ * Синхронизация нарушения «без акта» при смене требования акта на задаче (решение Артёма 02.07.2026,
+ * доработка «редактирование закрытых заявок» + плашка акта в карточке). Вызывается из updateTaskFields,
+ * когда диспетчер меняет requiresAct. KPI правим только в ОТКРЫТОМ периоде — закрытый снимок неизменен
+ * (как в resolveMark). Неподтверждённые (CANDIDATE) отдельно не трогаем: лайв-перепроверка
+ * (recheckTaskCandidates) сама скрывает/возвращает их по текущему состоянию задачи, а в расчёт идут
+ * только CONFIRMED. Требование акта не является гейтом завершения (CLAUDE.md §4) — это лишь метрика KPI.
+ */
+export async function syncUnsignedDocMark(taskId: string, actor: Actor): Promise<void> {
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    select: {
+      id: true,
+      assigneeId: true,
+      requiresSignedDoc: true,
+      status: true,
+      completedAt: true,
+      actMissedReason: true,
+      // Момент приложения акта: самое раннее DOCUMENT-вложение (жёсткий дедлайн 20:00, 02.07).
+      attachments: {
+        where: { kind: "DOCUMENT" },
+        orderBy: { createdAt: "asc" },
+        take: 1,
+        select: { createdAt: true },
+      },
+    },
+  });
+  if (!task?.assigneeId) return;
+  if (!(await isPayrollDriver(task.assigneeId))) return; // только водители в KPI (как детектор)
+
+  // Дедлайн-семантика (02.07) сохраняется и здесь: снятие требования акта → null → гасим CONFIRMED;
+  // акт, приложенный ПОСЛЕ 20:00, кандидата НЕ снимает; «вернули требование» до наступления дедлайна
+  // кандидата не заводит — его создаст вечерний/ночной детектор, когда дедлайн пройдёт.
+  const candidate = detectUnsignedDoc(
+    {
+      driverId: task.assigneeId,
+      taskId: task.id,
+      requiresSignedDoc: task.requiresSignedDoc,
+      status: task.status,
+      completedAt: task.completedAt,
+      firstDocAt: task.attachments[0]?.createdAt ?? null,
+      actMissedReason: task.actMissedReason,
+    },
+    new Date(),
+  );
+  const existing = await prisma.kpiMark.findFirst({ where: { taskId: task.id, kind: "UNSIGNED_DOCS" } });
+
+  if (!candidate) {
+    // Нарушение больше не актуально (сняли требование акта либо акт приложен): подтверждённый штраф
+    // гасим в открытом периоде — он уходит из расчёта зарплаты. CANDIDATE скроет лайв-перепроверка.
+    if (existing && existing.status === "CONFIRMED" && !(await isPeriodClosed(existing.period))) {
+      await prisma.kpiMark.update({
+        where: { id: existing.id },
+        data: {
+          status: "DISMISSED",
+          resolvedById: actor.id,
+          resolvedAt: new Date(),
+          note: "Снято: акт больше не требуется",
+        },
+      });
+    }
+    return;
+  }
+
+  // Нарушение снова актуально (вернули требование, задача DONE без акта): заводим кандидата, если
+  // отметки ещё нет. Существующую (в т.ч. вручную решённую) не перетираем — уважаем разбор диспетчера.
+  if (!existing && !(await isPeriodClosed(candidate.period))) {
+    await prisma.kpiMark.create({
+      data: {
+        driverId: candidate.driverId,
+        taskId: candidate.taskId,
+        period: candidate.period,
+        kind: "UNSIGNED_DOCS",
+        status: "CANDIDATE",
+        occurredAt: candidate.occurredAt,
+        note: candidate.note,
+        createdById: null,
+      },
+    });
+  }
+}
+
+/**
  * Детали одного нарушения для drill-down (доработка №1): разбор «почему засчиталось» — состояние
  * задачи (UNSIGNED_DOCS/MISSED_STOP), смены (SHIFT_LATE), кто завёл/разобрал. Только админ/диспетчер
  * (guard в route). Чувствительного не отдаём: по вложениям — лишь факт наличия акта, не путь к файлу.

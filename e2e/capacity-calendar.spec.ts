@@ -79,7 +79,16 @@ test("календарь: суммирует оценки и считает за
   const mk = async () =>
     (
       await milena.request.post("/api/tasks", {
-        data: { typeId: repairId, title: `e2e cal ${Date.now()}-${Math.random()}`, address: "Адрес e2e", scheduledDate: day, assigneeId: kid },
+        data: {
+          typeId: repairId,
+          title: `e2e cal ${Date.now()}-${Math.random()}`,
+          address: "Адрес e2e",
+          orgName: "ООО Тест",
+          contactName: "Иван Тест",
+          contactPhone: "+70000000000",
+          scheduledDate: day,
+          assigneeId: kid,
+        },
       })
     ).json();
   const t1 = (await mk()).data;

@@ -42,9 +42,9 @@ describe("статусная матрица — водитель (назначе
     });
   });
 
-  it("может поставить «На паузе», но только с причиной", () => {
+  it("может поставить «На паузе» без обязательной причины", () => {
     const v = checkTransition(driverOwn, "IN_PROGRESS", "ON_HOLD");
-    expect(v).toEqual({ ok: true, reasonRequired: true });
+    expect(v).toEqual({ ok: true, reasonRequired: false });
   });
 
   it("чужую задачу не двигает", () => {
@@ -66,11 +66,11 @@ describe("статусная матрица — диспетчер/админ", 
   it("может ставить «На паузе»/«Отменена»/«Перенесена» и снимать с паузы", () => {
     expect(checkTransition(dispatcher, "IN_PROGRESS", "ON_HOLD")).toEqual({
       ok: true,
-      reasonRequired: true,
+      reasonRequired: false, // пауза — причина по желанию (решение Артёма 02.07.2026)
     });
     expect(checkTransition(dispatcher, "IN_PROGRESS", "CANCELLED")).toEqual({
       ok: true,
-      reasonRequired: true,
+      reasonRequired: true, // отмена — причина обязательна
     });
     expect(checkTransition(dispatcher, "IN_PROGRESS", "RESCHEDULED").ok).toBe(true);
     expect(checkTransition(dispatcher, "ON_HOLD", "ASSIGNED").ok).toBe(true);
@@ -95,8 +95,8 @@ describe("статусная матрица — legacy-статусы тупик
 });
 
 describe("статусная матрица — вспомогательное", () => {
-  it("reasonRequiredFor", () => {
-    expect(reasonRequiredFor("ON_HOLD")).toBe(true);
+  it("reasonRequiredFor — обязательна только у отмены (пауза — по желанию)", () => {
+    expect(reasonRequiredFor("ON_HOLD")).toBe(false);
     expect(reasonRequiredFor("CANCELLED")).toBe(true);
     expect(reasonRequiredFor("IN_PROGRESS")).toBe(false);
     expect(reasonRequiredFor("RESCHEDULED")).toBe(false);

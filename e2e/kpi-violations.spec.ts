@@ -21,6 +21,9 @@ async function createDatedTask(milena: Page, driverLabel: string, typeLabel: str
   await milena.locator('[data-testid="create-type"]').selectOption({ label: typeLabel });
   await milena.getByPlaceholder("ЛБМ 200 + нож, 0,7 мм").fill(title);
   await milena.getByPlaceholder("Москва, ул. ..., д. ...").fill("Адрес e2e нарушения");
+  await milena.locator('[data-testid="create-org"]').fill("ООО Тест");
+  await milena.locator('[data-testid="create-contact-name"]').fill("Иван Тест");
+  await milena.locator('[data-testid="create-contact-phone"]').fill("+70000000000");
   await milena.getByRole("button", { name: "Создать", exact: true }).click();
   await milena.getByRole("link", { name: title }).click();
   await milena.waitForURL(/\/tasks\/[0-9a-f-]+$/);
@@ -90,6 +93,71 @@ test("№2 лайв: исправленное нарушение уходит и
   // overview БЕЗ повторного детектора уже не показывает кандидата (лайв-актуализация на чтение).
   const ov2 = (await (await milena.request.get(`/api/kpi/overview?period=${period}`)).json()).data;
   expect(ov2.candidates.find((c: { taskTitle: string | null }) => c.taskTitle === title)).toBeFalsy();
+
+  await ctx.close();
+});
+
+// Доработка (решение Артёма 02.07.2026): снятие требования акта у ЗАВЕРШЁННОЙ заявки убирает уже
+// ПОДТВЕРЖДЁННОЕ нарушение «без акта» из расчёта (syncUnsignedDocMark). Лайв-механизм №2 покрывает только
+// кандидатов — здесь проверяем именно CONFIRMED-ветку.
+test("акт: снятие требования у завершённой заявки убирает подтверждённое нарушение из расчёта", async ({
+  browser,
+}) => {
+  test.slow();
+  const ctx = await browser.newContext();
+  const milena = await ctx.newPage();
+  await login(milena, "milena");
+
+  // Актовая (ремонтная) задача, назначена Каширскому, дата вчера — попадёт в детектор.
+  const { id, title } = await createDatedTask(
+    milena,
+    "Алексей Каширский",
+    "Выездной ремонт / диагностика",
+    yesterday,
+  );
+  const period = yesterday.slice(0, 7);
+
+  // Завершаем без акта (диспетчер ведёт статусы за исполнителя): ASSIGNED → IN_PROGRESS → DONE.
+  // Завершение «вчера в 18:00 МСК» (X-Occurred-At): дедлайн акта 20:00 (жёсткий, 02.07) уже прошёл —
+  // иначе детектор ждал бы 20:00 сегодняшнего дня и кандидата бы не завёл.
+  expect(
+    (await milena.request.post(`/api/tasks/${id}/transition`, { data: { toStatus: "IN_PROGRESS" } })).ok(),
+  ).toBeTruthy();
+  expect(
+    (
+      await milena.request.post(`/api/tasks/${id}/transition`, {
+        data: { toStatus: "DONE" },
+        headers: { "X-Occurred-At": `${yesterday}T15:00:00.000Z` }, // 18:00 МСК вчера
+      })
+    ).ok(),
+  ).toBeTruthy();
+
+  // Детектор заводит нарушение «без акта»; подтверждаем его (CONFIRMED — попадает в расчёт).
+  expect((await milena.request.post("/api/kpi/detect", { data: { asOf: new Date().toISOString() } })).status()).toBe(200);
+  const ov = (await (await milena.request.get(`/api/kpi/overview?period=${period}`)).json()).data;
+  const cand = ov.candidates.find(
+    (c: { taskTitle: string | null; kind: string }) =>
+      c.taskTitle === title && c.kind === "UNSIGNED_DOCS",
+  );
+  expect(cand).toBeTruthy();
+  expect(
+    (await milena.request.post(`/api/kpi/marks/${cand.id}/resolve`, { data: { status: "CONFIRMED" } })).ok(),
+  ).toBeTruthy();
+
+  const hasConfirmedMark = async (): Promise<boolean> => {
+    const data = (await (await milena.request.get(`/api/kpi/overview?period=${period}`)).json()).data;
+    const drv = data.drivers.find((d: { driverName: string }) => d.driverName === "Алексей Каширский");
+    return !!drv?.marks?.some((m: { taskTitle: string | null }) => m.taskTitle === title);
+  };
+  // Подтверждённое нарушение видно в расчёте водителя.
+  expect(await hasConfirmedMark()).toBe(true);
+
+  // Снимаем требование акта у ЗАВЕРШЁННОЙ заявки → нарушение уходит из расчёта открытого месяца.
+  const patch = await milena.request.patch(`/api/tasks/${id}`, {
+    data: { op: "edit", requiresAct: false, actWaivedNote: "e2e: акт не нужен" },
+  });
+  expect(patch.ok()).toBeTruthy();
+  expect(await hasConfirmedMark()).toBe(false);
 
   await ctx.close();
 });
