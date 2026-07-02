@@ -30,8 +30,17 @@ export function KpiClient({ initialPeriod }: { initialPeriod: string }) {
   const [detailFor, setDetailFor] = useState<string | null>(null); // markId для drill-down (№1)
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Вечерний обход (02.07): фильтр кандидатов «Все / За сегодня» — Милена разбирает свежие нарушения.
+  const [candFilter, setCandFilter] = useState<"all" | "today">("all");
 
   const closed = data?.closed ?? false;
+  // Дата в МСК (вся арифметика KPI московская): «за сегодня» = occurredAt в сегодняшнем дне МСК.
+  const todayMsk = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Moscow" });
+  const isTodayMark = (m: MarkView): boolean =>
+    new Date(m.occurredAt).toLocaleDateString("en-CA", { timeZone: "Europe/Moscow" }) === todayMsk;
+  const allCandidates = data?.candidates ?? [];
+  const todayCount = allCandidates.filter(isTodayMark).length;
+  const shownCandidates = candFilter === "today" ? allCandidates.filter(isTodayMark) : allCandidates;
   // Видна ли зарплата (оклад/премия/итог): только админу. Диспетчер видит нарушения и суммы штрафов,
   // но не зарплату — сервер их и не присылает (доработка №10). По умолчанию скрыто, пока не пришёл ответ.
   const payrollVisible = data?.payrollVisible ?? false;
@@ -96,16 +105,44 @@ export function KpiClient({ initialPeriod }: { initialPeriod: string }) {
         <p className="mt-6 text-sm text-neutral-400">Загрузка…</p>
       ) : (
         <>
-          <div className="mt-6 flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-neutral-900">
-              Кандидаты в нарушения{data?.candidates.length ? ` · ${data.candidates.length}` : ""}
-            </h2>
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-neutral-900">
+                Кандидаты в нарушения{allCandidates.length ? ` · ${allCandidates.length}` : ""}
+              </h2>
+              {/* Вечерний обход (02.07): быстрый срез свежих нарушений за сегодня. */}
+              <div className="flex rounded-lg bg-neutral-100 p-0.5 text-xs font-medium">
+                <button
+                  type="button"
+                  onClick={() => setCandFilter("all")}
+                  className={`rounded-md px-2.5 py-1 ${
+                    candFilter === "all" ? "bg-white text-neutral-900 shadow-sm" : "text-neutral-500"
+                  }`}
+                >
+                  Все
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCandFilter("today")}
+                  className={`rounded-md px-2.5 py-1 ${
+                    candFilter === "today" ? "bg-white text-neutral-900 shadow-sm" : "text-neutral-500"
+                  }`}
+                >
+                  За сегодня{todayCount ? ` · ${todayCount}` : ""}
+                </button>
+              </div>
+            </div>
             <Button variant="secondary" className="h-8 px-3 text-xs" disabled={busy} onClick={runDetector}>
               Найти нарушения за сегодня
             </Button>
           </div>
           <CandidatesSection
-            candidates={data?.candidates ?? []}
+            candidates={shownCandidates}
+            emptyText={
+              candFilter === "today" && allCandidates.length > 0
+                ? "За сегодня кандидатов нет."
+                : undefined
+            }
             closed={closed}
             onChanged={() => void mutate()}
             onDetails={setDetailFor}
@@ -163,17 +200,23 @@ export function KpiClient({ initialPeriod }: { initialPeriod: string }) {
 
 function CandidatesSection({
   candidates,
+  emptyText,
   closed,
   onChanged,
   onDetails,
 }: {
   candidates: MarkView[];
+  emptyText?: string;
   closed: boolean;
   onChanged: () => void;
   onDetails: (markId: string) => void;
 }) {
   if (candidates.length === 0) {
-    return <p className="mt-2 text-sm text-neutral-500">Новых кандидатов нет — система ничего не нашла.</p>;
+    return (
+      <p className="mt-2 text-sm text-neutral-500">
+        {emptyText ?? "Новых кандидатов нет — система ничего не нашла."}
+      </p>
+    );
   }
   return (
     <ul className="mt-3 divide-y divide-neutral-100 overflow-hidden rounded-xl border border-neutral-200 bg-white">
@@ -557,10 +600,24 @@ function MarkDetailModal({ markId, onClose }: { markId: string; onClose: () => v
                 Задача №{data.taskNumber} · {data.taskTitle}
               </p>
               {data.kind === "UNSIGNED_DOCS" ? (
-                <p>
-                  Завершена{data.taskCompletedAt ? ` ${formatDate(data.taskCompletedAt)}` : ""}, акт требовался, но
-                  подписанный документ не приложен.
-                </p>
+                <>
+                  <p>
+                    Завершена{data.taskCompletedAt ? ` ${formatDate(data.taskCompletedAt)}` : ""}, акт требовался.
+                    {data.actDeadlineAt
+                      ? ` Дедлайн акта — ${fmtTime(data.actDeadlineAt)} ${formatDate(data.actDeadlineAt)}.`
+                      : ""}
+                  </p>
+                  <p className="mt-1">
+                    {data.docAttachedAt
+                      ? `Акт приложен ${formatDate(data.docAttachedAt)} в ${fmtTime(data.docAttachedAt)}${
+                          data.actDeadlineAt && data.docAttachedAt > data.actDeadlineAt ? " — после дедлайна" : ""
+                        }.`
+                      : "Акт не приложен."}
+                  </p>
+                  {data.actMissedReason ? (
+                    <p className="mt-1 text-amber-700">Причина водителя: {data.actMissedReason}</p>
+                  ) : null}
+                </>
               ) : null}
               {data.kind === "MISSED_STOP" ? (
                 <p>

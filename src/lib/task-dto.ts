@@ -127,4 +127,6 @@ export type TaskDetailDTO = TaskDTO & {
   // Факт оплаты при ON_SITE-завершении (№8): true получено / false не получено / null не относится.
   paymentReceived: boolean | null;
   paymentMissedReason: string | null;
+  // Причина водителя при завершении актовой задачи без акта (акты до 20:00, 02.07); null — не выбиралась.
+  actMissedReason: string | null;
 };

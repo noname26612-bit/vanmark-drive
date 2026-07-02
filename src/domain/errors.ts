@@ -21,6 +21,8 @@ export const Errors = {
   dateRequired: () => new DomainError("DATE_REQUIRED", "Нужна новая дата", 422),
   paymentRequired: () =>
     new DomainError("PAYMENT_REQUIRED", "Отметьте: деньги получены или укажите причину неоплаты", 422),
+  actReasonRequired: () =>
+    new DomainError("ACT_REASON_REQUIRED", "Приложите акт или укажите причину, почему акта нет", 422),
   activeTaskExists: (taskNumber?: number) =>
     new DomainError(
       "ACTIVE_TASK_EXISTS",

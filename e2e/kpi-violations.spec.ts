@@ -118,15 +118,22 @@ test("акт: снятие требования у завершённой зая
   const period = yesterday.slice(0, 7);
 
   // Завершаем без акта (диспетчер ведёт статусы за исполнителя): ASSIGNED → IN_PROGRESS → DONE.
+  // Завершение «вчера в 18:00 МСК» (X-Occurred-At): дедлайн акта 20:00 (жёсткий, 02.07) уже прошёл —
+  // иначе детектор ждал бы 20:00 сегодняшнего дня и кандидата бы не завёл.
   expect(
     (await milena.request.post(`/api/tasks/${id}/transition`, { data: { toStatus: "IN_PROGRESS" } })).ok(),
   ).toBeTruthy();
   expect(
-    (await milena.request.post(`/api/tasks/${id}/transition`, { data: { toStatus: "DONE" } })).ok(),
+    (
+      await milena.request.post(`/api/tasks/${id}/transition`, {
+        data: { toStatus: "DONE" },
+        headers: { "X-Occurred-At": `${yesterday}T15:00:00.000Z` }, // 18:00 МСК вчера
+      })
+    ).ok(),
   ).toBeTruthy();
 
   // Детектор заводит нарушение «без акта»; подтверждаем его (CONFIRMED — попадает в расчёт).
-  expect((await milena.request.post("/api/kpi/detect", { data: { date: yesterday } })).status()).toBe(200);
+  expect((await milena.request.post("/api/kpi/detect", { data: { asOf: new Date().toISOString() } })).status()).toBe(200);
   const ov = (await (await milena.request.get(`/api/kpi/overview?period=${period}`)).json()).data;
   const cand = ov.candidates.find(
     (c: { taskTitle: string | null; kind: string }) =>

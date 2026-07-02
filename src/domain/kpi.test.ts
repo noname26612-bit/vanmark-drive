@@ -7,6 +7,7 @@ import {
   parseHHMM,
   progressionMultiplier,
   detectShiftLate,
+  actDeadline,
   detectUnsignedDoc,
   detectMissedStop,
   computePay,
@@ -100,7 +101,46 @@ describe("kpi — detectShiftLate", () => {
   });
 });
 
-// ───────────────────────────── Детектор: без акта ─────────────────────────────
+// ───────────────────────────── Дедлайн акта 20:00 ─────────────────────────────
+
+describe("kpi — actDeadline", () => {
+  it("завершена днём — дедлайн 20:00 МСК того же дня", () => {
+    // 5 июня 12:00 МСК (09:00Z) → дедлайн 5 июня 20:00 МСК = 17:00Z
+    expect(actDeadline(new Date("2026-06-05T09:00:00.000Z"), TZ).toISOString()).toBe(
+      "2026-06-05T17:00:00.000Z",
+    );
+  });
+
+  it("завершена в 19:59 МСК — дедлайн в тот же день (минута на всё)", () => {
+    expect(actDeadline(new Date("2026-06-05T16:59:00.000Z"), TZ).toISOString()).toBe(
+      "2026-06-05T17:00:00.000Z",
+    );
+  });
+
+  it("завершена ровно в 20:00 и позже — дедлайн 20:00 следующего дня", () => {
+    // ровно 20:00 МСК (17:00Z)
+    expect(actDeadline(new Date("2026-06-05T17:00:00.000Z"), TZ).toISOString()).toBe(
+      "2026-06-06T17:00:00.000Z",
+    );
+    // 20:01 МСК
+    expect(actDeadline(new Date("2026-06-05T17:01:00.000Z"), TZ).toISOString()).toBe(
+      "2026-06-06T17:00:00.000Z",
+    );
+  });
+
+  it("границы месяца/года: завершение после 20:00 в последний день — дедлайн 1-го числа", () => {
+    // 30 июня 21:00 МСК → дедлайн 1 июля 20:00 МСК (кандидат уедет в следующий период — озвучено Артёму)
+    expect(actDeadline(new Date("2026-06-30T18:00:00.000Z"), TZ).toISOString()).toBe(
+      "2026-07-01T17:00:00.000Z",
+    );
+    // 31 декабря 22:00 МСК (19:00Z) → 1 января 20:00 МСК
+    expect(actDeadline(new Date("2026-12-31T19:00:00.000Z"), TZ).toISOString()).toBe(
+      "2027-01-01T17:00:00.000Z",
+    );
+  });
+});
+
+// ───────────────────────────── Детектор: без акта (жёсткий дедлайн 20:00) ─────────────────────────────
 
 describe("kpi — detectUnsignedDoc", () => {
   const base = {
@@ -108,26 +148,69 @@ describe("kpi — detectUnsignedDoc", () => {
     taskId: "t1",
     requiresSignedDoc: true,
     status: "DONE",
-    completedAt: new Date("2026-06-05T09:00:00.000Z"),
+    completedAt: new Date("2026-06-05T09:00:00.000Z"), // 12:00 МСК → дедлайн 17:00Z (20:00 МСК)
+    firstDocAt: null as Date | null,
   };
+  const afterDeadline = new Date("2026-06-05T20:30:00.000Z"); // 23:30 МСК того же дня
 
-  it("ремонтная завершена без акта — нарушение", () => {
-    const c = detectUnsignedDoc({ ...base, hasSignedDoc: false }, TZ);
+  it("акта нет и дедлайн прошёл — нарушение; occurredAt = дедлайн", () => {
+    const c = detectUnsignedDoc({ ...base, firstDocAt: null }, afterDeadline, TZ);
     expect(c?.kind).toBe("UNSIGNED_DOCS");
     expect(c?.period).toBe("2026-06");
-    expect(c?.occurredAt.toISOString()).toBe("2026-06-05T09:00:00.000Z");
+    expect(c?.occurredAt.toISOString()).toBe("2026-06-05T17:00:00.000Z");
+    expect(c?.note).toBe("Акт не приложен до 20:00");
   });
 
-  it("есть акт — нет нарушения", () => {
-    expect(detectUnsignedDoc({ ...base, hasSignedDoc: true }, TZ)).toBeNull();
+  it("дедлайн ещё не наступил — нарушения нет (детектор не спешит)", () => {
+    const beforeDeadline = new Date("2026-06-05T15:00:00.000Z"); // 18:00 МСК
+    expect(detectUnsignedDoc({ ...base, firstDocAt: null }, beforeDeadline, TZ)).toBeNull();
   });
 
-  it("не ремонтный тип — метрика не применяется", () => {
-    expect(detectUnsignedDoc({ ...base, requiresSignedDoc: false, hasSignedDoc: false }, TZ)).toBeNull();
+  it("акт приложен до дедлайна — нет нарушения", () => {
+    const doc = new Date("2026-06-05T14:00:00.000Z"); // 17:00 МСК
+    expect(detectUnsignedDoc({ ...base, firstDocAt: doc }, afterDeadline, TZ)).toBeNull();
   });
 
-  it("ещё не завершена — нет нарушения", () => {
-    expect(detectUnsignedDoc({ ...base, status: "IN_PROGRESS", hasSignedDoc: false }, TZ)).toBeNull();
+  it("акт приложен ПОСЛЕ дедлайна — нарушение остаётся (жёсткое правило)", () => {
+    const lateDoc = new Date("2026-06-05T17:30:00.000Z"); // 20:30 МСК
+    const c = detectUnsignedDoc({ ...base, firstDocAt: lateDoc }, afterDeadline, TZ);
+    expect(c?.kind).toBe("UNSIGNED_DOCS");
+  });
+
+  it("завершена после 20:00 — сутки на акт: до 20:00 завтра нарушения нет", () => {
+    const completedLate = new Date("2026-06-05T18:00:00.000Z"); // 21:00 МСК
+    const tonight = new Date("2026-06-05T20:30:00.000Z"); // 23:30 МСК — ночной прогон того же дня
+    expect(
+      detectUnsignedDoc({ ...base, completedAt: completedLate, firstDocAt: null }, tonight, TZ),
+    ).toBeNull();
+    const tomorrowNight = new Date("2026-06-06T20:30:00.000Z"); // 23:30 МСК следующего дня
+    const c = detectUnsignedDoc(
+      { ...base, completedAt: completedLate, firstDocAt: null },
+      tomorrowNight,
+      TZ,
+    );
+    expect(c?.occurredAt.toISOString()).toBe("2026-06-06T17:00:00.000Z");
+  });
+
+  it("причина водителя попадает в note", () => {
+    const c = detectUnsignedDoc(
+      { ...base, firstDocAt: null, actMissedReason: "Акт не нужен (распоряжение офиса)" },
+      afterDeadline,
+      TZ,
+    );
+    expect(c?.note).toBe("Акт не приложен до 20:00 · Причина водителя: Акт не нужен (распоряжение офиса)");
+  });
+
+  it("есть акт вовремя / не актовый тип / не завершена — метрика не применяется", () => {
+    expect(
+      detectUnsignedDoc({ ...base, requiresSignedDoc: false, firstDocAt: null }, afterDeadline, TZ),
+    ).toBeNull();
+    expect(
+      detectUnsignedDoc({ ...base, status: "IN_PROGRESS", firstDocAt: null }, afterDeadline, TZ),
+    ).toBeNull();
+    expect(
+      detectUnsignedDoc({ ...base, completedAt: null, firstDocAt: null }, afterDeadline, TZ),
+    ).toBeNull();
   });
 });
 
