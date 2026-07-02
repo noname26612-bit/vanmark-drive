@@ -91,7 +91,11 @@ model User {
   phone          String?
   role           Role
   isActive       Boolean              @default(true)
-  canLogin       Boolean              @default(true) // false — внешний исполнитель (Султан): входа нет, задачи на него ведёт диспетчер
+  canLogin       Boolean              @default(true) // false — вход запрещён (админ включает осознанно)
+  // Внешний (наёмный) исполнитель — надёжный признак вместо прежнего «canLogin=false» (02.07.2026):
+  // без смен (SHIFT_REQUIRED не применяется), вне KPI (профиля нет), в заявке доступна стоимость
+  // поездки (carrierCost, этап 3). Вход отдельным флагом canLogin — внешний может и входить.
+  isExternal     Boolean              @default(false)
   // Ёмкость (Фаза 2, PRD §14.5): специализация для подсказки «кто свободен». Каширский REPAIR, Писарев/Султан DELIVERY.
   specialization DriverSpecialization @default(ANY)
   createdAt      DateTime             @default(now())

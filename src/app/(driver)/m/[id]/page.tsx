@@ -1,4 +1,5 @@
 import { requireRole } from "@/lib/session";
+import { isExternalDriver } from "@/domain/users";
 import { DriverTaskClient } from "./task-client";
 
 // Карточка задачи водителя. Данные тянет клиент через SWR (/api/tasks/:id) — там же изоляция:
@@ -6,7 +7,9 @@ import { DriverTaskClient } from "./task-client";
 export const dynamic = "force-dynamic";
 
 export default async function DriverTaskPage({ params }: { params: Promise<{ id: string }> }) {
-  await requireRole("DRIVER");
+  const user = await requireRole("DRIVER");
   const { id } = await params;
-  return <DriverTaskClient taskId={id} />;
+  // Внешний перевозчик смен не ведёт (02.07): клиент не грузит смену и не блокирует «В работу».
+  const isExternal = await isExternalDriver(user.id);
+  return <DriverTaskClient taskId={id} isExternal={isExternal} />;
 }
