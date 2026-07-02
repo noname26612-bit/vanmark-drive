@@ -7,6 +7,7 @@ import { Prisma } from "@/generated/prisma/client";
 import type { Role, WorksheetStatus } from "@/generated/prisma/enums";
 import { canViewTask } from "./authz";
 import { isDispatcherRole } from "./task-status";
+import { stripMoneyForDriver } from "./task-service";
 import { Errors } from "./errors";
 import { notifyDispatchers, notifyTaskAssignee } from "@/lib/push";
 
@@ -266,7 +267,8 @@ export async function submitWorksheet(taskId: string, actor: Actor) {
   });
   // Пуш диспетчерам: водитель ждёт цен (этап 13, PRD §13.1).
   notifyDispatchers({ id: task.id, number: task.number, title: task.title });
-  return result;
+  // Ведомость сабмитит водитель — деньги компании (carrierCost) в ответ не отдаём (02.07, этап 3).
+  return stripMoneyForDriver(result);
 }
 
 export type PricingInput = { items: { id: string; price: number }[]; reason?: string | null };

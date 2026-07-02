@@ -48,6 +48,9 @@ export type TaskDTO = {
   estimateIsManual: boolean; // оценка задана диспетчером вручную (не пересчитывается авто)
   requiresSignedDoc: boolean; // требование акта на уровне задачи (снимок из типа, override галочкой)
   actWaivedNote: string | null; // причина снятия требования акта (если снят диспетчером)
+  // Стоимость поездки внешнего перевозчика, ₽ (этап 3, 02.07). ТОЛЬКО диспетчеру/админу:
+  // в ответах водителю поле вырезано на сервере (stripMoneyForDriver), поэтому опционально.
+  carrierCost?: number | null;
   hasSignedDoc?: boolean; // приложен ли подписанный акт (этап 14): есть DOCUMENT-вложение. В списках
   // выставляется сервером; в карточке (TaskDetailDTO) считается из attachments на клиенте.
   worksheetStatus: WorksheetStatus | null; // ведомость работ (этап 12): null — не нужна для типа
