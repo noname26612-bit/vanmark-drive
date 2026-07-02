@@ -11,7 +11,8 @@ export type QueuedActionKind =
   | "work-item-add"
   | "work-item-update"
   | "work-item-delete"
-  | "worksheet-submit";
+  | "worksheet-submit"
+  | "shift"; // открыть/закрыть/возобновить смену (O7): bodyJson = { op }, taskId = null
 
 export type QueuedActionStatus = "pending" | "syncing" | "conflict";
 

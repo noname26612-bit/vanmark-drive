@@ -374,6 +374,7 @@ type ShiftDTO = {
   openedAt: string;
   closedAt: string | null;
   openedAtAdjustNote: string | null; // если время правили — причина (№3)
+  openedOffline: boolean; // открыта офлайн (O7): время открытия зафиксировал телефон, не сервер
   workedMinutes?: number; // отработано за день по задачам (для полосы, №5)
 };
 
@@ -443,6 +444,11 @@ function ShiftConfirmRow({ shift, onChange }: { shift: ShiftDTO; onChange: () =>
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm text-neutral-800">
           {shift.driverName ?? "Водитель"} · открыл в {shiftHHMM(shift.openedAt)}
+          {/* Пометка O7: смена открыта без связи — время взято с телефона водителя; при
+              необходимости диспетчер правит его тут же («Поправить время»). */}
+          {shift.openedOffline ? (
+            <span className="ml-1 font-medium text-amber-700">· офлайн (время телефона)</span>
+          ) : null}
         </span>
         <div className="flex gap-2">
           <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => setEditing((v) => !v)} disabled={busy}>
@@ -653,6 +659,7 @@ function ShiftWorkloadRow({
       <div className="mt-1 text-xs text-slate-500">
         Открыта в {shiftHHMM(shift.openedAt)}
         {shift.closedAt ? ` · закрыта в ${shiftHHMM(shift.closedAt)}` : ""}
+        {shift.openedOffline ? " · открыта офлайн" : ""}
         {shift.openedAtAdjustNote ? " · время скорректировано" : ""}
       </div>
       <div className="mt-1.5 flex h-2.5 overflow-hidden rounded bg-slate-100">
