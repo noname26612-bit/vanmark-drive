@@ -1,14 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { Phone, Navigation } from "lucide-react";
-import { fetcher, apiSend, ApiError } from "@/lib/fetcher";
-import { cachedFetcher } from "@/lib/offline/cached-fetcher";
+import { ApiError } from "@/lib/fetcher";
+import { cachedFetcher, readCachedMeta } from "@/lib/offline/cached-fetcher";
+import { enqueueOrSend } from "@/lib/offline/send";
 import { useOnline } from "@/lib/offline/net";
 import { usePendingActions } from "@/lib/offline/use-queue";
-import { overlayStatus } from "@/lib/offline/overlay";
+import { overlayStatus, overlayShift, currentShift } from "@/lib/offline/overlay";
 import type { TaskDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
 import {
@@ -64,6 +65,10 @@ export function DriverTasksClient({
   const done = tasks.filter((t) => isTerminal(display(t))); // в «Сегодня» это завершённые за день
   // Ошибка фонового поллинга, но задачи уже загружены — не сносим список (плохая сеть на объекте).
   const staleError = error && tasks.length > 0;
+  // Давность сохранённых данных (O7): офлайн показываем, за какой момент этот список (например,
+  // «наутро без связи» кэш отдаёт вчерашний снимок через стабильный ключ). Порог 30 мин — свежий
+  // кэш не шумит бейджем.
+  const cachedAt = useCachedAt(key, !online || Boolean(error));
 
   // Умный баннер «акты до 20:00» (решение Артёма 02.07): только когда актуально — есть завершённые
   // сегодня актовые задачи без приложенного акта (и акт не ждёт отправки в офлайн-очереди).
@@ -125,6 +130,7 @@ export function DriverTasksClient({
           {online
             ? "Нет связи — показываю последнее. Обновлю автоматически."
             : "Офлайн — показываю сохранённое. Действия сохранятся и уйдут при связи."}
+          {cachedAt ? <span className="block text-amber-600">Данные за {cachedAt}</span> : null}
         </p>
       ) : null}
 
@@ -163,6 +169,7 @@ export function DriverTasksClient({
 
 type ShiftDTO = {
   id: string;
+  date: string; // YYYY-MM-DD — день смены (кэш может отдать вчерашнюю, см. ниже)
   status: "REQUESTED" | "OPEN" | "CLOSED";
   openedAt: string;
   confirmedAt: string | null;
@@ -178,15 +185,44 @@ function hhmm(iso: string | null): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** Давность сохранённого ответа для бейджа «Данные за …» (только когда данные могли устареть). */
+function useCachedAt(key: string, active: boolean): string | null {
+  const [label, setLabel] = useState<string | null>(null);
+  useEffect(() => {
+    if (!active) return; // возвращаемое значение и так гасится ниже; состояние обновляем только асинхронно
+    let alive = true;
+    void readCachedMeta(key).then((meta) => {
+      if (!alive) return;
+      const t = meta ? new Date(meta.cachedAt) : null;
+      if (!t || Number.isNaN(t.getTime()) || Date.now() - t.getTime() < 30 * 60_000) {
+        setLabel(null); // свежий кэш (< 30 мин) бейджем не шумит
+        return;
+      }
+      const p = (n: number) => String(n).padStart(2, "0");
+      setLabel(`${p(t.getDate())}.${p(t.getMonth() + 1)}, ${p(t.getHours())}:${p(t.getMinutes())}`);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [key, active]);
+  return active ? label : null;
+}
+
 // Блок смены вверху «Мои задачи»: открыть смену (фактическое начало дня), статус ожидания
 // подтверждения диспетчером, закрыть смену. Цвета — по ui-guidelines: янтарь = ждёт подтверждения,
 // зелёный = смена идёт, графит = закрыта/нет.
+// O7: работает офлайн — состояние из кэша + оверлей неотправленных действий очереди; открытие/
+// закрытие ставится в очередь и досылается при связи (бейдж «не отправлено»).
 function ShiftBlock({ today }: { today: string }) {
   const { data: shift, isLoading, mutate } = useSWR<ShiftDTO | null>(
     `/api/my/shift?date=${today}`,
-    fetcher,
+    cachedFetcher,
     { refreshInterval: 10_000 },
   );
+  const pendingShift = usePendingActions().filter((a) => a.kind === "shift");
+  // Кэш наутро может отдать вчерашнюю смену (стабильный ключ без date) — нормализуем (currentShift),
+  // затем накладываем неотправленные действия очереди (открыл/закрыл офлайн — видно сразу).
+  const view = overlayShift(currentShift(shift ?? null, today), pendingShift);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -194,8 +230,14 @@ function ShiftBlock({ today }: { today: string }) {
     setBusy(true);
     setErr(null);
     try {
-      await apiSend("/api/my/shift", "POST", { op, today });
-      await mutate();
+      const { queued } = await enqueueOrSend({
+        kind: "shift",
+        method: "POST",
+        url: "/api/my/shift",
+        taskId: null,
+        bodyJson: { op },
+      });
+      if (!queued) await mutate(); // офлайн-постановку покажет оверлей; онлайн — обновляем с сервера
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "Не удалось");
     } finally {
@@ -203,11 +245,15 @@ function ShiftBlock({ today }: { today: string }) {
     }
   }
 
-  if (shift === undefined && isLoading) {
+  const pendingNote = view?.pendingLocal ? (
+    <p className="mt-1 text-sm text-amber-700">⏳ Не отправлено — уйдёт при связи</p>
+  ) : null;
+
+  if (shift === undefined && isLoading && pendingShift.length === 0) {
     return <div className="mb-3 h-12 rounded-xl border border-neutral-200 bg-white" aria-hidden />;
   }
 
-  if (!shift) {
+  if (!view) {
     return (
       <div className="mb-3 rounded-xl border border-neutral-200 bg-white p-3">
         <p className="text-sm text-neutral-500">Смена не открыта</p>
@@ -224,11 +270,11 @@ function ShiftBlock({ today }: { today: string }) {
     );
   }
 
-  if (shift.status === "CLOSED") {
+  if (view.status === "CLOSED") {
     return (
       <div className="mb-3 rounded-xl border border-neutral-200 bg-white p-3">
         <p className="text-sm text-neutral-500">
-          Смена закрыта · {hhmm(shift.openedAt)}–{hhmm(shift.closedAt)}
+          Смена закрыта · {hhmm(view.openedAt)}–{hhmm(view.closedAt)}
         </p>
         <button
           type="button"
@@ -238,12 +284,13 @@ function ShiftBlock({ today }: { today: string }) {
         >
           Возобновить смену
         </button>
+        {pendingNote}
         {err ? <p className="mt-1 text-sm text-red-600">{err}</p> : null}
       </div>
     );
   }
 
-  const requested = shift.status === "REQUESTED";
+  const requested = view.status === "REQUESTED";
   return (
     <div
       className={`mb-3 rounded-xl border p-3 ${
@@ -252,8 +299,8 @@ function ShiftBlock({ today }: { today: string }) {
     >
       <p className={`text-sm font-medium ${requested ? "text-amber-800" : "text-green-800"}`}>
         {requested
-          ? `Открыта в ${hhmm(shift.openedAt)} · ждёт подтверждения диспетчера`
-          : `Смена идёт с ${hhmm(shift.openedAt)}`}
+          ? `Открыта в ${hhmm(view.openedAt)} · ждёт подтверждения диспетчера`
+          : `Смена идёт с ${hhmm(view.openedAt)}`}
       </p>
       <button
         type="button"
@@ -267,6 +314,7 @@ function ShiftBlock({ today }: { today: string }) {
       >
         Закрыть смену
       </button>
+      {pendingNote}
       {err ? <p className="mt-1 text-sm text-red-600">{err}</p> : null}
     </div>
   );

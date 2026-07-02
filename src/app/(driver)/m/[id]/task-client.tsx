@@ -10,7 +10,7 @@ import { cachedFetcher } from "@/lib/offline/cached-fetcher";
 import { useOnline } from "@/lib/offline/net";
 import { enqueueOrSend, enqueuePhoto } from "@/lib/offline/send";
 import { usePendingActions } from "@/lib/offline/use-queue";
-import { overlayStatus, hasConflict } from "@/lib/offline/overlay";
+import { overlayStatus, overlayShift, currentShift, hasConflict } from "@/lib/offline/overlay";
 import { getPositionOnce } from "@/lib/geo";
 import { compressImage } from "@/lib/image-compress";
 import type { TaskDetailDTO, WorkCatalogItemDTO } from "@/lib/task-dto";
@@ -108,16 +108,18 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
     cachedFetcher,
     { refreshInterval: 10_000 },
   );
-  // Открытая смена нужна, чтобы брать задачу в работу (этап D). Кэшируем статус: смену открывают
-  // утром онлайн, а взять задачу могут уже офлайн на объекте — нужен последний известный статус.
+  // Открытая смена нужна, чтобы брать задачу в работу (этап D). Кэшируем статус, а поверх — оверлей
+  // очереди (O7): смена, открытая офлайн минуту назад, сразу разблокирует «В работу», не дожидаясь
+  // досылки на сервер. Наутро кэш может отдать вчерашнюю смену — нормализуем (currentShift).
   // Внешний перевозчик смен не ведёт (02.07) — статус не грузим вовсе (ключ null).
-  const { data: myShift } = useSWR<{ status: string } | null>(
-    isExternal ? null : `/api/my/shift?date=${todayISO()}`,
-    cachedFetcher,
-    { refreshInterval: 10_000 },
-  );
+  const { data: myShift } = useSWR<
+    | ({ date: string; status: "REQUESTED" | "OPEN" | "CLOSED"; openedAt: string; confirmedAt: string | null; closedAt: string | null })
+    | null
+  >(isExternal ? null : `/api/my/shift?date=${todayISO()}`, cachedFetcher, { refreshInterval: 10_000 });
   // Действия этой задачи, ещё не дошедшие до сервера (офлайн-очередь): для оверлея статуса и бейджей.
   const pending = usePendingActions(taskId);
+  // Действия смены (без задачи) — для оверлея статуса смены выше.
+  const pendingShift = usePendingActions().filter((a) => a.kind === "shift");
 
   const [busy, setBusy] = useState(false);
   const [photoBusy, setPhotoBusy] = useState(false);
@@ -390,8 +392,11 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
   // Одна активная задача (этап B): если уже есть другая «В работе», кнопку взятия блокируем.
   const activeOther = myToday.find((x) => x.status === "IN_PROGRESS" && x.id !== t.id);
   const blockedByActive = next?.to === "IN_PROGRESS" && !!activeOther;
-  // Открытая смена (этап D): без неё взять задачу в работу нельзя.
-  const shiftOpen = isExternal || myShift?.status === "REQUESTED" || myShift?.status === "OPEN";
+  // Открытая смена (этап D): без неё взять задачу в работу нельзя. O7: считаем по оверлею очереди —
+  // смена, открытая офлайн (ещё не досланная), уже разблокирует работу. Внешний перевозчик смен не
+  // ведёт (02.07) — гейт для него не действует.
+  const shiftView = overlayShift(currentShift(myShift ?? null, todayISO()), pendingShift);
+  const shiftOpen = isExternal || shiftView?.status === "REQUESTED" || shiftView?.status === "OPEN";
   const blockedNoShift = next?.to === "IN_PROGRESS" && !shiftOpen;
 
   return (
