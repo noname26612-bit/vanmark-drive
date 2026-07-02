@@ -27,11 +27,16 @@ export async function PUT(req: Request) {
     const actBonusAmount = typeof body.actBonusAmount === "number" ? body.actBonusAmount : NaN;
     const actBonusThresholdPercent =
       typeof body.actBonusThresholdPercent === "number" ? body.actBonusThresholdPercent : NaN;
+    // Нормо-часы месяца (Сводка v2, 02.07): необязательное поле — если клиент не прислал,
+    // сохраняем текущее значение (не перетираем дефолтом).
+    const monthNormHours =
+      typeof body.monthNormHours === "number" ? body.monthNormHours : (await getKpiSettings()).monthNormHours;
     if (
       !Number.isFinite(progressionPercent) ||
       !Number.isFinite(progressionStartIndex) ||
       !Number.isFinite(actBonusAmount) ||
-      !Number.isFinite(actBonusThresholdPercent)
+      !Number.isFinite(actBonusThresholdPercent) ||
+      !Number.isFinite(monthNormHours)
     ) {
       throw Errors.validation("Параметры расчёта и бонуса должны быть числами");
     }
@@ -43,6 +48,7 @@ export async function PUT(req: Request) {
           floor,
           actBonusAmount,
           actBonusThresholdPercent,
+          monthNormHours,
         }),
       ),
     );

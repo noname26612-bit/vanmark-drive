@@ -7,6 +7,9 @@ import {
   inWindow,
   coarseUtcRange,
   averageMinutes,
+  windowDayKeys,
+  loadPercent,
+  idleCostRub,
   formatWindowLabel,
 } from "./summary";
 
@@ -125,5 +128,49 @@ describe("summary — formatWindowLabel", () => {
   });
   it("месяц — название и год", () => {
     expect(formatWindowLabel("month", "2026-06-18")).toBe("июнь 2026");
+  });
+});
+
+// ───────────────────────────── Сводка v2 (02.07): занятость и деньги ─────────────────────────────
+
+describe("summary v2 — loadPercent", () => {
+  it("обычная загрузка: 300 из 480 мин → 63%", () => {
+    expect(loadPercent(300, 480)).toBe(63);
+  });
+  it("смен нет (0 мин) → null, не 0 (нечего считать — не «нулевая загрузка»)", () => {
+    expect(loadPercent(120, 0)).toBeNull();
+    expect(loadPercent(0, 0)).toBeNull();
+  });
+  it("отработано больше смены (кривые данные) → больше 100, не ломается", () => {
+    expect(loadPercent(600, 480)).toBe(125);
+  });
+});
+
+describe("summary v2 — windowDayKeys", () => {
+  it("день — один ключ; неделя — 7 по порядку", () => {
+    expect(windowDayKeys({ fromKey: "2026-06-18", toKey: "2026-06-18" })).toEqual(["2026-06-18"]);
+    const week = windowDayKeys({ fromKey: "2026-06-15", toKey: "2026-06-21" });
+    expect(week).toHaveLength(7);
+    expect(week[0]).toBe("2026-06-15");
+    expect(week[6]).toBe("2026-06-21");
+  });
+  it("граница месяца проходит без пропусков", () => {
+    expect(windowDayKeys({ fromKey: "2026-06-29", toKey: "2026-07-02" })).toEqual([
+      "2026-06-29",
+      "2026-06-30",
+      "2026-07-01",
+      "2026-07-02",
+    ]);
+  });
+});
+
+describe("summary v2 — idleCostRub", () => {
+  it("90 мин при окладе 70 400 и норме 176 ч (400 ₽/ч) → 600 ₽", () => {
+    expect(idleCostRub(90, 70_400, 176)).toBe(600);
+  });
+  it("нулевые/кривые входы → 0", () => {
+    expect(idleCostRub(0, 70_400, 176)).toBe(0);
+    expect(idleCostRub(90, 0, 176)).toBe(0);
+    expect(idleCostRub(90, 70_400, 0)).toBe(0);
   });
 });
