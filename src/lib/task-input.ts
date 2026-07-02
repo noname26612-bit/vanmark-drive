@@ -69,6 +69,11 @@ export function parseTaskFields(body: Record<string, unknown>): Partial<CreateTa
     const v = body.paymentAmount;
     out.paymentAmount = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
   }
+  // Стоимость поездки внешнего перевозчика (этап 3, 02.07) — по образцу paymentAmount.
+  if ("carrierCost" in body) {
+    const v = body.carrierCost;
+    out.carrierCost = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
+  }
   if (typeof body.priority === "boolean") out.priority = body.priority;
   if ("requiresAct" in body) {
     const v = body.requiresAct;

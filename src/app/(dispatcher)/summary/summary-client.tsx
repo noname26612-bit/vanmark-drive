@@ -6,7 +6,7 @@ import { fetcher } from "@/lib/fetcher";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 import { GRANULARITIES, normalizeAnchor, shiftAnchor, formatWindowLabel, type Granularity } from "@/domain/summary";
-import type { SummaryOverview, DriverSummaryView, SummaryTotals } from "@/lib/summary-dto";
+import type { SummaryOverview, DriverSummaryView, SummaryTotals, CarrierSummary } from "@/lib/summary-dto";
 
 const GRAN_LABEL: Record<Granularity, string> = { day: "День", week: "Неделя", month: "Месяц" };
 
@@ -114,9 +114,74 @@ export function SummaryClient({ initialAnchor }: { initialAnchor: string }) {
             ))}
           </div>
           <TotalsBar totals={data.totals} label={label} />
+          <CarrierSection granularity={granularity} anchor={anchor} />
         </>
       )}
     </main>
+  );
+}
+
+/** Затраты на внешнего перевозчика за период (этап 3, 02.07): сумма/кол-во/средняя + список задач + CSV.
+ *  Секция скрыта, если завершённых задач внешних исполнителей в окне нет. */
+function CarrierSection({ granularity, anchor }: { granularity: Granularity; anchor: string }) {
+  const { data } = useSWR<CarrierSummary>(
+    `/api/summary/carrier?granularity=${granularity}&date=${anchor}`,
+    fetcher,
+  );
+  const [open, setOpen] = useState(false);
+  if (!data || data.taskCount === 0) return null;
+  const money = (v: number) => `${v.toLocaleString("ru-RU")} ₽`;
+  return (
+    <section className="mt-6 rounded-xl border border-neutral-200 bg-white p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold text-neutral-900">Внешний перевозчик</h2>
+        <a
+          href={`/api/summary/carrier/export?granularity=${granularity}&date=${anchor}`}
+          className="text-sm font-medium text-neutral-600 underline-offset-2 hover:underline"
+        >
+          Скачать CSV
+        </a>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-3 text-center">
+        <div>
+          <div className="text-2xl font-semibold text-neutral-900">{money(data.totalCost)}</div>
+          <div className="text-xs text-neutral-500">затраты за период</div>
+        </div>
+        <div>
+          <div className="text-2xl font-semibold text-neutral-900">{data.taskCount}</div>
+          <div className="text-xs text-neutral-500">{plural(data.taskCount, ["задача", "задачи", "задач"])}</div>
+        </div>
+        <div>
+          <div className="text-2xl font-semibold text-neutral-900">{data.avgCost != null ? money(data.avgCost) : "—"}</div>
+          <div className="text-xs text-neutral-500">средняя стоимость</div>
+        </div>
+      </div>
+      {data.pricedCount < data.taskCount ? (
+        <p className="mt-2 text-xs text-amber-700">
+          У {data.taskCount - data.pricedCount} {plural(data.taskCount - data.pricedCount, ["задачи", "задач", "задач"])} стоимость не проставлена — сумма неполная.
+        </p>
+      ) : null}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="mt-3 text-sm font-medium text-neutral-600 underline-offset-2 hover:underline"
+      >
+        {open ? "Скрыть задачи" : `Показать задачи (${data.taskCount})`}
+      </button>
+      {open ? (
+        <ul className="mt-2 divide-y divide-neutral-100 rounded-lg border border-neutral-200">
+          {data.tasks.map((t) => (
+            <li key={t.taskId} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
+              <span className="text-neutral-500">{t.dateKey.slice(8)}.{t.dateKey.slice(5, 7)}</span>
+              <a href={`/tasks/${t.taskId}`} className="min-w-0 flex-1 truncate font-medium text-neutral-800 hover:underline">
+                №{t.number} · {t.title}
+              </a>
+              <span className="font-semibold text-neutral-900">{t.cost != null ? money(t.cost) : "—"}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
   );
 }
 

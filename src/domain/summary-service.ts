@@ -13,9 +13,16 @@ import {
   averageMinutes,
   type Granularity,
 } from "./summary";
-import type { DriverSummaryView, SummaryOverview, SummaryTotals, TypeBreakdown } from "@/lib/summary-dto";
+import type {
+  DriverSummaryView,
+  SummaryOverview,
+  SummaryTotals,
+  TypeBreakdown,
+  CarrierSummary,
+  CarrierTaskRow,
+} from "@/lib/summary-dto";
 
-export type { DriverSummaryView, SummaryOverview, SummaryTotals } from "@/lib/summary-dto";
+export type { DriverSummaryView, SummaryOverview, SummaryTotals, CarrierSummary } from "@/lib/summary-dto";
 
 type Acc = {
   done: number;
@@ -169,4 +176,59 @@ export async function getDriverSummary(granularity: string, anchorRaw: string): 
 
 function sum<T>(items: T[], pick: (x: T) => number): number {
   return items.reduce((s, x) => s + pick(x), 0);
+}
+
+/**
+ * Затраты на внешних перевозчиков за окно периода (этап 3, 02.07): завершённые задачи исполнителей
+ * с User.isExternal, стоимость — Task.carrierCost. Период по completedAt (как вся Сводка) —
+ * незавершённые задачи в отчёт не попадают. Только чтение; гейт диспетчер/админ — в route.
+ */
+export async function getCarrierSummary(granularity: string, anchorRaw: string): Promise<CarrierSummary> {
+  assertGranularity(granularity);
+  const anchor = normalizeAnchor(granularity, anchorRaw);
+  const w = windowKeys(granularity, anchor);
+  const range = coarseUtcRange(w);
+  const rows = await prisma.task.findMany({
+    where: {
+      status: "DONE",
+      completedAt: { gte: range.gte, lt: range.lt },
+      assignee: { isExternal: true },
+    },
+    select: {
+      id: true,
+      number: true,
+      title: true,
+      completedAt: true,
+      carrierCost: true,
+      assignee: { select: { name: true } },
+    },
+    orderBy: [{ completedAt: "asc" }],
+  });
+  const tasks: CarrierTaskRow[] = [];
+  for (const t of rows) {
+    if (!t.completedAt) continue;
+    const dateKey = dateKeyInTz(t.completedAt, KPI_TZ);
+    if (!inWindow(dateKey, w)) continue; // точная принадлежность окну — по МСК-дате закрытия
+    tasks.push({
+      taskId: t.id,
+      number: t.number,
+      title: t.title,
+      dateKey,
+      cost: t.carrierCost,
+      driverName: t.assignee?.name ?? "—",
+    });
+  }
+  const priced = tasks.filter((t) => t.cost != null);
+  const totalCost = sum(priced, (t) => t.cost ?? 0);
+  return {
+    granularity: granularity as Granularity,
+    anchor,
+    fromKey: w.fromKey,
+    toKey: w.toKey,
+    taskCount: tasks.length,
+    pricedCount: priced.length,
+    totalCost,
+    avgCost: priced.length ? Math.round(totalCost / priced.length) : null,
+    tasks,
+  };
 }

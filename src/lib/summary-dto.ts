@@ -52,3 +52,28 @@ export type SummaryOverview = {
   drivers: DriverSummaryView[];
   totals: SummaryTotals;
 };
+
+// ─── Затраты на внешнего перевозчика (этап 3, решение Артёма 02.07) ───
+
+/** Строка отчёта: завершённая задача внешнего исполнителя со стоимостью поездки. */
+export type CarrierTaskRow = {
+  taskId: string;
+  number: number;
+  title: string;
+  dateKey: string; // день завершения (МСК, YYYY-MM-DD)
+  cost: number | null; // Task.carrierCost, ₽; null — диспетчер ещё не проставил
+  driverName: string; // на будущее: внешних может стать больше одного
+};
+
+/** Сводка затрат на внешних перевозчиков за окно периода (по completedAt, как вся Сводка). */
+export type CarrierSummary = {
+  granularity: Granularity;
+  anchor: string;
+  fromKey: string;
+  toKey: string;
+  taskCount: number; // завершённых задач внешних исполнителей в окне
+  pricedCount: number; // из них со стоимостью
+  totalCost: number; // сумма затрат, ₽
+  avgCost: number | null; // средняя по задачам со стоимостью; null — нет данных
+  tasks: CarrierTaskRow[];
+};

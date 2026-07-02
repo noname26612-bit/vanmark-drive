@@ -42,6 +42,7 @@ export type CreateTaskInput = {
   assigneeId?: string | null;
   requiresAct?: boolean | null; // override требования акта (по умолчанию из типа); false = «акт не нужен»
   actWaivedNote?: string | null; // причина снятия требования акта на заявке
+  carrierCost?: number | null; // стоимость поездки внешнего перевозчика, ₽ (этап 3, 02.07); водителям не отдаётся
   // Ёмкость (Фаза 2, PRD §14): ручная оценка времени диспетчером. number → manual (не пересчитывать);
   // null → сброс к авто-расчёту. undefined (поле не передано) → оценку не трогаем (пересчёт по правкам).
   estimatedMinutes?: number | null;
@@ -115,12 +116,20 @@ export type TaskDetail = Prisma.TaskGetPayload<{ include: typeof taskDetailInclu
 
 // Карточка с цено-подсказками к позициям ведомости (этап «справочник»). defaultPrice добавляется
 // ТОЛЬКО для диспетчера/админа (водителю цены не видны, PRD §13). Для водителя поле отсутствует.
+// carrierCost опционален: водителю вырезается (stripMoneyForDriver), диспетчеру отдаётся.
 type WorkItemWithHint = TaskDetail["workItems"][number] & { defaultPrice?: number | null };
-export type TaskDetailWire = Omit<TaskDetail, "workItems"> & { workItems: WorkItemWithHint[] };
+export type TaskDetailWire = Omit<TaskDetail, "workItems" | "carrierCost"> & {
+  workItems: WorkItemWithHint[];
+  carrierCost?: number | null;
+};
 
 // Элемент списка для клиента: payload с _count, развёрнутым в булев флаг hasSignedDoc (этап 14).
+// carrierCost опционален: у ответов ВОДИТЕЛЮ поле вырезано (stripMoneyForDriver), диспетчеру — есть.
 type TaskListPayload = Prisma.TaskGetPayload<{ include: typeof taskListInclude }>;
-export type TaskListWire = Omit<TaskListPayload, "_count"> & { hasSignedDoc: boolean };
+export type TaskListWire = Omit<TaskListPayload, "_count" | "carrierCost"> & {
+  hasSignedDoc: boolean;
+  carrierCost?: number | null;
+};
 
 // Разворачивает фильтрованный _count в поле hasSignedDoc (и убирает служебный _count из ответа).
 function withActFlag(t: TaskListPayload): TaskListWire {
@@ -128,10 +137,30 @@ function withActFlag(t: TaskListPayload): TaskListWire {
   return { ...rest, hasSignedDoc: _count.attachments > 0 };
 }
 
+/**
+ * Денежные поля КОМПАНИИ, скрываемые от водителя (02.07, этап 3): стоимость поездки перевозчика.
+ * Водителю уходит почти сырая строка Task, поэтому вырезаем явно на каждом водительском выходе
+ * (listMyTasks, getTaskById, transitionTask, submitWorksheet). Новые «денежные» колонки — сюда же.
+ */
+export function stripMoneyForDriver<T extends { carrierCost?: number | null }>(
+  t: T,
+): Omit<T, "carrierCost"> {
+  const { carrierCost: _hidden, ...rest } = t;
+  void _hidden;
+  return rest;
+}
+
 function clean(v: string | null | undefined): string | null {
   if (v === null || v === undefined) return null;
   const t = v.trim();
   return t.length > 0 ? t : null;
+}
+
+// Стоимость поездки перевозчика (этап 3): целое ≥ 0; null/undefined → null (не задана).
+function validateCarrierCost(v: number | null | undefined): number | null {
+  if (v === null || v === undefined) return null;
+  if (!Number.isInteger(v) || v < 0) throw Errors.validation("Стоимость поездки — целое число ≥ 0");
+  return v;
 }
 
 // YYYY-MM-DD → Date в UTC-полночь (поле @db.Date хранит только дату; UTC исключает сдвиг на день).
@@ -219,7 +248,8 @@ export async function listMyTasks(
       { number: "asc" },
     ],
   });
-  return rows.map(withActFlag);
+  // Деньги компании (carrierCost) водителю не отдаём (02.07, этап 3).
+  return rows.map(withActFlag).map(stripMoneyForDriver);
 }
 
 export type BoardAttention = {
@@ -259,8 +289,8 @@ export async function getTaskById(taskId: string, actor: Actor): Promise<TaskDet
   if (!task) throw Errors.notFound();
   if (!canViewTask(actor, task)) throw Errors.notFound();
   // Диспетчеру/админу подставляем цену-подсказку из справочника к позициям ведомости (для расценки).
-  // Водителю — НЕ отдаём (PRD §13: цены ему не видны). Поэтому это отдельный шаг, а не общий include.
-  if (!isDispatcherRole(actor.role)) return task;
+  // Водителю — НЕ отдаём (PRD §13: цены ему не видны; carrierCost — деньги компании, 02.07).
+  if (!isDispatcherRole(actor.role)) return stripMoneyForDriver(task);
   const ids = [
     ...new Set(task.workItems.map((w) => w.catalogItemId).filter((x): x is string => x !== null)),
   ];
@@ -321,6 +351,9 @@ export async function createTask(
   }
   const status: TaskStatus = assigneeId ? "ASSIGNED" : "NEW";
 
+  // Стоимость поездки перевозчика (этап 3, 02.07): целое ≥ 0, вводит диспетчер.
+  const carrierCost = validateCarrierCost(input.carrierCost);
+
   // Оценка времени (Фаза 2, PRD §14): геокодируем адрес и считаем «норма типа + дорога».
   // Геокод и расчёт — ДО транзакции (внешний вызов не держит БД). Сбой геокодера → дорога не учтена.
   const timeFromClean = clean(input.timeFrom);
@@ -347,6 +380,7 @@ export async function createTask(
         paymentType: input.paymentType ?? "NONE",
         paymentAmount: input.paymentAmount ?? null,
         paymentNote: clean(input.paymentNote),
+        carrierCost,
         scheduledDate: parseDate(input.scheduledDate),
         timeFrom: timeFromClean,
         timeTo: clean(input.timeTo),
@@ -425,6 +459,8 @@ export async function updateTaskFields(
   if (fields.paymentType !== undefined) data.paymentType = fields.paymentType;
   if (fields.paymentAmount !== undefined) data.paymentAmount = fields.paymentAmount ?? null;
   set("paymentNote", (v) => (data.paymentNote = v));
+  // Стоимость поездки перевозчика (этап 3, 02.07): валидация как при создании.
+  if (fields.carrierCost !== undefined) data.carrierCost = validateCarrierCost(fields.carrierCost);
   // Дату завершённой/отменённой заявки не двигаем (подстраховка от прямого API-вызова; в форме поле скрыто).
   if (fields.scheduledDate !== undefined && !terminal) data.scheduledDate = parseDate(fields.scheduledDate);
   set("timeFrom", (v) => (data.timeFrom = v));
@@ -666,12 +702,15 @@ export type TransitionOptions = {
   occurredAt?: string | null;
 };
 
+// Ответ transition: carrierCost опционален — водителю вырезан (stripMoneyForDriver), диспетчеру есть.
+export type TaskItemWire = Omit<TaskListItem, "carrierCost"> & { carrierCost?: number | null };
+
 export async function transitionTask(
   taskId: string,
   toStatus: TaskStatus,
   actor: Actor,
   opts: TransitionOptions = {},
-): Promise<TaskListItem> {
+): Promise<TaskItemWire> {
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw Errors.notFound();
   if (!canViewTask(actor, task)) throw Errors.notFound(); // изоляция: чужая → 404
@@ -810,7 +849,8 @@ export async function transitionTask(
   });
   // Отмена диспетчером → пуш водителю (PRD §7). Движение статуса вперёд самим водителем не шлём.
   if (toStatus === "CANCELLED") notifyTaskAssignee(result, "cancelled", actor.id);
-  return result;
+  // Деньги компании (carrierCost) водителю не отдаём (02.07, этап 3).
+  return actor.role === "DRIVER" ? stripMoneyForDriver(result) : result;
 }
 
 export async function rescheduleTask(

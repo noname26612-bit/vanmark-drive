@@ -36,6 +36,7 @@ type FormState = {
   assigneeId: string;
   requiresAct: boolean; // требование акта (дефолт из типа, диспетчер может снять)
   actWaivedNote: string; // причина снятия требования акта
+  carrierCost: string; // стоимость поездки внешнего перевозчика, ₽ (этап 3; видна при внешнем исполнителе)
 };
 
 function emptyForm(typeId: string, date: string, requiresAct: boolean): FormState {
@@ -62,6 +63,7 @@ function emptyForm(typeId: string, date: string, requiresAct: boolean): FormStat
     assigneeId: "",
     requiresAct,
     actWaivedNote: "",
+    carrierCost: "",
   };
 }
 
@@ -89,6 +91,7 @@ function formFromTask(t: TaskDTO): FormState {
     assigneeId: t.assigneeId ?? "",
     requiresAct: t.requiresSignedDoc,
     actWaivedNote: t.actWaivedNote ?? "",
+    carrierCost: t.carrierCost == null ? "" : String(t.carrierCost),
   };
 }
 
@@ -127,6 +130,9 @@ export function CreateTaskModal({
 
   // Тип задаёт дефолт требования акта; смена типа обновляет галочку (PRD §3–§4).
   const selectedType = types.find((x) => x.id === form.typeId) ?? null;
+  // Стоимость поездки — только при внешнем исполнителе (этап 3, 02.07). В режиме редактирования
+  // селекта исполнителя нет, но form.assigneeId заполнен из задачи — признак работает и там.
+  const assigneeIsExternal = drivers.some((d) => d.id === form.assigneeId && d.isExternal);
   const typeNeedsAct = selectedType?.requiresSignedDoc ?? false;
   function onTypeChange(id: string) {
     const tt = types.find((x) => x.id === id);
@@ -170,6 +176,14 @@ export function CreateTaskModal({
     body.requiresAct = form.requiresAct;
     if (!form.requiresAct && form.actWaivedNote.trim()) body.actWaivedNote = form.actWaivedNote.trim();
     else if (isEdit) body.actWaivedNote = null;
+    // Стоимость поездки шлём только при внешнем исполнителе (пустое поле при правке = очистка).
+    if (assigneeIsExternal) {
+      body.carrierCost = form.carrierCost.trim()
+        ? Number.parseInt(form.carrierCost, 10)
+        : isEdit
+          ? null
+          : undefined;
+    }
     return body;
   }
 
@@ -317,6 +331,21 @@ export function CreateTaskModal({
             </Field>
           ) : null}
         </div>
+        ) : null}
+
+        {assigneeIsExternal ? (
+          <Field label="Стоимость поездки, ₽ (внешний перевозчик)">
+            <Input
+              data-testid="create-carrier-cost"
+              type="number"
+              inputMode="numeric"
+              min={0}
+              value={form.carrierCost}
+              onChange={(e) => set("carrierCost", e.target.value)}
+              placeholder="Сколько платим за эту поездку"
+            />
+            <p className="mt-1 text-xs text-neutral-500">Затраты компании — водителям не видна.</p>
+          </Field>
         ) : null}
 
         <div className="rounded-lg border border-neutral-200 p-3">
