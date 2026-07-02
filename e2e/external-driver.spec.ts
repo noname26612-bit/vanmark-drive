@@ -25,6 +25,10 @@ async function createAssignedTask(milena: Page, driverLabel: string): Promise<{ 
   await milena.locator('[data-testid="create-type"]').selectOption({ label: "Сдача / забор из ТК" });
   await milena.getByPlaceholder("ЛБМ 200 + нож, 0,7 мм").fill(title);
   await milena.getByPlaceholder("Москва, ул. ..., д. ...").fill("Адрес e2e external");
+  // Организация/контакт/телефон обязательны при создании (PR #39, 02.07).
+  await milena.locator('[data-testid="create-org"]').fill("ООО Тест");
+  await milena.locator('[data-testid="create-contact-name"]').fill("Иван Тест");
+  await milena.locator('[data-testid="create-contact-phone"]').fill("+70000000000");
   await milena.getByRole("button", { name: "Создать", exact: true }).click();
   await milena.getByRole("link", { name: title }).click();
   await milena.waitForURL(/\/tasks\/[0-9a-f-]+$/);
