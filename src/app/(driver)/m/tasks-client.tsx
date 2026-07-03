@@ -24,6 +24,7 @@ import {
 import { StatusBadge } from "@/components/status-badge";
 import { TypeIcon } from "@/components/type-icon";
 import { Badge } from "@/components/ui/badge";
+import { ConflictCenter } from "../conflict-center";
 
 type Tab = "today" | "upcoming";
 
@@ -85,6 +86,9 @@ export function DriverTasksClient({
 
   return (
     <main className="px-3 pb-10 pt-3">
+      {/* Разбор непрошедших офлайн-действий + баннер «сессия истекла» (O8). */}
+      <ConflictCenter />
+
       {actsToAttach > 0 ? (
         <p
           className={`mb-3 rounded-xl border px-3 py-2.5 text-base font-medium ${

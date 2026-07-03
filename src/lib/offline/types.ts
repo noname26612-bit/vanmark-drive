@@ -9,16 +9,16 @@ export type QueuedActionKind =
   | "attachment"
   | "attachment-delete"
   | "work-item-add"
-  | "work-item-update"
   | "work-item-delete"
   | "worksheet-submit"
   | "shift"; // открыть/закрыть/возобновить смену (O7): bodyJson = { op }, taskId = null
+// (клиент правку позиции ведомости в очередь не ставит — kind "work-item-update" убран, O8)
 
 export type QueuedActionStatus = "pending" | "syncing" | "conflict";
 
 export type QueuedAction = {
   id: string; // uuid = Idempotency-Key
-  seq: number; // порядок постановки (Date.now()) — досылаем FIFO
+  seq: number; // порядок постановки (монотонный nextSeq, см. send.ts) — досылаем FIFO
   kind: QueuedActionKind;
   method: "POST" | "PATCH" | "DELETE";
   url: string; // относительный путь API (/api/tasks/:id/transition ...)
