@@ -16,5 +16,14 @@ export function OfflineSync() {
       .then((already) => (already ? undefined : navigator.storage.persist()))
       .catch(() => {});
   }, []);
+  // Прогрев оболочки (O9): OfflineSync живёт в layout водителя — значит пользователь уже вошёл и /m
+  // отдаёт настоящую оболочку, а не логин-редирект. Просим SW перекэшировать /m «чистым» ответом,
+  // чтобы холодный старт без сети открывал приложение, а не логин-тупик.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    void navigator.serviceWorker.ready
+      .then((reg) => reg.active?.postMessage({ type: "warm-shell" }))
+      .catch(() => {});
+  }, []);
   return null;
 }

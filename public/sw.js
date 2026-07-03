@@ -6,13 +6,33 @@
 // Данные (список/карточка) офлайн отдаёт слой приложения (IndexedDB + cachedFetcher), не SW.
 // ВНИМАНИЕ: это рантайм service worker (область self/clients), а не модуль приложения.
 
-const CACHE = "vanmark-v1";
-const PRECACHE = ["/m", "/icons/icon-192.png", "/icons/icon-512.png"];
+// Версия кэша (O9): sw-version.js генерит prebuild-скрипт (public/sw-version.js, git sha / timestamp
+// сборки). Имя кэша меняется при каждом деплое → activate удаляет прошлый кэш, устаревшие чанки Next
+// не копятся. В dev файла нет → importScripts бросает → версия "dev".
+try {
+  importScripts("/sw-version.js");
+} catch (e) {
+  /* dev: файла нет — остаёмся на "dev" */
+}
+const VERSION = self.SW_VERSION || "dev";
+const CACHE = "vanmark-app-" + VERSION;
+const PRECACHE_ICONS = ["/icons/icon-192.png", "/icons/icon-512.png"];
+const SHELL_URL = "/m"; // оболочка «Мои задачи» — запасной экран холодного старта
+const MAX_NAV_ENTRIES = 30; // потолок навигационных HTML-записей (LRU-обрезка)
 
 // В dev (localhost) кэш оболочки ОТКЛЮЧЁН: иначе cache-first отдавал бы устаревшие чанки и ломал HMR.
-// На проде (боевой домен) кэш включён — ради холодного старта без сети.
+// На проде (боевой домен) кэш включён — ради холодного старта без сети. Для e2e с реальным SW на
+// localhost его включает флаг ?cache=on в URL регистрации (O9): self.location — это URL самого sw.js.
 const CACHE_ENABLED =
-  self.location.hostname !== "localhost" && self.location.hostname !== "127.0.0.1";
+  (self.location.hostname !== "localhost" && self.location.hostname !== "127.0.0.1") ||
+  self.location.search.includes("cache=on");
+
+// Не кэшируем страницу логина под ключом оболочки: если SW встал ДО входа, неавторизованный запрос
+// /m редиректит на /login, и офлайн-фолбэк отдавал бы логин-тупик. Кэшируем только «настоящие»
+// ответы навигаций (200, без редиректа, не на /login).
+function isCacheableNav(res, url) {
+  return res && res.ok && !res.redirected && !url.pathname.startsWith("/login");
+}
 
 self.addEventListener("install", (event) => {
   if (!CACHE_ENABLED) {
@@ -20,20 +40,24 @@ self.addEventListener("install", (event) => {
     return;
   }
   event.waitUntil(
-    caches
-      .open(CACHE)
-      .then((c) => c.addAll(PRECACHE).catch(() => {})) // best-effort: один недоступный URL не валит установку
-      .then(() => self.skipWaiting()),
+    (async () => {
+      const cache = await caches.open(CACHE);
+      await cache.addAll(PRECACHE_ICONS).catch(() => {}); // иконки статичны — best-effort
+      await warmShell(cache); // оболочку кладём отдельно, с проверкой на логин-редирект
+      await self.skipWaiting();
+    })(),
   );
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
-      // Чистим кэши прошлых версий (после деплоя имя CACHE меняем — старые ассеты удаляются).
+      // Чистим кэши прошлых версий (имя содержит версию сборки — старые ассеты удаляются).
       const keys = await caches.keys();
       await Promise.all(
-        keys.filter((k) => k.startsWith("vanmark-") && k !== CACHE).map((k) => caches.delete(k)),
+        keys
+          .filter((k) => (k.startsWith("vanmark-app-") || k.startsWith("vanmark-")) && k !== CACHE)
+          .map((k) => caches.delete(k)),
       );
       await self.clients.claim();
     })(),
@@ -53,9 +77,12 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(cacheFirst(req));
     return;
   }
+  // Логин — только сеть, без фолбэка на оболочку: офлайн вход всё равно невозможен, а отдавать
+  // вместо формы закэшированную оболочку — сбивать с толку.
+  if (req.mode === "navigate" && url.pathname.startsWith("/login")) return;
   // Навигация (открытие страниц) — network-first с откатом в кэш (холодный старт без сети).
   if (req.mode === "navigate") {
-    event.respondWith(networkFirst(req));
+    event.respondWith(networkFirst(req, url));
     return;
   }
 });
@@ -69,20 +96,53 @@ async function cacheFirst(req) {
   return res;
 }
 
-async function networkFirst(req) {
+async function networkFirst(req, url) {
   const cache = await caches.open(CACHE);
   try {
     const res = await fetch(req);
-    if (res.ok) cache.put(req, res.clone());
+    if (isCacheableNav(res, new URL(res.url))) {
+      cache.put(req, res.clone());
+      trimNavigations(cache); // не ждём — фоновая обрезка
+    }
     return res;
   } catch (e) {
     const hit = await cache.match(req);
     if (hit) return hit;
-    const home = await cache.match("/m"); // запасной экран — список «Мои задачи»
+    const home = await cache.match(SHELL_URL); // запасной экран — список «Мои задачи»
     if (home) return home;
     throw e;
   }
 }
+
+// Перекэшировать оболочку /m «настоящим» ответом (не логин-редиректом). Вызывается при install и по
+// сообщению warm-shell из приложения (после входа — тогда /m точно отдаёт оболочку, а не редирект).
+async function warmShell(cache) {
+  try {
+    const res = await fetch(SHELL_URL, { redirect: "follow" });
+    if (isCacheableNav(res, new URL(res.url))) await cache.put(SHELL_URL, res.clone());
+  } catch (e) {
+    /* нет сети при install — оболочка ляжет позже, из networkFirst или warm-shell */
+  }
+}
+
+// Навигационные записи (HTML) — не статика/иконки. Держим не больше MAX_NAV_ENTRIES: при переполнении
+// удаляем самые старые (порядок keys() ≈ порядок вставки — грубый FIFO, достаточно для масштаба).
+async function trimNavigations(cache) {
+  const keys = await cache.keys();
+  const nav = keys.filter((r) => {
+    const p = new URL(r.url).pathname;
+    return !p.startsWith("/_next/static/") && !p.startsWith("/icons/");
+  });
+  const excess = nav.length - MAX_NAV_ENTRIES;
+  for (let i = 0; i < excess; i++) await cache.delete(nav[i]);
+}
+
+self.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type === "warm-shell") {
+    event.waitUntil(caches.open(CACHE).then((c) => warmShell(c)));
+  }
+});
 
 // Пришёл пуш — показываем уведомление. Payload собирает сервер (src/domain/notifications.ts).
 self.addEventListener("push", (event) => {
