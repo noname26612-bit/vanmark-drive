@@ -2,12 +2,13 @@
 /* eslint-disable @next/next/no-img-element -- фото отдаются через /api/attachments/:id с проверкой
    прав по сессионной куке; next/image оптимизирует через свой прокси без куки и получил бы 404. */
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { Phone, Navigation, Loader2, Camera, X, FileText } from "lucide-react";
 import { ApiError } from "@/lib/fetcher";
 import { cachedFetcher } from "@/lib/offline/cached-fetcher";
 import { useOnline } from "@/lib/offline/net";
+import { idbGet, STORE_BLOBS } from "@/lib/offline/db";
 import { enqueueOrSend, enqueuePhoto } from "@/lib/offline/send";
 import { usePendingActions } from "@/lib/offline/use-queue";
 import { overlayStatus, overlayShift, currentShift } from "@/lib/offline/overlay";
@@ -562,6 +563,9 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
           </section>
         ) : null}
 
+        {/* Фото, снятые офлайн и ещё не отправленные (O10): превью из локального blob очереди. */}
+        <PendingPhotos taskId={taskId} />
+
         {/* Полноэкранный просмотр фото (крестик / свайп вверх-вниз / «назад») */}
         {lightbox ? <PhotoLightbox url={lightbox} onClose={() => setLightbox(null)} /> : null}
 
@@ -1077,5 +1081,62 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
       <span className="text-xs text-neutral-400">{label}</span>
       <span className="text-base text-neutral-800">{children}</span>
     </div>
+  );
+}
+
+// Превью офлайн-снятых фото (O10): пока фото ждут отправки в очереди, водитель видит их из локального
+// blob (STORE_BLOBS), а не только счётчик «+N в очереди». URL.createObjectURL освобождаем при смене
+// набора/размонтировании. Только фото (не документы-акты) этой задачи.
+function PendingPhotos({ taskId }: { taskId: string }) {
+  const pending = usePendingActions(taskId);
+  const photos = pending.filter(
+    (a) => a.kind === "attachment" && a.blobMeta?.kind === "PHOTO" && a.blobId,
+  );
+  const sig = photos.map((a) => a.id).join(",");
+  const [urls, setUrls] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let alive = true;
+    const created: string[] = [];
+    void (async () => {
+      const next: Record<string, string> = {};
+      for (const a of photos) {
+        if (!a.blobId) continue;
+        const rec = await idbGet<{ blob: Blob }>(STORE_BLOBS, a.blobId).catch(() => undefined);
+        if (rec?.blob) {
+          const u = URL.createObjectURL(rec.blob);
+          next[a.id] = u;
+          created.push(u);
+        }
+      }
+      if (alive) setUrls(next);
+      else created.forEach((u) => URL.revokeObjectURL(u));
+    })();
+    return () => {
+      alive = false;
+      created.forEach((u) => URL.revokeObjectURL(u));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- пересобираем превью при смене набора фото
+  }, [sig]);
+
+  if (photos.length === 0) return null;
+  return (
+    <section className="rounded-xl border border-amber-200 bg-amber-50/40 p-3">
+      <p className="text-xs uppercase tracking-wide text-amber-600">Фото в очереди — уйдут при связи</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {photos.map((a) => (
+          <div key={a.id} className="relative">
+            {urls[a.id] ? (
+              <img src={urls[a.id]} alt="фото в очереди" className="h-20 w-20 rounded-lg object-cover opacity-80" />
+            ) : (
+              <div className="h-20 w-20 rounded-lg bg-neutral-200" />
+            )}
+            <span className="absolute bottom-0 left-0 right-0 rounded-b-lg bg-black/50 text-center text-[10px] text-white">
+              ⏳ ждёт
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }

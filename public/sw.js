@@ -19,6 +19,10 @@ const CACHE = "vanmark-app-" + VERSION;
 const PRECACHE_ICONS = ["/icons/icon-192.png", "/icons/icon-512.png"];
 const SHELL_URL = "/m"; // оболочка «Мои задачи» — запасной экран холодного старта
 const MAX_NAV_ENTRIES = 30; // потолок навигационных HTML-записей (LRU-обрезка)
+// Кэш фото/актов (O10). Отдельное СТАБИЛЬНОЕ имя (не привязано к версии сборки): вложения иммутабельны
+// по uuid, чистить их при каждом деплое незачем. activate удаляет только старые app-кэши, этот не трогает.
+const PHOTO_CACHE = "vanmark-photos-v1";
+const MAX_PHOTOS = 100; // потолок кэшированных вложений (~30–50 МБ на телефоне)
 
 // В dev (localhost) кэш оболочки ОТКЛЮЧЁН: иначе cache-first отдавал бы устаревшие чанки и ломал HMR.
 // На проде (боевой домен) кэш включён — ради холодного старта без сети. Для e2e с реальным SW на
@@ -52,11 +56,12 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
-      // Чистим кэши прошлых версий (имя содержит версию сборки — старые ассеты удаляются).
+      // Чистим кэши прошлых версий оболочки (имя содержит версию сборки). Фото-кэш (vanmark-photos-*)
+      // и легаси vanmark-v1 не трогаем: фото иммутабельны, чистить их при деплое незачем.
       const keys = await caches.keys();
       await Promise.all(
         keys
-          .filter((k) => (k.startsWith("vanmark-app-") || k.startsWith("vanmark-")) && k !== CACHE)
+          .filter((k) => k.startsWith("vanmark-app-") && k !== CACHE)
           .map((k) => caches.delete(k)),
       );
       await self.clients.claim();
@@ -70,7 +75,13 @@ self.addEventListener("fetch", (event) => {
   if (req.method !== "GET") return; // мутации не кэшируем
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return; // сторонние — мимо
-  if (url.pathname.startsWith("/api/")) return; // данные кэширует приложение (IndexedDB), не SW
+  // Фото/акты (O10): раздаются через /api/attachments/:id, иммутабельны по uuid — cache-first в
+  // отдельный кэш, чтобы уже просмотренные вложения открывались офлайн. ДО общего пропуска /api.
+  if (url.pathname.startsWith("/api/attachments/")) {
+    event.respondWith(photoCache(req));
+    return;
+  }
+  if (url.pathname.startsWith("/api/")) return; // прочие данные кэширует приложение (IndexedDB), не SW
 
   // Хэшированная статика Next и иконки — cache-first (контент иммутабелен по имени).
   if (url.pathname.startsWith("/_next/static/") || url.pathname.startsWith("/icons/")) {
@@ -94,6 +105,28 @@ async function cacheFirst(req) {
   const res = await fetch(req);
   if (res.ok) cache.put(req, res.clone());
   return res;
+}
+
+// Фото/акт (O10): cache-first в отдельный кэш с LRU-обрезкой. Приватность не ослабляется — в кэш
+// попадают только ответы, уже выданные сервером ЭТОМУ пользователю (проверка прав на сервере),
+// и живут на его телефоне, как IndexedDB. Промах офлайн → fetch упадёт, <img> просто не покажется
+// (как было до кэша) — непрогретые вложения офлайн недоступны, это ожидаемо.
+async function photoCache(req) {
+  const cache = await caches.open(PHOTO_CACHE);
+  const hit = await cache.match(req);
+  if (hit) return hit;
+  const res = await fetch(req);
+  if (res.ok) {
+    cache.put(req, res.clone());
+    trimPhotos(cache);
+  }
+  return res;
+}
+
+async function trimPhotos(cache) {
+  const keys = await cache.keys();
+  const excess = keys.length - MAX_PHOTOS;
+  for (let i = 0; i < excess; i++) await cache.delete(keys[i]); // порядок keys() ≈ вставка → грубый FIFO
 }
 
 async function networkFirst(req, url) {
@@ -138,11 +171,30 @@ async function trimNavigations(cache) {
 }
 
 self.addEventListener("message", (event) => {
+  if (!CACHE_ENABLED) return; // dev — прогрев кэша не нужен (fetch всё равно не перехватываем)
   const data = event.data || {};
   if (data.type === "warm-shell") {
     event.waitUntil(caches.open(CACHE).then((c) => warmShell(c)));
   }
+  // Прогрев HTML карточек (O10): приложение прислало список URL видимых задач — кэшируем их навигации,
+  // чтобы офлайн-переход открывал карточку, а не фолбэк-оболочку. Та же проверка, что в networkFirst.
+  if (data.type === "warm-pages" && Array.isArray(data.urls)) {
+    event.waitUntil(warmPages(data.urls));
+  }
 });
+
+async function warmPages(urls) {
+  const cache = await caches.open(CACHE);
+  for (const u of urls.slice(0, MAX_NAV_ENTRIES)) {
+    try {
+      const res = await fetch(u, { redirect: "follow" });
+      if (isCacheableNav(res, new URL(res.url))) await cache.put(u, res.clone());
+    } catch (e) {
+      /* нет сети — пропускаем, прогреется в следующий раз */
+    }
+  }
+  await trimNavigations(cache);
+}
 
 // Пришёл пуш — показываем уведомление. Payload собирает сервер (src/domain/notifications.ts).
 self.addEventListener("push", (event) => {

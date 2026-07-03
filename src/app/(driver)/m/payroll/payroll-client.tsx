@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import useSWR from "swr";
-import { fetcher } from "@/lib/fetcher";
+import { cachedFetcher } from "@/lib/offline/cached-fetcher";
+import { useOnline } from "@/lib/offline/net";
 import { formatMoney, formatDate, formatPeriod, shiftPeriod } from "@/lib/task-ui";
 import { KPI_KIND_LABEL, KPI_KIND_BADGE, actBonusSummary } from "@/lib/kpi-dto";
 import type { DriverPayrollView } from "@/lib/kpi-dto";
@@ -11,12 +12,20 @@ import { BackLink } from "@/components/back-link";
 
 export function DriverPayrollClient({ initialPeriod }: { initialPeriod: string }) {
   const [period, setPeriod] = useState(initialPeriod);
-  const { data, isLoading, error } = useSWR<DriverPayrollView>(`/api/my/kpi?period=${period}`, fetcher);
+  const online = useOnline();
+  // cachedFetcher (O10): расчёт открывается офлайн из последнего сохранённого — как список и карточка.
+  const { data, isLoading, error } = useSWR<DriverPayrollView>(`/api/my/kpi?period=${period}`, cachedFetcher);
 
   return (
     <main className="px-3 pb-10 pt-3">
       <BackLink href="/m">Мои задачи</BackLink>
       <h1 className="mt-2 text-xl font-bold text-neutral-900">Мой расчёт</h1>
+
+      {!online && data ? (
+        <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700">
+          Офлайн — показываю сохранённый расчёт. Обновится при связи.
+        </p>
+      ) : null}
 
       {/* Переключатель месяца — крупные тач-цели */}
       <div className="mt-3 flex items-center justify-between gap-2">
