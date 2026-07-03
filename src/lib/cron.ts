@@ -4,6 +4,7 @@
 import cron from "node-cron";
 import { runMorningReminders, runPassWarnings } from "@/domain/push-service";
 import { runKpiDetection, runActDeadlineDetection } from "@/domain/kpi-service";
+import { cleanupProcessedActions } from "@/domain/idempotency";
 
 const TZ = process.env.CRON_TZ ?? "Europe/Moscow";
 const g = globalThis as typeof globalThis & { __vanmarkCronStarted?: boolean };
@@ -29,7 +30,10 @@ if (!g.__vanmarkCronStarted) {
   schedule("pass-warning", "0 16 * * *", runPassWarnings); // 16:00 — диспетчеру про пропуска
   schedule("act-deadline", "5 20 * * *", runActDeadlineDetection); // 20:05 — акты к дедлайну 20:00 + пуш Милене
   schedule("kpi-detector", "30 23 * * *", runKpiDetection); // 23:30 — кандидаты в нарушения KPI (Фаза 1.5)
-  console.log(`[cron] scheduled 08:00 + 16:00 + 20:05 + 23:30 (${TZ})`);
+  schedule("processed-cleanup", "0 4 * * *", async () => {
+    await cleanupProcessedActions(60); // 04:00 — чистим реестр идемпотентности старше 60 дней (O11)
+  });
+  console.log(`[cron] scheduled 08:00 + 16:00 + 20:05 + 23:30 + 04:00 (${TZ})`);
 }
 
 export {};
