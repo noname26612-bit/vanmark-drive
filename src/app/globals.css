@@ -1,1 +1,13 @@
 @import "tailwindcss";
+
+/* Появление чипа свёрнутого черновика заявки (доработка №1): мягкий «въезд» снизу, ≤200 мс (ui-guidelines). */
+@keyframes draftIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

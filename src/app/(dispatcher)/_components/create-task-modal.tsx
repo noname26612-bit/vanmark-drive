@@ -4,6 +4,7 @@ import { useState } from "react";
 import { apiSend } from "@/lib/fetcher";
 import type { DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
 import type { PassStatus, PaymentType } from "@/generated/prisma/enums";
+import { emptyForm, isDirtyForm, type FormState } from "@/lib/task-draft";
 import { PASS_LABEL, PAYMENT_LABEL } from "@/lib/task-ui";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
@@ -12,60 +13,6 @@ import { DateField } from "@/components/ui/date-field";
 import { Textarea } from "@/components/ui/textarea";
 import { Select } from "@/components/ui/select";
 import { Field } from "@/components/ui/field";
-
-type FormState = {
-  typeId: string;
-  title: string;
-  address: string;
-  description: string;
-  equipment: string;
-  orgName: string;
-  contactName: string;
-  contactPhone: string;
-  addressLink: string;
-  invoiceNumber: string;
-  paymentType: PaymentType;
-  paymentAmount: string;
-  paymentNote: string;
-  scheduledDate: string;
-  timeFrom: string;
-  timeTo: string;
-  timeNote: string;
-  passStatus: PassStatus;
-  priority: boolean;
-  assigneeId: string;
-  requiresAct: boolean; // требование акта (дефолт из типа, диспетчер может снять)
-  actWaivedNote: string; // причина снятия требования акта
-  carrierCost: string; // стоимость поездки внешнего перевозчика, ₽ (этап 3; видна при внешнем исполнителе)
-};
-
-function emptyForm(typeId: string, date: string, requiresAct: boolean): FormState {
-  return {
-    typeId,
-    title: "",
-    address: "",
-    description: "",
-    equipment: "",
-    orgName: "",
-    contactName: "",
-    contactPhone: "",
-    addressLink: "",
-    invoiceNumber: "",
-    paymentType: "NONE",
-    paymentAmount: "",
-    paymentNote: "",
-    scheduledDate: date,
-    timeFrom: "",
-    timeTo: "",
-    timeNote: "",
-    passStatus: "NOT_NEEDED",
-    priority: false,
-    assigneeId: "",
-    requiresAct,
-    actWaivedNote: "",
-    carrierCost: "",
-  };
-}
 
 function formFromTask(t: TaskDTO): FormState {
   return {
@@ -103,6 +50,9 @@ export function CreateTaskModal({
   onCreated,
   defaultDate = "",
   editTask = null,
+  initialForm = null,
+  onMinimize,
+  onDiscard,
 }: {
   open: boolean;
   onClose: () => void;
@@ -111,6 +61,12 @@ export function CreateTaskModal({
   onCreated: () => void;
   defaultDate?: string;
   editTask?: TaskDTO | null;
+  // Черновик (доработка №1, только режим создания): восстановленное состояние формы и колбэки —
+  // onMinimize (свернуть непустую форму в черновик при случайном закрытии) и onDiscard (снять черновик
+  // при осознанном отказе/успешной отправке). В режиме редактирования не используются.
+  initialForm?: FormState | null;
+  onMinimize?: (form: FormState) => void;
+  onDiscard?: () => void;
 }) {
   const isEdit = editTask !== null;
   // Редактирование завершённой/отменённой заявки: дату менять нельзя (решение Артёма 02.07.2026) —
@@ -118,7 +74,9 @@ export function CreateTaskModal({
   const isTerminalEdit = editTask?.status === "DONE" || editTask?.status === "CANCELLED";
   const firstType = types[0]?.id ?? "";
   const [form, setForm] = useState<FormState>(() =>
-    editTask ? formFromTask(editTask) : emptyForm(firstType, defaultDate, types[0]?.requiresSignedDoc ?? false),
+    editTask
+      ? formFromTask(editTask)
+      : (initialForm ?? emptyForm(firstType, defaultDate, types[0]?.requiresSignedDoc ?? false)),
   );
   const [showAll, setShowAll] = useState(isEdit);
   const [noDate, setNoDate] = useState(false);
@@ -198,6 +156,7 @@ export function CreateTaskModal({
         await apiSend("/api/tasks", "POST", body);
       }
       onCreated();
+      onDiscard?.(); // заявка создана — связанный черновик больше не нужен
       if (again && !isEdit) {
         setForm(emptyForm(form.typeId, form.scheduledDate, selectedType?.requiresSignedDoc ?? false));
         setShowAll(false);
@@ -211,8 +170,29 @@ export function CreateTaskModal({
     }
   }
 
+  // Закрытие «мимо» (клик по фону / Escape / крестик — все три идут через onClose модалки). В режиме
+  // создания непустую форму сворачиваем в черновик (ввод не теряется), пустую — просто закрываем.
+  // В режиме редактирования черновиков нет — просто закрываем.
+  function handleMinimize() {
+    if (!isEdit) {
+      if (isDirtyForm(form)) onMinimize?.(form);
+      else onDiscard?.(); // всё стёрли в восстановленном черновике — убрать его
+    }
+    onClose();
+  }
+
+  // Кнопка «Отмена» — осознанный отказ. Есть ввод → переспрашиваем; черновик при этом НЕ сохраняем
+  // (решение Артёма 03.07: сохраняем только при СЛУЧАЙНОМ закрытии).
+  function handleCancel() {
+    if (!isEdit && isDirtyForm(form) && !window.confirm("Выбросить заявку? Введённые данные не сохранятся.")) {
+      return;
+    }
+    onDiscard?.();
+    onClose();
+  }
+
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? "Редактировать задачу" : "Новая задача"} wide>
+    <Modal open={open} onClose={handleMinimize} title={isEdit ? "Редактировать задачу" : "Новая задача"} wide>
       <form
         className="flex flex-col gap-3"
         onSubmit={(e) => {
@@ -464,7 +444,7 @@ export function CreateTaskModal({
               Создать и ещё одну
             </Button>
           ) : null}
-          <Button type="button" variant="ghost" onClick={onClose}>
+          <Button type="button" variant="ghost" onClick={handleCancel}>
             Отмена
           </Button>
         </div>

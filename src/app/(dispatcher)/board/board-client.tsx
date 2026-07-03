@@ -36,6 +36,8 @@ import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CreateTaskModal } from "../_components/create-task-modal";
+import { useTaskDrafts } from "../_components/task-drafts";
+import type { FormState } from "@/lib/task-draft";
 
 type DropTarget = { kind: "driver"; driverId: string } | { kind: "undated" };
 
@@ -103,6 +105,20 @@ export function BoardClient({
   );
   const [createOpen, setCreateOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Черновики свёрнутых заявок (доработка №1). editingDraft — черновик, открытый в модалке сейчас
+  // (null = новая заявка). По запросу из плашки (клик по чипу) открываем форму с его данными.
+  const drafts = useTaskDrafts();
+  const [editingDraft, setEditingDraft] = useState<{ id: string; form: FormState } | null>(null);
+  const registerOpenHandler = drafts.registerOpenHandler;
+  useEffect(
+    () =>
+      registerOpenHandler((d) => {
+        setEditingDraft({ id: d.id, form: d.form });
+        setCreateOpen(true);
+      }),
+    [registerOpenHandler],
+  );
 
   // Персональная раскладка пулов (сохраняется в аккаунте). order — заданный диспетчером порядок
   // ключей пулов; collapsed — множество свёрнутых. При перезагрузке приходят с сервера (props).
@@ -235,7 +251,12 @@ export function BoardClient({
     <div className="p-4" data-testid="board">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold text-neutral-900">Сегодня · {formatDate(today)}</h1>
-        <Button onClick={() => setCreateOpen(true)}>
+        <Button
+          onClick={() => {
+            setEditingDraft(null);
+            setCreateOpen(true);
+          }}
+        >
           <Plus className="h-4 w-4" /> Задача
         </Button>
       </div>
@@ -311,12 +332,23 @@ export function BoardClient({
       )}
 
       <CreateTaskModal
+        // key заставляет форму переинициализироваться при каждом открытии (в т.ч. с данными черновика):
+        // без него useState формы инициализировался бы один раз на весь срок жизни модалки.
+        key={createOpen ? (editingDraft?.id ?? "new") : "closed"}
         open={createOpen}
-        onClose={() => setCreateOpen(false)}
+        onClose={() => {
+          setCreateOpen(false);
+          setEditingDraft(null);
+        }}
         types={types}
         drivers={drivers}
         defaultDate={today}
         onCreated={() => void refresh()}
+        initialForm={editingDraft?.form ?? null}
+        onMinimize={(form) => drafts.upsertDraft(form, editingDraft?.id ?? null)}
+        onDiscard={() => {
+          if (editingDraft?.id) drafts.removeDraft(editingDraft.id);
+        }}
       />
     </div>
   );
@@ -373,7 +405,8 @@ type ShiftDTO = {
   status: "REQUESTED" | "OPEN" | "CLOSED";
   openedAt: string;
   closedAt: string | null;
-  openedAtAdjustNote: string | null; // если время правили — причина (№3)
+  openedAtAdjustNote: string | null; // если время открытия правили — причина (№3)
+  closedAtAdjustNote: string | null; // если время закрытия правили — причина (№3)
   openedOffline: boolean; // открыта офлайн (O7): время открытия зафиксировал телефон, не сервер
   workedMinutes?: number; // отработано за день по задачам (для полосы, №5)
 };
@@ -598,6 +631,38 @@ function ShiftWorkloadRow({
       setReopening(false);
     }
   }
+
+  // Закрытие смены диспетчером/директором/админом (№2): «Закрыть сейчас» или с ручным временем и причиной.
+  const [closing, setClosing] = useState(false);
+  const [closeBusy, setCloseBusy] = useState(false);
+  const [closeTime, setCloseTime] = useState("");
+  const [closeReason, setCloseReason] = useState("");
+  const [closeError, setCloseError] = useState<string | null>(null);
+  function openClose() {
+    setCloseTime(shiftHHMM(new Date().toISOString())); // префилл текущим временем
+    setCloseReason("");
+    setCloseError(null);
+    setClosing(true);
+  }
+  async function doClose(withTime: boolean) {
+    if (!shift) return;
+    setCloseBusy(true);
+    setCloseError(null);
+    try {
+      const body: Record<string, unknown> = { op: "close" };
+      if (withTime) {
+        body.closedAtTime = closeTime;
+        body.reason = closeReason;
+      }
+      await apiSend(`/api/shifts/${shift.id}`, "PATCH", body);
+      await onChange();
+      setClosing(false);
+    } catch (e) {
+      setCloseError((e as Error).message);
+    } finally {
+      setCloseBusy(false);
+    }
+  }
   // Кнопка «Простой» + метка суммы за день (02.07) — и в строке без смены (пометка возможна всегда).
   const idleControls = (
     <>
@@ -652,7 +717,16 @@ function ShiftWorkloadRow({
             >
               Переоткрыть
             </Button>
-          ) : null}
+          ) : (
+            <Button
+              variant="ghost"
+              className="h-7 px-2 text-xs text-slate-600"
+              onClick={openClose}
+              disabled={closeBusy}
+            >
+              Закрыть
+            </Button>
+          )}
           <span className={chip.cls}>{chip.label}</span>
         </span>
       </div>
@@ -660,7 +734,8 @@ function ShiftWorkloadRow({
         Открыта в {shiftHHMM(shift.openedAt)}
         {shift.closedAt ? ` · закрыта в ${shiftHHMM(shift.closedAt)}` : ""}
         {shift.openedOffline ? " · открыта офлайн" : ""}
-        {shift.openedAtAdjustNote ? " · время скорректировано" : ""}
+        {shift.openedAtAdjustNote ? " · время открытия скорректировано" : ""}
+        {shift.closedAtAdjustNote ? " · время закрытия скорректировано" : ""}
       </div>
       <div className="mt-1.5 flex h-2.5 overflow-hidden rounded bg-slate-100">
         <div className="bg-green-500" style={{ width: `${workedPct}%` }} />
@@ -674,6 +749,58 @@ function ShiftWorkloadRow({
           <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-slate-300 align-middle" />Простой {fmtDur(idle)}
         </span>
       </div>
+      {closing ? (
+        <div
+          data-testid="shift-close-panel"
+          className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs"
+        >
+          <p className="mb-2 font-medium text-slate-700">Закрыть смену — {name}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              data-testid="shift-close-now"
+              className="h-8 px-3 text-xs"
+              onClick={() => void doClose(false)}
+              disabled={closeBusy}
+            >
+              Закрыть сейчас
+            </Button>
+            <Button
+              variant="ghost"
+              className="h-8 px-3 text-xs"
+              onClick={() => setClosing(false)}
+              disabled={closeBusy}
+            >
+              Отмена
+            </Button>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              type="time"
+              data-testid="shift-close-time"
+              value={closeTime}
+              onChange={(e) => setCloseTime(e.target.value)}
+              className="h-8 rounded-md border border-slate-300 px-2"
+            />
+            <input
+              type="text"
+              data-testid="shift-close-reason"
+              value={closeReason}
+              onChange={(e) => setCloseReason(e.target.value)}
+              placeholder="Причина (напр. «водитель забыл закрыть»)"
+              className="h-8 min-w-0 flex-1 rounded-md border border-slate-300 px-2"
+            />
+            <Button
+              variant="secondary"
+              className="h-8 px-3 text-xs"
+              onClick={() => void doClose(true)}
+              disabled={closeBusy || !closeTime.trim()}
+            >
+              Закрыть указанным
+            </Button>
+          </div>
+          {closeError ? <p className="mt-1 text-red-600">{closeError}</p> : null}
+        </div>
+      ) : null}
     </div>
   );
 }

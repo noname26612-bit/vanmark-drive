@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
@@ -17,6 +17,8 @@ import { Input } from "@/components/ui/input";
 import { DateField } from "@/components/ui/date-field";
 import { Select } from "@/components/ui/select";
 import { CreateTaskModal } from "../_components/create-task-modal";
+import { useTaskDrafts } from "../_components/task-drafts";
+import type { FormState } from "@/lib/task-draft";
 
 export function AllTasksClient({
   drivers,
@@ -34,6 +36,19 @@ export function AllTasksClient({
   const [dateTo, setDateTo] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
 
+  // Черновики свёрнутых заявок (доработка №1) — общий стек с доской, живёт в лейауте диспетчера.
+  const drafts = useTaskDrafts();
+  const [editingDraft, setEditingDraft] = useState<{ id: string; form: FormState } | null>(null);
+  const registerOpenHandler = drafts.registerOpenHandler;
+  useEffect(
+    () =>
+      registerOpenHandler((d) => {
+        setEditingDraft({ id: d.id, form: d.form });
+        setCreateOpen(true);
+      }),
+    [registerOpenHandler],
+  );
+
   const params = new URLSearchParams();
   if (q.trim()) params.set("q", q.trim());
   if (status) params.set("status", status);
@@ -50,7 +65,12 @@ export function AllTasksClient({
     <div className="p-4">
       <div className="mb-3 flex items-center justify-between">
         <h1 className="text-xl font-semibold text-neutral-900">Все задачи</h1>
-        <Button onClick={() => setCreateOpen(true)}>
+        <Button
+          onClick={() => {
+            setEditingDraft(null);
+            setCreateOpen(true);
+          }}
+        >
           <Plus className="h-4 w-4" /> Задача
         </Button>
       </div>
@@ -172,11 +192,20 @@ export function AllTasksClient({
       </div>
 
       <CreateTaskModal
+        key={createOpen ? (editingDraft?.id ?? "new") : "closed"}
         open={createOpen}
-        onClose={() => setCreateOpen(false)}
+        onClose={() => {
+          setCreateOpen(false);
+          setEditingDraft(null);
+        }}
         types={types}
         drivers={drivers}
         onCreated={() => void mutate()}
+        initialForm={editingDraft?.form ?? null}
+        onMinimize={(form) => drafts.upsertDraft(form, editingDraft?.id ?? null)}
+        onDiscard={() => {
+          if (editingDraft?.id) drafts.removeDraft(editingDraft.id);
+        }}
       />
     </div>
   );
