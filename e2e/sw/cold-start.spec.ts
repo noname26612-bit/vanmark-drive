@@ -20,6 +20,25 @@ async function login(page: Page, login: string): Promise<void> {
   await page.waitForURL((url) => !url.pathname.startsWith("/login"));
 }
 
+async function createAssignedTask(milena: Page, driverLabel: string, typeLabel: string): Promise<{ id: string; title: string }> {
+  const title = `e2e-sw ${driverLabel} ${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+  await milena.goto("/tasks");
+  await milena.getByRole("button", { name: "Задача" }).click();
+  await milena.locator('[data-testid="create-type"]').selectOption({ label: typeLabel });
+  await milena.getByPlaceholder("ЛБМ 200 + нож, 0,7 мм").fill(title);
+  await milena.getByPlaceholder("Москва, ул. ..., д. ...").fill("Адрес для e2e sw");
+  await milena.locator('[data-testid="create-org"]').fill("ООО Тест");
+  await milena.locator('[data-testid="create-contact-name"]').fill("Иван Тест");
+  await milena.locator('[data-testid="create-contact-phone"]').fill("+70000000000");
+  await milena.getByRole("button", { name: "Создать", exact: true }).click();
+  await milena.getByRole("link", { name: title }).click();
+  await milena.waitForURL(/\/tasks\/[0-9a-f-]+$/);
+  const id = milena.url().split("/tasks/")[1];
+  await milena.locator('[data-testid="card-assignee"]').selectOption({ label: driverLabel });
+  await expect(milena.locator('[data-testid="card-assignee"]')).not.toHaveValue("");
+  return { id, title };
+}
+
 test("холодный старт без сети: оболочка из кэша + список из IndexedDB", async ({ page }) => {
   test.slow();
   await login(page, "pisarev");
@@ -71,4 +90,44 @@ test("логин-ловушка: страница входа не подменя
     await expect(page.getByText("Мои задачи")).toHaveCount(0);
   }
   await startServer();
+});
+
+// O10: карточку задачи, которую водитель НЕ открывал вручную, префетч (usePrefetchCards) кэширует
+// заранее — данные в IndexedDB, HTML через warm-pages в SW. Офлайн она всё равно открывается.
+test("офлайн-просмотр: непосещённая карточка доступна без сети (префетч + warm-pages)", async ({ browser }) => {
+  test.slow();
+  const mctx = await browser.newContext();
+  const milena = await mctx.newPage();
+  await login(milena, "milena");
+  const { id, title } = await createAssignedTask(milena, "Алексей Писарев", "Сдача / забор из ТК");
+
+  const dctx = await browser.newContext();
+  const driver = await dctx.newPage();
+  await login(driver, "pisarev");
+  await driver.goto("/m");
+  await expect(driver.getByText(title)).toBeVisible();
+  await driver.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 20_000 });
+
+  // Ждём, пока префетч закэширует HTML карточки в SW (warm-pages) — НЕ открывая её вручную.
+  await driver.waitForFunction(
+    async (taskId) => {
+      for (const k of await caches.keys()) {
+        const c = await caches.open(k);
+        if (await c.match(`/m/${taskId}`)) return true;
+      }
+      return false;
+    },
+    id,
+    { timeout: 20_000 },
+  );
+
+  await stopServer();
+  // Прямой переход в непосещённую карточку без сети: HTML из warm-pages, данные из IndexedDB.
+  await driver.goto(`/m/${id}`);
+  await expect(driver.getByText(new RegExp(`№\\s*\\d`)).first()).toBeVisible({ timeout: 20_000 });
+  await expect(driver.getByText(title)).toBeVisible();
+
+  await startServer();
+  await mctx.close();
+  await dctx.close();
 });
