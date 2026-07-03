@@ -5,7 +5,7 @@
 //    при возврате связи, на старте и периодически; после успешной досылки обновляет данные SWR.
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useSWRConfig } from "swr";
-import { listQueue, onQueueChanged } from "./queue";
+import { listQueue, onQueueChanged, emitQueueChanged } from "./queue";
 import { processQueue } from "./sync";
 import { getAuthRequired, subscribeAuthRequired } from "./auth-required";
 import type { QueuedAction } from "./types";
@@ -45,10 +45,21 @@ export function useOfflineSync(): void {
     const onOnline = () => void tick();
     window.addEventListener("online", onOnline);
     const interval = setInterval(() => void tick(), 15_000);
+    // Background Sync досылает очередь из SW при свёрнутом приложении (O11). Вернувшись на экран,
+    // вкладка узнаёт об этом сообщением queue-replayed: SW менял IndexedDB вне этой вкладки, поэтому
+    // сами перечитываем очередь (бейджи) и обновляем данные SWR.
+    const onSwMessage = (e: MessageEvent) => {
+      if (e.data && e.data.type === "queue-replayed" && alive) {
+        emitQueueChanged();
+        void mutate(() => true);
+      }
+    };
+    navigator.serviceWorker?.addEventListener("message", onSwMessage);
     return () => {
       alive = false;
       window.removeEventListener("online", onOnline);
       clearInterval(interval);
+      navigator.serviceWorker?.removeEventListener("message", onSwMessage);
     };
   }, [mutate]);
 }

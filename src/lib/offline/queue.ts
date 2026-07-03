@@ -17,6 +17,23 @@ export function onQueueChanged(cb: () => void): () => void {
   return () => window.removeEventListener(CHANGED_EVENT, cb);
 }
 
+/**
+ * Регистрация Background Sync (O11): просим браузер досылать очередь даже при свёрнутом приложении.
+ * Best-effort — нет API (или отзыв разрешения) → тихая деградация к тикам при открытом приложении.
+ * SyncManager не описан в lib.dom, поэтому доступ через локальный расширенный тип.
+ */
+async function registerBackgroundSync(): Promise<void> {
+  try {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const reg = (await navigator.serviceWorker.ready) as ServiceWorkerRegistration & {
+      sync?: { register(tag: string): Promise<void> };
+    };
+    await reg.sync?.register("vanmark-queue");
+  } catch {
+    /* Background Sync недоступен → досылка тиками (use-queue) */
+  }
+}
+
 /** Все действия очереди в порядке постановки (FIFO). Тай-брейк по id (O8): при равном seq у легаси-
  *  записей (голый Date.now() до монотонного nextSeq) порядок иначе был бы неопределённым. */
 export async function listQueue(): Promise<QueuedAction[]> {
@@ -27,6 +44,7 @@ export async function listQueue(): Promise<QueuedAction[]> {
 export async function putQueued(action: QueuedAction): Promise<void> {
   await idbPut(STORE_QUEUE, action.id, action);
   emitQueueChanged();
+  void registerBackgroundSync(); // O11: разбудить SW-досылку, когда появится сеть (даже офлайн-приложение)
 }
 
 export async function dequeue(id: string): Promise<void> {
