@@ -38,6 +38,19 @@ describe("overlayStatus", () => {
     const c = action({ kind: "comment", bodyJson: { text: "привет" } });
     expect(overlayStatus("IN_PROGRESS", [c])).toBe("IN_PROGRESS");
   });
+
+  it("конфликтный переход НЕ искажает статус (O8): виден серверный арбитр", () => {
+    // Взял в работу офлайн, сервер отклонил (задачу отменили) → conflict. Список/карточка должны
+    // показывать серверный CANCELLED, а не «висящий» IN_PROGRESS.
+    const rejected = action({ status: "conflict", bodyJson: { toStatus: "IN_PROGRESS" } });
+    expect(overlayStatus("CANCELLED", [rejected])).toBe("CANCELLED");
+  });
+
+  it("pending поверх, но конфликтный в той же пачке игнорируется", () => {
+    const conflict = action({ id: "a1", seq: 1, status: "conflict", bodyJson: { toStatus: "DONE" } });
+    const pending = action({ id: "a2", seq: 2, status: "pending", bodyJson: { toStatus: "IN_PROGRESS" } });
+    expect(overlayStatus("ASSIGNED", [conflict, pending])).toBe("IN_PROGRESS");
+  });
 });
 
 // Действие смены (O7): kind "shift", без задачи.

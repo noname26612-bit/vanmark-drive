@@ -10,11 +10,16 @@ import type { QueuedAction } from "./types";
 
 type WithToStatus = { toStatus?: unknown };
 
-/** Последний поставленный в очередь переход статуса для задачи перекрывает серверный статус. */
+/**
+ * Последний НЕотправленный (pending/syncing) переход статуса перекрывает серверный статус. Конфликтные
+ * действия исключены (O8): отклонённый сервером переход раньше вечно искажал статус в списке и карточке,
+ * а «обновить» не помогало — теперь по серверному арбитру статус корректен, конфликт разбирается отдельно.
+ */
 export function overlayStatus(serverStatus: TaskStatus, actions: QueuedAction[]): TaskStatus {
   let status = serverStatus;
   for (const a of actions) {
     if (a.kind !== "transition") continue;
+    if (a.status !== "pending" && a.status !== "syncing") continue;
     const to = (a.bodyJson as WithToStatus | undefined)?.toStatus;
     if (typeof to === "string") status = to as TaskStatus;
   }

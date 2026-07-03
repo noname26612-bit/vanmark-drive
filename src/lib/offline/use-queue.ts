@@ -3,11 +3,17 @@
 //  - usePendingActions: реактивный список действий в очереди (опц. по задаче) — для бейджей/счётчика.
 //  - useOfflineSync: фоновый синхронизатор (монтируется один раз в layout водителя) — досылает очередь
 //    при возврате связи, на старте и периодически; после успешной досылки обновляет данные SWR.
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useSWRConfig } from "swr";
 import { listQueue, onQueueChanged } from "./queue";
 import { processQueue } from "./sync";
+import { getAuthRequired, subscribeAuthRequired } from "./auth-required";
 import type { QueuedAction } from "./types";
+
+/** Реактивный флаг «сессия истекла при досылке» (O8) — для баннера «войдите заново». SSR-снимок = false. */
+export function useAuthRequired(): boolean {
+  return useSyncExternalStore(subscribeAuthRequired, getAuthRequired, () => false);
+}
 
 export function usePendingActions(taskId?: string): QueuedAction[] {
   const [actions, setActions] = useState<QueuedAction[]>([]);
