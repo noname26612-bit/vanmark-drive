@@ -27,3 +27,6 @@ coverage/
 .DS_Store
 
 /src/generated/prisma
+
+# SW-версия генерируется prebuild-скриптом (O9)
+public/sw-version.js
