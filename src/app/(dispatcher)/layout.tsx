@@ -3,6 +3,7 @@ import { requireAnyRole } from "@/lib/session";
 import { AppHeader } from "@/components/app-header";
 import { PwaControls } from "@/components/pwa-controls";
 import { DispatcherNav } from "./_components/dispatcher-nav";
+import { TaskDraftsProvider } from "./_components/task-drafts";
 
 // Экраны диспетчера доступны диспетчеру и админу (PRD §2: админ = всё + управление).
 export default async function DispatcherLayout({ children }: { children: ReactNode }) {
@@ -12,7 +13,8 @@ export default async function DispatcherLayout({ children }: { children: ReactNo
       <AppHeader name={user.name} role={user.role} position={user.position} />
       <PwaControls />
       <DispatcherNav showAdmin={user.role === "ADMIN"} />
-      {children}
+      {/* Черновики свёрнутых заявок (доработка №1): провайдер + плашка снизу, общие для всех экранов диспетчера. */}
+      <TaskDraftsProvider>{children}</TaskDraftsProvider>
     </div>
   );
 }

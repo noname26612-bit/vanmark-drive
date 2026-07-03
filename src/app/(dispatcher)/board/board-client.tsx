@@ -36,6 +36,8 @@ import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CreateTaskModal } from "../_components/create-task-modal";
+import { useTaskDrafts } from "../_components/task-drafts";
+import type { FormState } from "@/lib/task-draft";
 
 type DropTarget = { kind: "driver"; driverId: string } | { kind: "undated" };
 
@@ -103,6 +105,20 @@ export function BoardClient({
   );
   const [createOpen, setCreateOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Черновики свёрнутых заявок (доработка №1). editingDraft — черновик, открытый в модалке сейчас
+  // (null = новая заявка). По запросу из плашки (клик по чипу) открываем форму с его данными.
+  const drafts = useTaskDrafts();
+  const [editingDraft, setEditingDraft] = useState<{ id: string; form: FormState } | null>(null);
+  const registerOpenHandler = drafts.registerOpenHandler;
+  useEffect(
+    () =>
+      registerOpenHandler((d) => {
+        setEditingDraft({ id: d.id, form: d.form });
+        setCreateOpen(true);
+      }),
+    [registerOpenHandler],
+  );
 
   // Персональная раскладка пулов (сохраняется в аккаунте). order — заданный диспетчером порядок
   // ключей пулов; collapsed — множество свёрнутых. При перезагрузке приходят с сервера (props).
@@ -235,7 +251,12 @@ export function BoardClient({
     <div className="p-4" data-testid="board">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold text-neutral-900">Сегодня · {formatDate(today)}</h1>
-        <Button onClick={() => setCreateOpen(true)}>
+        <Button
+          onClick={() => {
+            setEditingDraft(null);
+            setCreateOpen(true);
+          }}
+        >
           <Plus className="h-4 w-4" /> Задача
         </Button>
       </div>
@@ -311,12 +332,23 @@ export function BoardClient({
       )}
 
       <CreateTaskModal
+        // key заставляет форму переинициализироваться при каждом открытии (в т.ч. с данными черновика):
+        // без него useState формы инициализировался бы один раз на весь срок жизни модалки.
+        key={createOpen ? (editingDraft?.id ?? "new") : "closed"}
         open={createOpen}
-        onClose={() => setCreateOpen(false)}
+        onClose={() => {
+          setCreateOpen(false);
+          setEditingDraft(null);
+        }}
         types={types}
         drivers={drivers}
         defaultDate={today}
         onCreated={() => void refresh()}
+        initialForm={editingDraft?.form ?? null}
+        onMinimize={(form) => drafts.upsertDraft(form, editingDraft?.id ?? null)}
+        onDiscard={() => {
+          if (editingDraft?.id) drafts.removeDraft(editingDraft.id);
+        }}
       />
     </div>
   );
