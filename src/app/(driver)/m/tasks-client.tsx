@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { Phone, Navigation } from "lucide-react";
@@ -30,6 +30,38 @@ type Tab = "today" | "upcoming";
 
 function isTerminal(s: TaskStatus): boolean {
   return s === "DONE" || s === "CANCELLED";
+}
+
+// Прогрев карточек списка (O10): при связи и ТОЛЬКО при смене набора id (не на каждый 10-с поллинг)
+// последовательно кэшируем данные карточек (cachedFetcher кладёт их в IndexedDB) и, если есть задачи
+// с расценкой, справочник работ; затем просим SW закэшировать HTML этих страниц (warm-pages). Так
+// офлайн открывается любая задача видимого списка, а не только та, что открыли вручную. Прогреваем
+// видимую вкладку — этого достаточно для сценария «просмотр офлайн» (не тянем вторую вкладку в фоне).
+function usePrefetchCards(ids: string[], online: boolean, needCatalog: boolean): void {
+  const sig = ids.slice().sort().join(",");
+  const doneRef = useRef("");
+  useEffect(() => {
+    if (!online || !sig || sig === doneRef.current) return;
+    doneRef.current = sig;
+    let cancelled = false;
+    void (async () => {
+      const list = sig.split(",");
+      for (const id of list) {
+        if (cancelled) return;
+        await cachedFetcher(`/api/tasks/${id}`).catch(() => {});
+      }
+      if (!cancelled && needCatalog) await cachedFetcher("/api/work-catalog").catch(() => {});
+      if (!cancelled && typeof navigator !== "undefined" && navigator.serviceWorker?.controller) {
+        navigator.serviceWorker.controller.postMessage({
+          type: "warm-pages",
+          urls: list.map((id) => `/m/${id}`),
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sig, online, needCatalog]);
 }
 
 // showShift=false — внешний перевозчик (02.07): смен не ведёт, блок смены скрыт.
@@ -64,6 +96,13 @@ export function DriverTasksClient({
     .filter((t) => !isTerminal(display(t)))
     .sort((a, b) => (display(a) === "IN_PROGRESS" ? 0 : 1) - (display(b) === "IN_PROGRESS" ? 0 : 1));
   const done = tasks.filter((t) => isTerminal(display(t))); // в «Сегодня» это завершённые за день
+  // Прогрев карточек (O10): пока связь есть, тихо кэшируем данные и HTML карточек видимого списка,
+  // чтобы офлайн открывалась любая задача дня, а не только та, что успели открыть вручную.
+  usePrefetchCards(
+    tasks.map((t) => t.id),
+    online,
+    tasks.some((t) => t.type.requiresPricing),
+  );
   // Ошибка фонового поллинга, но задачи уже загружены — не сносим список (плохая сеть на объекте).
   const staleError = error && tasks.length > 0;
   // Давность сохранённых данных (O7): офлайн показываем, за какой момент этот список (например,
@@ -150,7 +189,7 @@ export function DriverTasksClient({
         <ul className="flex flex-col gap-3">
           {active.map((t) => (
             <li key={t.id}>
-              <TaskCard task={t} displayStatus={display(t)} pending={pendingCountFor(t)} today={today} />
+              <TaskCard task={t} displayStatus={display(t)} pending={pendingCountFor(t)} today={today} online={online} />
             </li>
           ))}
           {done.length > 0 ? (
@@ -160,7 +199,7 @@ export function DriverTasksClient({
               </li>
               {done.map((t) => (
                 <li key={t.id}>
-                  <TaskCard task={t} displayStatus={display(t)} pending={pendingCountFor(t)} today={today} dimmed />
+                  <TaskCard task={t} displayStatus={display(t)} pending={pendingCountFor(t)} today={today} online={online} dimmed />
                 </li>
               ))}
             </>
@@ -361,14 +400,20 @@ function TaskCard({
   displayStatus,
   pending,
   today,
+  online,
   dimmed,
 }: {
   task: TaskDTO;
   displayStatus: TaskStatus;
   pending: number;
   today: string;
+  online: boolean;
   dimmed?: boolean;
 }) {
+  // Офлайн-переход в карточку (O10): клиентский RSC-переход Next без сети ненадёжен (нужен серверный
+  // payload). Полная навигация через <a> гарантированно проходит через SW (networkFirst → кэш HTML +
+  // данные из IndexedDB). Онлайн оставляем быстрый SPA-переход по <Link>.
+  const CardLink: React.ElementType = online ? Link : "a";
   const dateISO = task.scheduledDate?.slice(0, 10) ?? null;
   const overdue = dateISO !== null && dateISO < today && !isTerminal(displayStatus);
   const undated = dateISO === null && !isTerminal(displayStatus);
@@ -387,7 +432,7 @@ function TaskCard({
         className={`absolute left-0 top-0 h-full w-1.5 ${STATUS_BAR[displayStatus]}`}
         aria-hidden
       />
-      <Link href={`/m/${task.id}`} className="block py-3 pl-4 pr-3">
+      <CardLink href={`/m/${task.id}`} className="block py-3 pl-4 pr-3">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1.5 text-base font-semibold text-neutral-700">
             <TypeIcon name={task.type.icon} className="h-6 w-6" />
@@ -427,9 +472,9 @@ function TaskCard({
         {task.passStatus !== "NOT_NEEDED" ? (
           <Badge className={`mt-2 ${PASS_BADGE[task.passStatus]}`}>{PASS_LABEL[task.passStatus]}</Badge>
         ) : null}
-      </Link>
+      </CardLink>
 
-      {/* Быстрые действия — вне Link, чтобы тап не открывал карточку */}
+      {/* Быстрые действия — вне ссылки, чтобы тап не открывал карточку */}
       <div className="flex gap-2 border-t border-neutral-100 px-3 py-2">
         <a
           href={navUrl(task.addressLink, task.address)}
