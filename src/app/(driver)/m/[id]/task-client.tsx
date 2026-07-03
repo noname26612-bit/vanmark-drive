@@ -10,7 +10,8 @@ import { cachedFetcher } from "@/lib/offline/cached-fetcher";
 import { useOnline } from "@/lib/offline/net";
 import { enqueueOrSend, enqueuePhoto } from "@/lib/offline/send";
 import { usePendingActions } from "@/lib/offline/use-queue";
-import { overlayStatus, overlayShift, currentShift, hasConflict } from "@/lib/offline/overlay";
+import { overlayStatus, overlayShift, currentShift } from "@/lib/offline/overlay";
+import { ConflictCenter } from "../../conflict-center";
 import { getPositionOnce } from "@/lib/geo";
 import { compressImage } from "@/lib/image-compress";
 import type { TaskDetailDTO, WorkCatalogItemDTO } from "@/lib/task-dto";
@@ -161,7 +162,6 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
   // Статус с учётом неотправленных переходов из очереди (оптимистично, пока действие не дошло).
   const displayStatus = overlayStatus(t.status, pending);
   const pendingCount = pending.filter((a) => a.status === "pending" || a.status === "syncing").length;
-  const conflict = hasConflict(pending);
   const pendingPhotos = pending.filter((a) => a.kind === "attachment" && a.blobMeta?.kind === "PHOTO").length;
   const pendingDocs = pending.filter((a) => a.kind === "attachment" && a.blobMeta?.kind === "DOCUMENT").length;
 
@@ -406,6 +406,10 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
           Офлайн — показываю сохранённое
         </p>
       ) : null}
+      {/* Разбор непрошедших офлайн-действий + баннер «сессия истекла» (O8). */}
+      <div className="px-4 pt-3">
+        <ConflictCenter />
+      </div>
       {/* Шапка */}
       <div className="border-b border-neutral-100 px-4 py-3">
         <BackLink href="/m">Мои задачи</BackLink>
@@ -777,11 +781,7 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
             Не отправлено: {pendingCount} — уйдёт при связи
           </p>
         ) : null}
-        {conflict ? (
-          <p className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-center text-sm text-red-700">
-            Действие не прошло: задачу изменил диспетчер. Обновите и повторите.
-          </p>
-        ) : null}
+        {/* Разбор конфликтов — в ConflictCenter вверху карточки (баннер «Не прошло — разобрать», O8). */}
 
         {next ? (
           <>
