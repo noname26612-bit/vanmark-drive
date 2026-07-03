@@ -30,6 +30,7 @@ import type {
   SummaryDetailRow,
   CarrierSummary,
   CarrierTaskRow,
+  ShiftHistoryRow,
 } from "@/lib/summary-dto";
 
 export type {
@@ -516,6 +517,54 @@ export async function getSummaryDetails(
         minutes,
       };
     });
+}
+
+/**
+ * История смен за окно периода (№3, 03.07): журнал смен с временами открытия/закрытия и пометками
+ * правок — для показа и инлайн-правки в «Сводке». Все статусы (не только закрытые): открытую смену
+ * тоже можно поправить/увидеть. Только чтение; правка — через PATCH /api/shifts/:id. Гейт Д/А — в route.
+ * Свежие сверху (по дате, затем по времени открытия).
+ */
+export async function getShiftHistory(
+  granularity: string,
+  anchorRaw: string,
+  driverId?: string,
+): Promise<ShiftHistoryRow[]> {
+  assertGranularity(granularity);
+  const anchor = normalizeAnchor(granularity, anchorRaw);
+  const w = windowKeys(granularity, anchor);
+  const range = coarseUtcRange(w);
+  const rows = await prisma.shift.findMany({
+    where: { date: { gte: range.gte, lt: range.lt }, ...(driverId ? { driverId } : {}) },
+    select: {
+      id: true,
+      driverId: true,
+      date: true,
+      status: true,
+      openedAt: true,
+      closedAt: true,
+      openedAtAdjustNote: true,
+      closedAtAdjustNote: true,
+      driver: { select: { name: true } },
+    },
+    orderBy: [{ date: "desc" }, { openedAt: "desc" }],
+  });
+  return rows
+    .filter((r) => inWindow(utcDateKey(r.date), w))
+    .map((r) => ({
+      id: r.id,
+      driverId: r.driverId,
+      driverName: r.driver.name,
+      dateKey: utcDateKey(r.date),
+      status: r.status,
+      openedAt: r.openedAt.toISOString(),
+      closedAt: r.closedAt ? r.closedAt.toISOString() : null,
+      openedAtAdjustNote: r.openedAtAdjustNote,
+      closedAtAdjustNote: r.closedAtAdjustNote,
+      shiftMinutes: r.closedAt
+        ? Math.max(0, Math.round((r.closedAt.getTime() - r.openedAt.getTime()) / 60000))
+        : null,
+    }));
 }
 
 /**

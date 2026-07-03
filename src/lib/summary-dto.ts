@@ -106,6 +106,23 @@ export type SummaryDetailRow = {
   extra?: string; // доп. подпись (причина, план→факт и т.п.)
 };
 
+// ─── История смен (№3, 03.07): журнал смен периода + правка времени открытия/закрытия ───
+
+/** Строка истории смен: смена за окно периода с временами и пометками правок. Правит Д/А через
+ *  PATCH /api/shifts/:id (openedAtTime/closedAtTime + причина). Гейт — диспетчер/админ. */
+export type ShiftHistoryRow = {
+  id: string;
+  driverId: string;
+  driverName: string;
+  dateKey: string; // YYYY-MM-DD (МСК)
+  status: "REQUESTED" | "OPEN" | "CLOSED";
+  openedAt: string; // ISO — актуальное (возможно скорректированное) время открытия
+  closedAt: string | null; // ISO — актуальное время закрытия; null — не закрыта
+  openedAtAdjustNote: string | null; // причина правки времени открытия (если правили)
+  closedAtAdjustNote: string | null; // причина правки времени закрытия (если правили)
+  shiftMinutes: number | null; // длительность закрытой смены, мин; null — не закрыта
+};
+
 // ─── Затраты на внешнего перевозчика (этап 3, решение Артёма 02.07) ───
 
 /** Строка отчёта: завершённая задача внешнего исполнителя со стоимостью поездки. */

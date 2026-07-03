@@ -5,7 +5,8 @@ import { resetShifts } from "./reset";
 test.beforeEach(resetShifts);
 
 const PASSWORD = process.env.SEED_PASSWORD ?? "vanmark123";
-const today = new Date().toISOString().slice(0, 10);
+// МСК-день: сервер считает день смены в МСК; UTC-дата около полуночи «уедет» на день.
+const today = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Moscow" });
 
 async function login(page: Page, login: string): Promise<void> {
   await page.goto("/login");

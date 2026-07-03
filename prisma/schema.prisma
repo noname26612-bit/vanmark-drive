@@ -328,6 +328,16 @@ model Shift {
   confirmedById String? // диспетчер, подтвердивший открытие
   confirmedAt   DateTime?
   closedAt      DateTime?
+  // Закрытие смены диспетчером/директором/админом (№2, 03.07): кто закрыл смену за водителя (uuid без
+  // навигации). null — закрыл сам водитель (или ещё не закрыта). Аудит, не право.
+  closedById    String?
+  // Корректировка времени ЗАКРЫТИЯ (№3, 03.07) — зеркало правки openedAt. Закрытие влияет на «отработано/
+  // простой» в Сводке, поэтому правим с обязательной причиной и запрещаем в закрытом месяце. В closedAt
+  // держим АКТУАЛЬНОЕ (исправленное) время; reported — снимок исходного до первой правки (null = не правили).
+  closedAtReported     DateTime?
+  closedAtAdjustedById String? // кто поправил время закрытия (диспетчер/админ), uuid без навигации
+  closedAtAdjustedAt   DateTime?
+  closedAtAdjustNote   String? // причина правки времени закрытия
   createdAt     DateTime    @default(now())
   kpiMarks      KpiMark[] // отметки KPI по смене (SHIFT_LATE, этап D)
 

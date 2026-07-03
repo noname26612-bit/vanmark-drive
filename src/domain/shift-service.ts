@@ -24,6 +24,13 @@ export type ShiftView = {
   openedOffline: boolean; // открыта офлайн (O7): openedAt — время телефона, Милене видна пометка
   confirmedAt: string | null;
   closedAt: string | null;
+  // Закрытие смены Д/А (№2) и правка времени закрытия (№3, 03.07). closedById — кто закрыл за водителя
+  // (null — сам водитель). closedAtReported/AdjustNote — исходное время и факт правки (показ «время
+  // скорректировано»).
+  closedById: string | null;
+  closedAtReported: string | null;
+  closedAtAdjustedAt: string | null;
+  closedAtAdjustNote: string | null;
   // Отработано за день по задачам (В работе → Завершено + текущая активная), мин — для полосы на
   // «Сегодня» (№5). Заполняется только в listShiftsForDate; в одиночных ответах не нужно.
   workedMinutes?: number;
@@ -41,6 +48,10 @@ type ShiftRow = {
   openedOffline: boolean;
   confirmedAt: Date | null;
   closedAt: Date | null;
+  closedById: string | null;
+  closedAtReported: Date | null;
+  closedAtAdjustedAt: Date | null;
+  closedAtAdjustNote: string | null;
   driver?: { name: string } | null;
 };
 
@@ -66,6 +77,10 @@ function toView(s: ShiftRow): ShiftView {
     openedOffline: s.openedOffline,
     confirmedAt: s.confirmedAt ? s.confirmedAt.toISOString() : null,
     closedAt: s.closedAt ? s.closedAt.toISOString() : null,
+    closedById: s.closedById,
+    closedAtReported: s.closedAtReported ? s.closedAtReported.toISOString() : null,
+    closedAtAdjustedAt: s.closedAtAdjustedAt ? s.closedAtAdjustedAt.toISOString() : null,
+    closedAtAdjustNote: s.closedAtAdjustNote,
   };
 }
 
@@ -239,6 +254,17 @@ async function syncShiftLate(shift: { id: string; driverId: string; openedAt: Da
  * и привязывается к дате смены → корректный UTC-момент (иначе штраф/время «уедут» на 3 часа).
  * Причина обязательна. Запрещено в закрытом месяце. Время — любое (решение Артёма: раньше/позже факта).
  */
+// Локальное ЧЧ:ММ дня смены → корректный UTC-момент. МСК = UTC+3 (как весь модуль KPI): иначе время
+// открытия/закрытия «уедет» на 3 часа. Валидирует формат.
+function shiftMomentFromHHMM(date: Date, timeHHMM: string): Date {
+  const minutes = parseHHMM(timeHHMM);
+  if (minutes === null) throw Errors.validation("Некорректное время — нужен формат ЧЧ:ММ");
+  const dateKey = date.toISOString().slice(0, 10);
+  const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
+  const mm = String(minutes % 60).padStart(2, "0");
+  return new Date(`${dateKey}T${hh}:${mm}:00.000+03:00`);
+}
+
 async function applyOpenAdjustment(
   shift: ShiftRow,
   timeHHMM: string,
@@ -247,13 +273,7 @@ async function applyOpenAdjustment(
 ): Promise<ShiftRow> {
   const note = (reason ?? "").trim();
   if (!note) throw Errors.validation("Укажите причину правки времени открытия");
-  const minutes = parseHHMM(timeHHMM);
-  if (minutes === null) throw Errors.validation("Некорректное время — нужен формат ЧЧ:ММ");
-  const dateKey = shift.date.toISOString().slice(0, 10);
-  const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
-  const mm = String(minutes % 60).padStart(2, "0");
-  // МСК = UTC+3 (как весь модуль KPI): локальное ЧЧ:ММ дня смены → корректный UTC-момент.
-  const newOpenedAt = new Date(`${dateKey}T${hh}:${mm}:00.000+03:00`);
+  const newOpenedAt = shiftMomentFromHHMM(shift.date, timeHHMM);
   const period = periodOf(newOpenedAt);
   if (await isPeriodClosed(period)) throw Errors.periodClosed();
   const updated = await prisma.shift.update({
@@ -306,6 +326,84 @@ export async function adjustShiftOpenedAt(
   const shift = await prisma.shift.findUnique({ where: { id: shiftId } });
   if (!shift) throw Errors.notFound();
   return toView(await applyOpenAdjustment(shift, input.timeHHMM, input.reason, actor));
+}
+
+/**
+ * Закрыть смену водителя диспетчером/директором/админом (№2, 03.07). Гейт роли (Д/А) — в route handler;
+ * работаем по shiftId, личность водителя берётся из самой смены (изоляция цела). closedById фиксирует,
+ * кто закрыл. Идемпотентно: уже закрытая смена возвращается как есть. По умолчанию closedAt = «сейчас»;
+ * можно задать время вручную (ЧЧ:ММ дня смены) с опциональной причиной — тогда пишем пометку в аудит
+ * (reported не нужен: это первое закрытие, прежнего времени не было). Ручное время в закрытом месяце
+ * запрещено (влияет на «простой» и деньги в Сводке).
+ */
+export async function closeShiftById(
+  shiftId: string,
+  actor: Actor,
+  adjust?: { closedAtTime?: string | null; reason?: string | null },
+): Promise<ShiftView> {
+  const shift = await prisma.shift.findUnique({
+    where: { id: shiftId },
+    include: { driver: { select: { name: true } } },
+  });
+  if (!shift) throw Errors.notFound();
+  if (shift.status === "CLOSED") return toView(shift); // идемпотентно
+  const timeHHMM = (adjust?.closedAtTime ?? "").trim();
+  const reason = (adjust?.reason ?? "").trim();
+  const closedAt = timeHHMM ? shiftMomentFromHHMM(shift.date, timeHHMM) : new Date();
+  if (timeHHMM && (await isPeriodClosed(periodOf(closedAt)))) throw Errors.periodClosed();
+  const auditManualTime =
+    timeHHMM && reason
+      ? { closedAtAdjustNote: reason, closedAtAdjustedById: actor.id, closedAtAdjustedAt: new Date() }
+      : {};
+  const updated = await prisma.shift.update({
+    where: { id: shift.id },
+    data: { status: "CLOSED", closedAt, closedById: actor.id, ...auditManualTime },
+    include: { driver: { select: { name: true } } },
+  });
+  return toView(updated);
+}
+
+/**
+ * Применить корректировку времени ЗАКРЫТИЯ (№3) — зеркало applyOpenAdjustment. Причина обязательна,
+ * сохраняем снимок исходного closedAt и аудит, запрещаем в закрытом месяце. SHIFT_LATE не трогаем
+ * (он про открытие); «простой» в Сводке считается на лету по closedAt−openedAt и отразит правку сам.
+ */
+async function applyCloseAdjustment(
+  shift: ShiftRow,
+  timeHHMM: string,
+  reason: string,
+  actor: Actor,
+): Promise<ShiftRow> {
+  const note = (reason ?? "").trim();
+  if (!note) throw Errors.validation("Укажите причину правки времени закрытия");
+  const newClosedAt = shiftMomentFromHHMM(shift.date, timeHHMM);
+  if (await isPeriodClosed(periodOf(newClosedAt))) throw Errors.periodClosed();
+  return prisma.shift.update({
+    where: { id: shift.id },
+    data: {
+      closedAt: newClosedAt,
+      closedAtReported: shift.closedAtReported ?? shift.closedAt, // снимок исходного при первой правке
+      closedAtAdjustedById: actor.id,
+      closedAtAdjustedAt: new Date(),
+      closedAtAdjustNote: note,
+    },
+    include: { driver: { select: { name: true } } },
+  });
+}
+
+/**
+ * Правка времени закрытия задним числом (диспетчер/админ, №3): только для уже закрытой смены, пока
+ * месяц не закрыт. Сохраняет исходное время и аудит.
+ */
+export async function adjustShiftClosedAt(
+  shiftId: string,
+  input: { timeHHMM: string; reason: string },
+  actor: Actor,
+): Promise<ShiftView> {
+  const shift = await prisma.shift.findUnique({ where: { id: shiftId } });
+  if (!shift) throw Errors.notFound();
+  if (!shift.closedAt) throw Errors.validation("Смена ещё не закрыта — время закрытия править нельзя");
+  return toView(await applyCloseAdjustment(shift, input.timeHHMM, input.reason, actor));
 }
 
 /**
