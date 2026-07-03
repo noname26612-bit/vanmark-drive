@@ -3,7 +3,7 @@
 import { vi, describe, it, expect, beforeEach } from "vitest";
 
 // Всё, к чему обращаются hoisted-фабрики vi.mock, определяем внутри vi.hoisted — иначе ReferenceError.
-const { findUnique, create, FakeKnownError } = vi.hoisted(() => {
+const { findUnique, create, deleteMany, FakeKnownError } = vi.hoisted(() => {
   // Подмена класса известной ошибки Prisma — для проверки ветки P2002 без реального клиента.
   class FakeKnownError extends Error {
     code: string;
@@ -12,22 +12,23 @@ const { findUnique, create, FakeKnownError } = vi.hoisted(() => {
       this.code = code;
     }
   }
-  return { findUnique: vi.fn(), create: vi.fn(), FakeKnownError };
+  return { findUnique: vi.fn(), create: vi.fn(), deleteMany: vi.fn(), FakeKnownError };
 });
 vi.mock("@/lib/prisma", () => ({
-  prisma: { processedAction: { findUnique, create } },
+  prisma: { processedAction: { findUnique, create, deleteMany } },
 }));
 vi.mock("@/generated/prisma/client", () => ({
   Prisma: { PrismaClientKnownRequestError: FakeKnownError },
 }));
 
-import { withIdempotency } from "./idempotency";
+import { withIdempotency, cleanupProcessedActions } from "./idempotency";
 
 const ME = { id: "user-a" };
 
 beforeEach(() => {
   findUnique.mockReset();
   create.mockReset();
+  deleteMany.mockReset();
 });
 
 describe("withIdempotency — exactly-once офлайн-досылки (preflight-аудит В7)", () => {
@@ -94,5 +95,26 @@ describe("withIdempotency — exactly-once офлайн-досылки (prefligh
     create.mockRejectedValue(new FakeKnownError("P9999"));
     const run = vi.fn().mockResolvedValue({ done: true });
     await expect(withIdempotency("key1", ME, "transition", run)).rejects.toBeInstanceOf(FakeKnownError);
+  });
+});
+
+describe("cleanupProcessedActions — TTL реестра (O11)", () => {
+  it("удаляет записи старше N дней (cutoff = now − N·сутки)", async () => {
+    deleteMany.mockResolvedValue({ count: 7 });
+    const now = new Date("2026-07-03T04:00:00.000Z");
+    const removed = await cleanupProcessedActions(60, now);
+    expect(removed).toBe(7);
+    const where = deleteMany.mock.calls[0][0].where;
+    const cutoff = where.createdAt.lt as Date;
+    // 60 суток назад от 03.07 → 04.05
+    expect(cutoff.toISOString()).toBe("2026-05-04T04:00:00.000Z");
+  });
+
+  it("порог 60 дней ≫ окна достоверности 36 ч — свежие записи не трогаем", async () => {
+    deleteMany.mockResolvedValue({ count: 0 });
+    const now = new Date("2026-07-03T00:00:00.000Z");
+    await cleanupProcessedActions(60, now);
+    const cutoff = deleteMany.mock.calls[0][0].where.createdAt.lt as Date;
+    expect(now.getTime() - cutoff.getTime()).toBe(60 * 24 * 60 * 60 * 1000);
   });
 });

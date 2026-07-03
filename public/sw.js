@@ -233,3 +233,118 @@ self.addEventListener("notificationclick", (event) => {
     })(),
   );
 });
+
+// ——— Background Sync: досылка очереди при свёрнутом приложении (O11) ———
+// Когда водитель завершил задачу без связи и убрал телефон в карман, действие должно уйти на сервер
+// само, как только появится сеть — даже если PWA закрыта. Браузер будит SW событием `sync` (тег
+// vanmark-queue) и повторяет его, пока прогон не завершится успешно. Логика дублирует sync.ts на
+// vanilla (SW не импортирует TS-модули приложения); идемпотентность сервера страхует любые гонки с
+// открытой вкладкой, а Web Locks не дают гнать досылку из SW и из вкладки одновременно.
+const OFFLINE_DB = "vanmark-offline";
+const Q_STORE = "queue";
+const B_STORE = "blobs";
+
+function openOfflineDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(OFFLINE_DB); // без версии — открыть существующую (её создало приложение)
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function idbTx(db, store, mode, fn) {
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(store, mode);
+    const r = fn(t.objectStore(store));
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+const idbAll = (db, store) => idbTx(db, store, "readonly", (s) => s.getAll());
+const idbGetKey = (db, store, key) => idbTx(db, store, "readonly", (s) => s.get(key));
+const idbDelKey = (db, store, key) => idbTx(db, store, "readwrite", (s) => s.delete(key));
+const idbPutKey = (db, store, key, val) => idbTx(db, store, "readwrite", (s) => s.put(val, key));
+
+// Отправка одного действия: JSON-мутация или multipart (фото/акт из blob). Возвращает Response
+// (в т.ч. синтетический 422 при потерянном blob — чтобы пометилось конфликтом, как в send.ts).
+async function sendQueuedAction(db, a) {
+  const headers = { "Idempotency-Key": a.id, "X-Occurred-At": a.occurredAt };
+  if (a.blobId) {
+    const rec = await idbGetKey(db, B_STORE, a.blobId).catch(() => null);
+    if (!rec) {
+      return new Response(
+        JSON.stringify({ error: { code: "BLOB_MISSING", message: "Фото не сохранилось на телефоне — снимите заново" } }),
+        { status: 422, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    const form = new FormData();
+    form.append("file", rec.blob, rec.name);
+    if (a.blobMeta && a.blobMeta.kind === "DOCUMENT") form.append("kind", "DOCUMENT");
+    return fetch(a.url, { method: "POST", body: form, headers });
+  }
+  return fetch(a.url, {
+    method: a.method,
+    headers: Object.assign({ "Content-Type": "application/json" }, headers),
+    body: a.bodyJson === undefined ? undefined : JSON.stringify(a.bodyJson),
+  });
+}
+
+// Прогон очереди FIFO. Сеть/5xx → throw (браузер повторит sync); 401/403 → стоп; 4xx → конфликт.
+async function replayQueue() {
+  let db;
+  try {
+    db = await openOfflineDb();
+  } catch (e) {
+    return; // БД ещё не создана (приложение ни разу не открывали) — нечего досылать
+  }
+  const actions = (await idbAll(db, Q_STORE).catch(() => [])).sort(
+    (a, b) => a.seq - b.seq || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+  let replayed = 0;
+  for (const a of actions) {
+    if (a.status === "conflict") continue;
+    let res;
+    try {
+      res = await sendQueuedAction(db, a);
+    } catch (e) {
+      throw e; // нет сети — пробрасываем, браузер перезапустит sync позже
+    }
+    if (res.ok) {
+      await idbDelKey(db, Q_STORE, a.id);
+      if (a.blobId) await idbDelKey(db, B_STORE, a.blobId).catch(() => {});
+      replayed++;
+    } else if (res.status === 401 || res.status === 403) {
+      break; // сессия истекла — стоп (после входа очередь досошлёт открытая вкладка)
+    } else if (res.status >= 500) {
+      throw new Error("server " + res.status); // retryable — пусть браузер повторит sync
+    } else {
+      const body = await res.json().catch(() => null);
+      const lastError = {
+        code: (body && body.error && body.error.code) || "HTTP_" + res.status,
+        message: (body && body.error && body.error.message) || "Ошибка",
+      };
+      await idbPutKey(db, Q_STORE, a.id, Object.assign({}, a, { status: "conflict", attempts: (a.attempts || 0) + 1, lastError }));
+    }
+  }
+  if (replayed > 0) {
+    const cs = await self.clients.matchAll({ includeUncontrolled: true });
+    for (const c of cs) c.postMessage({ type: "queue-replayed" });
+  }
+}
+
+// Координация с открытой вкладкой (processQueue тоже берёт этот лок): ifAvailable — не ждём, если
+// вкладка уже досылает; серверная идемпотентность страхует, даже если оба прошли одновременно.
+async function replayWithLock() {
+  if (navigator.locks && navigator.locks.request) {
+    await navigator.locks.request("vanmark-queue", { ifAvailable: true }, async (lock) => {
+      if (!lock) return;
+      await replayQueue();
+    });
+  } else {
+    await replayQueue();
+  }
+}
+
+self.addEventListener("sync", (event) => {
+  if (event.tag === "vanmark-queue") event.waitUntil(replayWithLock());
+});

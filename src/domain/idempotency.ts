@@ -51,3 +51,15 @@ export async function withIdempotency<T>(
 
   return result;
 }
+
+/**
+ * Чистка реестра идемпотентности (O11): удаляет записи старше `olderThanDays` дней. Реестр нужен лишь
+ * чтобы досылка не задвоила уже применённое действие, а окно достоверности клиентского времени —
+ * 36 часов (`occurred-at.ts`); 60 дней ≫ этого окна, так что удаление старых записей безопасно
+ * (действие такого возраста уже не досылается). Гоняется ночным cron — вечный реестр не пухнет.
+ */
+export async function cleanupProcessedActions(olderThanDays: number, now: Date = new Date()): Promise<number> {
+  const cutoff = new Date(now.getTime() - olderThanDays * 24 * 60 * 60 * 1000);
+  const res = await prisma.processedAction.deleteMany({ where: { createdAt: { lt: cutoff } } });
+  return res.count;
+}

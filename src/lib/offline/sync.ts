@@ -56,21 +56,36 @@ export async function runQueueOnce(deps: QueueDeps): Promise<number> {
 
 let running = false;
 
-/** Прогон очереди (боевые зависимости). Возвращает число досланных действий (вызывающий решает про ревалидацию). */
+const DEPS = {
+  list: listQueue,
+  send: sendAction,
+  remove: dequeue,
+  dropBlob: (blobId: string) => idbDelete(STORE_BLOBS, blobId),
+  markConflict: (a: QueuedAction, lastError: { code: string; message: string }) =>
+    putQueued({ ...a, status: "conflict", attempts: a.attempts + 1, lastError }),
+  onAuthRequired: () => setAuthRequired(true),
+  onAuthOk: () => setAuthRequired(false),
+};
+
+/**
+ * Прогон очереди (боевые зависимости). Возвращает число досланных действий (вызывающий решает про
+ * ревалидацию). O11: берём Web Lock "vanmark-queue" (ifAvailable) — чтобы не гнать досылку из вкладки
+ * и из SW-Background-Sync одновременно; занят лок → пропускаем (SW уже досылает), идемпотентность
+ * сервера всё равно страхует. Нет Web Locks API → прогон как раньше.
+ */
 export async function processQueue(): Promise<number> {
-  if (running) return 0; // один прогон за раз (досылка строго последовательна)
+  if (running) return 0; // один прогон за раз в этой вкладке
   running = true;
   try {
-    return await runQueueOnce({
-      list: listQueue,
-      send: sendAction,
-      remove: dequeue,
-      dropBlob: (blobId) => idbDelete(STORE_BLOBS, blobId),
-      markConflict: (a, lastError) =>
-        putQueued({ ...a, status: "conflict", attempts: a.attempts + 1, lastError }),
-      onAuthRequired: () => setAuthRequired(true),
-      onAuthOk: () => setAuthRequired(false),
-    });
+    if (typeof navigator !== "undefined" && navigator.locks?.request) {
+      let sent = 0;
+      await navigator.locks.request("vanmark-queue", { ifAvailable: true }, async (lock) => {
+        if (!lock) return; // SW-replay держит лок — не мешаем
+        sent = await runQueueOnce(DEPS);
+      });
+      return sent;
+    }
+    return await runQueueOnce(DEPS);
   } finally {
     running = false;
   }
