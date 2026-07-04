@@ -9,7 +9,8 @@ import type { TaskDTO } from "@/lib/task-dto";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
-import { CalendarPlus } from "lucide-react";
+import { CalendarPlus, CheckCircle2, Circle, XCircle } from "lucide-react";
+import { STATUS_LABEL } from "@/lib/task-ui";
 import { DateField } from "@/components/ui/date-field";
 
 const HORIZON_DAYS = 14; // 2 недели (PRD §14.4)
@@ -151,7 +152,7 @@ export function CapacityCalendarClient() {
           <table className="w-full border-collapse text-sm" data-testid="capacity-grid">
             <thead>
               <tr className="border-b border-neutral-200">
-                <th className="sticky left-0 z-10 bg-white px-3 py-2 text-left text-xs font-medium text-neutral-400">
+                <th className="sticky left-0 z-10 bg-white px-4 py-3 text-left text-sm font-medium text-neutral-400">
                   Водитель
                 </th>
                 {data.days.map((day) => {
@@ -159,12 +160,12 @@ export function CapacityCalendarClient() {
                   return (
                     <th
                       key={day}
-                      className={`px-2 py-2 text-center text-xs font-medium ${
+                      className={`px-2.5 py-3 text-center text-sm font-medium ${
                         isWeekend(day) ? "bg-neutral-50 text-neutral-400" : "text-neutral-500"
                       }`}
                     >
                       <div>{WEEKDAYS[m.weekday]}</div>
-                      <div className="font-normal">{m.label}</div>
+                      <div className="text-xs font-normal text-neutral-400">{m.label}</div>
                     </th>
                   );
                 })}
@@ -173,8 +174,8 @@ export function CapacityCalendarClient() {
             <tbody>
               {data.drivers.map((d) => (
                 <tr key={d.id} className="border-b border-neutral-100 last:border-0">
-                  <th className="sticky left-0 z-10 bg-white px-3 py-2 text-left font-medium text-neutral-800">
-                    <div>{d.name}</div>
+                  <th className="sticky left-0 z-10 bg-white px-4 py-3 text-left font-medium text-neutral-800">
+                    <div className="text-sm">{d.name}</div>
                     {d.specialization !== "ANY" ? (
                       <Badge className="mt-0.5 bg-neutral-100 text-neutral-500">{SPEC_LABEL[d.specialization]}</Badge>
                     ) : null}
@@ -186,14 +187,14 @@ export function CapacityCalendarClient() {
                     // день всё же висит задача — подсвечиваем как проблему (нужно перепланировать).
                     if (abs) {
                       return (
-                        <td key={day} className="p-1 text-center">
+                        <td key={day} className="p-1.5 text-center">
                           <div
-                            className="flex h-14 w-full flex-col items-center justify-center gap-0.5 rounded-md bg-red-800 text-red-50"
+                            className="flex h-[76px] w-full flex-col items-center justify-center gap-1 rounded-lg bg-red-800 text-red-50"
                             title={ABSENCE_LABEL[abs.type] + (abs.note ? ` · ${abs.note}` : "")}
                           >
-                            <span className="text-[11px] font-medium leading-tight">{ABSENCE_SHORT[abs.type]}</span>
+                            <span className="text-sm font-medium leading-tight">{ABSENCE_SHORT[abs.type]}</span>
                             {cell.count > 0 ? (
-                              <span className="text-[10px] font-semibold leading-tight text-amber-300">
+                              <span className="text-xs font-semibold leading-tight text-amber-300">
                                 {cell.count} зад.!
                               </span>
                             ) : null}
@@ -202,21 +203,21 @@ export function CapacityCalendarClient() {
                       );
                     }
                     return (
-                      <td key={day} className="p-1 text-center">
+                      <td key={day} className="p-1.5 text-center">
                         <button
                           type="button"
                           disabled={cell.count === 0}
                           onClick={() => setSel({ driverId: d.id, driverName: d.name, day })}
-                          className={`relative flex h-14 w-full flex-col items-center justify-center gap-0.5 overflow-hidden rounded-md ${loadClass(
+                          className={`relative flex h-[76px] w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg ${loadClass(
                             cell,
                             data.workdayMinutes,
                           )} ${cell.count > 0 ? "cursor-pointer hover:ring-2 hover:ring-neutral-300" : "cursor-default"}`}
                         >
                           {cell.count > 0 ? (
                             <>
-                              <span className="text-xs font-semibold leading-tight">{formatMinutes(cell.minutes)}</span>
-                              <span className="text-[10px] leading-tight">{cell.count} зад.</span>
-                              <span className="absolute inset-x-1.5 bottom-1 block h-1 overflow-hidden rounded-full bg-black/10">
+                              <span className="text-sm font-semibold leading-tight">{formatMinutes(cell.minutes)}</span>
+                              <span className="text-xs leading-tight">{cell.count} зад.</span>
+                              <span className="absolute inset-x-2 bottom-1.5 block h-1.5 overflow-hidden rounded-full bg-black/10">
                                 <span
                                   className={`block h-full rounded-full ${loadBarClass(cell, data.workdayMinutes)}`}
                                   style={{ width: `${loadFraction(cell, data.workdayMinutes) * 100}%` }}
@@ -224,7 +225,7 @@ export function CapacityCalendarClient() {
                               </span>
                             </>
                           ) : (
-                            <span className="text-xs">—</span>
+                            <span className="text-sm text-neutral-400">—</span>
                           )}
                         </button>
                       </td>
@@ -378,7 +379,51 @@ function AbsenceManager({
   );
 }
 
-// Панель задач конкретной ячейки (водитель × день). Тянет список через общий /api/tasks.
+// Индикатор статуса задачи в окне дня (№3б, 04.07): галочка=сделано (зелёная подсветка), крест=отменена
+// (красная подсветка, зачёркнуто), синий кружок=в работе, серый кружок=не начата. Цвета — из палитры
+// проекта (ui-guidelines): зелёный=готово, красный=сорвано.
+function taskStatusVisual(status: TaskDTO["status"]): {
+  Icon: typeof Circle;
+  iconCls: string;
+  rowCls: string;
+  labelCls: string;
+  strike: boolean;
+} {
+  if (status === "DONE")
+    return {
+      Icon: CheckCircle2,
+      iconCls: "text-green-600",
+      rowCls: "border-green-200 bg-green-50",
+      labelCls: "text-green-700",
+      strike: false,
+    };
+  if (status === "CANCELLED")
+    return {
+      Icon: XCircle,
+      iconCls: "text-red-600",
+      rowCls: "border-red-200 bg-red-50",
+      labelCls: "text-red-700",
+      strike: true,
+    };
+  if (status === "IN_PROGRESS")
+    return {
+      Icon: Circle,
+      iconCls: "text-blue-600",
+      rowCls: "border-neutral-200 bg-white",
+      labelCls: "text-blue-700",
+      strike: false,
+    };
+  return {
+    Icon: Circle,
+    iconCls: "text-slate-400",
+    rowCls: "border-neutral-200 bg-white",
+    labelCls: "text-neutral-500",
+    strike: false,
+  };
+}
+
+// Панель задач конкретной ячейки (водитель × день). Тянет список через общий /api/tasks. Статус
+// выполнения приходит в TaskDTO.status — показываем галочкой и подсветкой строки (№3б).
 function DayDetail({
   sel,
   onClose,
@@ -393,6 +438,8 @@ function DayDetail({
     fetcher,
   );
   const total = (tasks ?? []).reduce((s, t) => s + (t.estimatedMinutes ?? 0), 0);
+  const cell: Cell = { minutes: total, count: tasks?.length ?? 0 };
+  const pct = Math.min(100, Math.round(loadFraction(cell, workdayMinutes) * 100));
 
   return (
     <Modal
@@ -405,22 +452,43 @@ function DayDetail({
       ) : tasks.length === 0 ? (
         <p className="text-sm text-neutral-500">Задач нет.</p>
       ) : (
-        <div className="flex flex-col gap-2">
-          <p className="text-sm text-neutral-600">
-            Итого ≈ {formatMinutes(total)} из {formatMinutes(workdayMinutes)}
-          </p>
-          <ul className="flex flex-col gap-1.5">
-            {tasks.map((t) => (
-              <li key={t.id} className="flex items-center justify-between gap-2 rounded-lg border border-neutral-200 px-3 py-2">
-                <Link href={`/tasks/${t.id}`} className="min-w-0 flex-1 truncate text-sm text-blue-700 hover:underline">
-                  №{t.number} · {t.title}
-                </Link>
-                <span className="shrink-0 text-xs text-neutral-500">
-                  {t.timeFrom ? `${t.timeFrom} · ` : ""}
-                  {t.estimatedMinutes != null ? formatMinutes(t.estimatedMinutes) : "—"}
-                </span>
-              </li>
-            ))}
+        <div className="flex flex-col gap-3">
+          <div>
+            <div className="mb-1.5 flex items-baseline justify-between gap-2">
+              <span className="text-sm text-neutral-500">Загрузка дня · {tasks.length} зад.</span>
+              <span className="text-sm font-medium text-neutral-800">
+                {formatMinutes(total)} <span className="font-normal text-neutral-400">из {formatMinutes(workdayMinutes)}</span>
+              </span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-neutral-100">
+              <div
+                className={`h-full rounded-full ${loadBarClass(cell, workdayMinutes)}`}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+          </div>
+          <ul className="flex flex-col gap-2">
+            {tasks.map((t) => {
+              const v = taskStatusVisual(t.status);
+              const Icon = v.Icon;
+              return (
+                <li key={t.id} className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 ${v.rowCls}`}>
+                  <Icon className={`h-5 w-5 shrink-0 ${v.iconCls}`} />
+                  <Link href={`/tasks/${t.id}`} className="min-w-0 flex-1 hover:underline">
+                    <div
+                      className={`truncate text-sm text-neutral-800 ${v.strike ? "line-through decoration-neutral-400" : ""}`}
+                    >
+                      №{t.number} · {t.title}
+                    </div>
+                    <div className={`text-xs ${v.labelCls}`}>{STATUS_LABEL[t.status]}</div>
+                  </Link>
+                  <span className="shrink-0 text-xs text-neutral-500">
+                    {t.timeFrom ? `${t.timeFrom} · ` : ""}
+                    {t.estimatedMinutes != null ? formatMinutes(t.estimatedMinutes) : "—"}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

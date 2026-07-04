@@ -14,6 +14,7 @@ import {
   GripVertical,
   ChevronLeft,
   ChevronRight,
+  Pencil,
 } from "lucide-react";
 import { fetcher, apiSend } from "@/lib/fetcher";
 import { mergeOrder, moveTo } from "@/lib/pool-order";
@@ -663,6 +664,44 @@ function ShiftWorkloadRow({
       setCloseBusy(false);
     }
   }
+
+  // Правка времени смены прямо с доски (№1, 04.07): открытие или закрытие (для закрытой смены), с
+  // обязательной причиной — тот же PATCH, что и в «Истории смен» Сводки.
+  const [editing, setEditing] = useState<null | "open" | "close">(null);
+  const [editTime, setEditTime] = useState("");
+  const [editReason, setEditReason] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  function startEditShift(kind: "open" | "close") {
+    if (!shift) return;
+    const src = kind === "close" ? (shift.closedAt ?? shift.openedAt) : shift.openedAt;
+    setEditTime(shiftHHMM(src));
+    setEditReason("");
+    setEditError(null);
+    setEditing(kind);
+  }
+  async function saveEdit() {
+    if (!shift || !editing) return;
+    if (!editReason.trim()) {
+      setEditError("Укажите причину правки");
+      return;
+    }
+    setEditBusy(true);
+    setEditError(null);
+    try {
+      const body =
+        editing === "open"
+          ? { openedAtTime: editTime, reason: editReason }
+          : { closedAtTime: editTime, reason: editReason };
+      await apiSend(`/api/shifts/${shift.id}`, "PATCH", body);
+      await onChange();
+      setEditing(null);
+    } catch (e) {
+      setEditError((e as Error).message);
+    } finally {
+      setEditBusy(false);
+    }
+  }
   // Кнопка «Простой» + метка суммы за день (02.07) — и в строке без смены (пометка возможна всегда).
   const idleControls = (
     <>
@@ -727,6 +766,14 @@ function ShiftWorkloadRow({
               Закрыть
             </Button>
           )}
+          <Button
+            variant="ghost"
+            className="h-7 px-2 text-xs text-slate-600"
+            onClick={() => startEditShift(shift.status === "CLOSED" ? "close" : "open")}
+            title="Изменить время смены"
+          >
+            <Pencil className="h-3.5 w-3.5" /> Изменить
+          </Button>
           <span className={chip.cls}>{chip.label}</span>
         </span>
       </div>
@@ -799,6 +846,70 @@ function ShiftWorkloadRow({
             </Button>
           </div>
           {closeError ? <p className="mt-1 text-red-600">{closeError}</p> : null}
+        </div>
+      ) : null}
+      {editing ? (
+        <div
+          data-testid="shift-edit-panel"
+          className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs"
+        >
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="font-medium text-slate-700">Изменить время — {name}:</span>
+            <div className="inline-flex overflow-hidden rounded-md border border-slate-300">
+              <button
+                type="button"
+                data-testid="shift-edit-pick-open"
+                onClick={() => startEditShift("open")}
+                className={`px-2.5 py-1 ${editing === "open" ? "bg-slate-800 text-white" : "bg-white text-slate-600"}`}
+              >
+                Открытие
+              </button>
+              {shift.closedAt ? (
+                <button
+                  type="button"
+                  data-testid="shift-edit-pick-close"
+                  onClick={() => startEditShift("close")}
+                  className={`px-2.5 py-1 ${editing === "close" ? "bg-slate-800 text-white" : "bg-white text-slate-600"}`}
+                >
+                  Закрытие
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="time"
+              data-testid="shift-edit-time"
+              value={editTime}
+              onChange={(e) => setEditTime(e.target.value)}
+              className="h-8 rounded-md border border-slate-300 px-2"
+            />
+            <input
+              type="text"
+              data-testid="shift-edit-reason"
+              value={editReason}
+              onChange={(e) => setEditReason(e.target.value)}
+              placeholder="Причина правки"
+              className="h-8 min-w-0 flex-1 rounded-md border border-slate-300 px-2"
+            />
+            <Button
+              data-testid="shift-edit-save"
+              className="h-8 px-3 text-xs"
+              onClick={() => void saveEdit()}
+              disabled={editBusy || !editTime.trim()}
+            >
+              Сохранить
+            </Button>
+            <Button
+              variant="ghost"
+              className="h-8 px-3 text-xs"
+              onClick={() => setEditing(null)}
+              disabled={editBusy}
+            >
+              Отмена
+            </Button>
+          </div>
+          {editError ? <p className="mt-1 text-red-600">{editError}</p> : null}
         </div>
       ) : null}
     </div>
