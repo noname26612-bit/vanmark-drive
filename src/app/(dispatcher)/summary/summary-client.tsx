@@ -6,6 +6,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
+import { Pencil } from "lucide-react";
 import { fetcher, apiSend } from "@/lib/fetcher";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
@@ -262,23 +263,23 @@ function ShiftHistoryItem({ row, onChanged }: { row: ShiftHistoryRow; onChanged:
           </span>
         </div>
       </div>
-      <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
         <button
           type="button"
           data-testid="shift-edit-open"
           onClick={() => startEdit("open")}
-          className="rounded px-1.5 py-0.5 text-neutral-500 underline-offset-2 hover:bg-neutral-50 hover:underline"
+          className="inline-flex items-center gap-1.5 rounded-md border border-neutral-300 bg-white px-2.5 py-1 font-medium text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-50"
         >
-          Править открытие
+          <Pencil className="h-3.5 w-3.5" /> Править открытие
         </button>
         {row.closedAt ? (
           <button
             type="button"
             data-testid="shift-edit-close"
             onClick={() => startEdit("close")}
-            className="rounded px-1.5 py-0.5 text-neutral-500 underline-offset-2 hover:bg-neutral-50 hover:underline"
+            className="inline-flex items-center gap-1.5 rounded-md border border-neutral-300 bg-white px-2.5 py-1 font-medium text-neutral-700 transition-colors hover:border-neutral-400 hover:bg-neutral-50"
           >
-            Править закрытие
+            <Pencil className="h-3.5 w-3.5" /> Править закрытие
           </button>
         ) : null}
         {row.shiftMinutes != null ? (

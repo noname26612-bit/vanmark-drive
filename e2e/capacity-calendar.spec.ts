@@ -105,6 +105,18 @@ test("календарь: суммирует оценки и считает за
   await milena.goto("/capacity");
   await expect(milena.getByTestId("capacity-grid")).toBeVisible();
 
+  // Окно дня (№3б) показывает статус каждой задачи: кликаем загруженную ячейку Каширского.
+  const kRow = milena.locator("tr", { hasText: "Алексей Каширский" });
+  await kRow.locator("button:not([disabled])").first().click();
+  const dialog = milena.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("Загрузка дня", { exact: false })).toBeVisible();
+  await expect(
+    dialog
+      .getByText(/Назначена|Завершена|В работе|Новая|Отменена|На паузе|Принята|В пути|На месте|Перенесена/)
+      .first(),
+  ).toBeVisible();
+
   await actx.close();
   await mctx.close();
 });
