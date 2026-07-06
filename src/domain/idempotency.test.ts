@@ -18,7 +18,8 @@ vi.mock("@/lib/prisma", () => ({
   prisma: { processedAction: { findUnique, create, deleteMany } },
 }));
 vi.mock("@/generated/prisma/client", () => ({
-  Prisma: { PrismaClientKnownRequestError: FakeKnownError },
+  // JsonNull — sentinel для записи JSON null в required-поле (в реале это спец-значение Prisma).
+  Prisma: { PrismaClientKnownRequestError: FakeKnownError, JsonNull: "JSON_NULL" },
 }));
 
 import { withIdempotency, cleanupProcessedActions } from "./idempotency";
@@ -57,6 +58,27 @@ describe("withIdempotency — exactly-once офлайн-досылки (prefligh
     expect(run).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledTimes(1);
     expect(create.mock.calls[0][0].data).toMatchObject({ key: "key1", userId: "user-a", kind: "transition" });
+  });
+
+  it("void-результат (undefined) → в реестр пишем JSON null, барьер НЕ падает (регресс инцидента 04.07: comment/delete роняли очередь)", async () => {
+    findUnique.mockResolvedValue(null);
+    create.mockResolvedValue({});
+    const run = vi.fn().mockResolvedValue(undefined); // addComment/attachment-delete/work-item-delete → Promise<void>
+    const r = await withIdempotency("key1", ME, "comment", run);
+    expect(r).toBeUndefined();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    // Ключевое: resultJson НЕ undefined (Prisma отвергла бы required-поле), а JSON null.
+    expect(create.mock.calls[0][0].data.resultJson).toBe("JSON_NULL");
+  });
+
+  it("повтор void-действия → run() НЕ вызывается, снимок (JSON null) возвращается как null", async () => {
+    findUnique.mockResolvedValue({ userId: "user-a", resultJson: null });
+    const run = vi.fn();
+    const r = await withIdempotency("key1", ME, "comment", run);
+    expect(r).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("повтор того же ключа того же юзера → run() НЕ вызывается, возвращается снимок", async () => {
