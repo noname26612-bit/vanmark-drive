@@ -30,6 +30,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { TypeIcon } from "@/components/type-icon";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { BackLink } from "@/components/back-link";
+import { PRICING_ENABLED } from "@/lib/features";
 
 // Подсказка для UI: следующий статус по водительской цепочке. Сервер всё равно проверяет матрицу.
 // Переработка (этап A): цепочка схлопнута — «В работу» (взять) → «Завершить». Из паузы — «Вернуть в работу».
@@ -98,9 +99,10 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
   const { data: task, error, isLoading, mutate } = useSWR<TaskDetailDTO>(key, cachedFetcher, {
     refreshInterval: 10_000,
   });
-  // Справочник работ для ведомости — грузим только для типов с расценкой (этап 12).
+  // Справочник работ для ведомости — грузим только для типов с расценкой (этап 12) и пока процесс
+  // расценки включён (флаг PRICING_ENABLED). Скрыт 06.07 — справочник не тянем.
   const { data: workCatalog = [] } = useSWR<WorkCatalogItemDTO[]>(
-    task?.type.requiresPricing ? "/api/work-catalog" : null,
+    PRICING_ENABLED && task?.type.requiresPricing ? "/api/work-catalog" : null,
     cachedFetcher,
   );
   // Одна активная задача (этап B): знаем про другую задачу водителя «В работе», чтобы заранее
@@ -170,7 +172,9 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
   const refPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && a.createdById !== t.assigneeId);
   const docs = t.attachments.filter((a) => a.kind === "DOCUMENT");
   const requiresSignedDoc = t.requiresSignedDoc; // требование акта на уровне задачи (этап 11; не блокирует DONE)
-  const requiresPricing = t.type.requiresPricing; // ведомость работ + расценка (этап 12)
+  // Ведомость работ + расценка (этап 12) скрыты под флагом PRICING_ENABLED (06.07): процессом пока
+  // не пользуются. Гасим весь блок ведомости у водителя. Акт (ниже) от этого не зависит.
+  const requiresPricing = PRICING_ENABLED && t.type.requiresPricing;
   const ws = t.worksheetStatus;
   const wsEditable = requiresPricing && (ws === null || ws === "DRAFT");
   const worksheetTotal = t.workItems.reduce((s, w) => s + (w.price ?? 0) * w.quantity, 0);

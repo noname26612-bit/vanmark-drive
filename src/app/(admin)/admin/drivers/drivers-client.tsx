@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import useSWR from "swr";
 import { fetcher, apiSend, ApiError } from "@/lib/fetcher";
 import { Badge } from "@/components/ui/badge";
@@ -39,7 +40,10 @@ export function DriversClient() {
 
   return (
     <main className="mx-auto max-w-3xl p-6">
-      <h1 className="text-2xl font-semibold text-neutral-900">Водители — доступ</h1>
+      <Link href="/admin" className="text-sm text-neutral-500 hover:underline">
+        ← Администрирование
+      </Link>
+      <h1 className="mt-2 text-2xl font-semibold text-neutral-900">Водители — доступ</h1>
       <p className="mt-1 text-sm text-neutral-500">
         Кто может входить в приложение. Внешний перевозчик входит как водитель: видит свои задачи и
         ведёт статусы, но без смен, KPI и расчёта. Пароль при включении не меняется.

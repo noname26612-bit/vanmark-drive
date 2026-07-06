@@ -15,6 +15,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { ShiftHistorySection } from "../_components/shift-history-section";
 
 export function KpiClient({ initialPeriod }: { initialPeriod: string }) {
   const [period, setPeriod] = useState(initialPeriod);
@@ -178,6 +179,9 @@ export function KpiClient({ initialPeriod }: { initialPeriod: string }) {
               </div>
             )}
           </section>
+
+          {/* История смен за месяц (перенесена из «Сводки» 06.07): журнал и правка времени открытия/закрытия. */}
+          <ShiftHistorySection granularity="month" anchor={`${period}-01`} drivers={data?.drivers ?? []} />
         </>
       )}
 

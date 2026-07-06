@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { PRICING_ENABLED } from "../src/lib/features";
 
 const PASSWORD = process.env.SEED_PASSWORD ?? "vanmark123";
 
@@ -98,6 +99,9 @@ test("расценка (API): диспетчер ставит цены → PRICE
 });
 
 test("расценка (UI): диспетчер видит ведомость, проставляет цену и подтверждает", async ({ browser }) => {
+  // Расценка скрыта под флагом PRICING_ENABLED (06.07): раздел /pricing уводит на доску. Тест
+  // оживёт сам, когда флаг вернут. API-цикл расценки проверяется тестом выше (эндпоинты живы).
+  test.skip(!PRICING_ENABLED, "Раздел «Расценка» скрыт под флагом");
   test.slow();
   const mctx = await browser.newContext();
   const milena = await mctx.newPage();
