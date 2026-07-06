@@ -41,9 +41,17 @@ export async function withIdempotency<T>(
 
   const result = await run();
 
+  // resultJson — required Json. Действия-эффекты без возвращаемого значения (комментарий, удаление
+  // вложения/позиции) резолвятся в undefined, а Prisma 7.x отвергает undefined в обязательном поле
+  // («Argument `resultJson` is missing») — это роняло весь барьер 500-й ошибкой, из-за чего действие
+  // вечно висело в очереди и `break` в синхронизаторе намертво блокировал ВСЮ досылку (инцидент 04.07).
+  // Пишем JSON null как «эффект без результата»; при повторе такие действия отдадут null — роут его
+  // игнорирует, а идемпотентность (run() больше не вызывается) сохраняется.
+  const resultJson = result === undefined ? Prisma.JsonNull : (result as unknown as Prisma.InputJsonValue);
+
   try {
     await prisma.processedAction.create({
-      data: { key: trimmed, userId: actor.id, kind, resultJson: result as unknown as Prisma.InputJsonValue },
+      data: { key: trimmed, userId: actor.id, kind, resultJson },
     });
   } catch (e) {
     if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
