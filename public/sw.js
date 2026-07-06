@@ -243,6 +243,12 @@ self.addEventListener("notificationclick", (event) => {
 const OFFLINE_DB = "vanmark-offline";
 const Q_STORE = "queue";
 const B_STORE = "blobs";
+// Порог предохранителя: после стольких подряд необработанных ошибок приложения (HTTP 500) на ОДНОМ
+// действии оно помечается конфликтом (SERVER_REJECTED), а прогон продолжается — чтобы одно застрявшее
+// действие не блокировало очередь навсегда (инцидент 06.07). Держать в синхроне с SERVER_ERROR_LIMIT в
+// src/lib/offline/sync.ts. Обрывы связи и прочие 5xx (502/503/504/501/505… — инфраструктура/деплой) к
+// порогу не считаем.
+const SERVER_ERROR_LIMIT = 5;
 
 function openOfflineDb() {
   return new Promise((resolve, reject) => {
@@ -289,7 +295,9 @@ async function sendQueuedAction(db, a) {
   });
 }
 
-// Прогон очереди FIFO. Сеть/5xx → throw (браузер повторит sync); 401/403 → стоп; 4xx → конфликт.
+// Прогон очереди FIFO. Нет сети / 5xx кроме 500 (инфраструктура, деплой) → throw (браузер повторит sync);
+// 401/403 → стоп; HTTP 500 (необработанная ошибка приложения) → счётчик attempts, после порога —
+// конфликт (SERVER_REJECTED) и идём дальше; доменная 4xx → конфликт. Двойник src/lib/offline/sync.ts.
 async function replayQueue() {
   let db;
   try {
@@ -315,8 +323,27 @@ async function replayQueue() {
       replayed++;
     } else if (res.status === 401 || res.status === 403) {
       break; // сессия истекла — стоп (после входа очередь досошлёт открытая вкладка)
+    } else if (res.status === 500) {
+      // HTTP 500 (необработанная ошибка приложения): считаем последовательные 500-отказы одного действия (см. sync.ts).
+      const attempts = (a.attempts || 0) + 1;
+      if (attempts >= SERVER_ERROR_LIMIT) {
+        // Порог — изолируем застрявшее действие, прогон продолжаем (не throw), очередь досылает остальные.
+        await idbPutKey(
+          db,
+          Q_STORE,
+          a.id,
+          Object.assign({}, a, {
+            status: "conflict",
+            attempts,
+            lastError: { code: "SERVER_REJECTED", message: "Сервер не принимает действие — обратитесь к диспетчеру" },
+          }),
+        );
+        continue;
+      }
+      await idbPutKey(db, Q_STORE, a.id, Object.assign({}, a, { attempts })); // сохраняем счётчик между sync
+      throw new Error("server 500"); // ещё не порог — пусть браузер повторит sync
     } else if (res.status >= 500) {
-      throw new Error("server " + res.status); // retryable — пусть браузер повторит sync
+      throw new Error("gateway " + res.status); // прочие 5xx (502/503/504/501/505…) — инфраструктура/деплой, к порогу не считаем; повтор sync
     } else {
       const body = await res.json().catch(() => null);
       const lastError = {

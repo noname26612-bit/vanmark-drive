@@ -1,11 +1,19 @@
 "use client";
 // Синхронизатор очереди: досылает накопленные офлайн-действия по порядку (FIFO).
-// - сетевая/серверная ошибка (retryable) → прерываем прогон, повторим при следующем тике;
+// - нет сети (status 0) или любой 5xx, кроме 500 (инфраструктура/прокси: Caddy отдаёт 502/503/504 при
+//   рестарте бэкенда во время деплоя, редкие 501/505/510/511) → прерываем прогон, повторим при следующем
+//   тике; счётчик отказов НЕ наращиваем;
+// - приложение ответило HTTP 500 (необработанная ошибка) → возможно, действие «ядовитое» (детерминированный
+//   отказ, как в инциденте 06.07). Наращиваем attempts и отходим; после SERVER_ERROR_LIMIT подряд — помечаем
+//   действие «конфликт» (SERVER_REJECTED) и ПРОДОЛЖАЕМ прогон, чтобы одно застрявшее действие не блокировало
+//   очередь навсегда. К порогу считаем только 500, не обрывы связи и не деплой — иначе долгий офлайн или
+//   рестарт бэкенда ложно увели бы всю очередь в конфликт;
 // - 401/403 (сессия истекла / права отозваны) → стоп + флаг authRequired; действие НЕ конфликт
 //   (оно валидное, не хватает свежей сессии), после релогина досошлётся (O8);
 // - доменная ошибка 4xx → помечаем действие «конфликт» (диспетчер изменил задачу / переход уже
 //   невозможен / фото потеряно) — остаётся в очереди для разбора водителем, НЕ блокирует остальные.
 // Идемпотентность на сервере гарантирует, что уже применённое действие повтор не задвоит.
+// Vanilla-двойник для Background Sync — public/sw.js (replayQueue); держать логику в синхроне.
 import { ApiError } from "@/lib/fetcher";
 import { idbDelete, STORE_BLOBS } from "./db";
 import { listQueue, dequeue, putQueued } from "./queue";
@@ -13,21 +21,43 @@ import { sendAction } from "./send";
 import { setAuthRequired } from "./auth-required";
 import type { QueuedAction } from "./types";
 
+/**
+ * Порог предохранителя: после стольких подряд необработанных ошибок приложения (HTTP 500) по ОДНОМУ
+ * действию помечаем его конфликтом (SERVER_REJECTED) и продолжаем прогон — чтобы одно застрявшее действие
+ * не блокировало очередь навсегда (инцидент 06.07). Значение согласовано с Артёмом (5 попыток ≈ 1–2 мин
+ * при тике раз в 15 с). Держать в синхроне с SERVER_ERROR_LIMIT в public/sw.js.
+ */
+export const SERVER_ERROR_LIMIT = 5;
+
+/**
+ * «Ядовитое» действие проявляется как необработанная ошибка приложения — HTTP 500 (доменные ошибки идут
+ * как 4xx, инфраструктура/прокси — как 502/503/504/501/505…). Только 500 считаем к порогу. Нет сети
+ * (status 0) и прочие 5xx — временный сбой (деплой, рестарт бэкенда): их к порогу НЕ считаем, иначе
+ * долгий офлайн или деплой ложно увёл бы всю очередь в конфликт.
+ */
+function isAppServerError(status: number): boolean {
+  return status === 500;
+}
+
 /** Инъекция зависимостей — чтобы прогон очереди юнит-тестировался без IndexedDB/сети (как fetchWithCache). */
 export type QueueDeps = {
   list: () => Promise<QueuedAction[]>;
   send: (a: QueuedAction) => Promise<void>;
   remove: (id: string) => Promise<void>;
   dropBlob: (blobId: string) => Promise<void>;
-  markConflict: (a: QueuedAction, lastError: { code: string; message: string }) => Promise<void>;
+  markConflict: (a: QueuedAction, lastError: { code: string; message: string }, attempts: number) => Promise<void>;
+  bumpAttempts: (a: QueuedAction, attempts: number) => Promise<void>; // сохранить счётчик отказов между тиками
   onAuthRequired: () => void; // 401/403 при досылке — сессия/права
   onAuthOk: () => void; // любое успешное действие снимает флаг сессии
 };
 
 /**
  * Один проход очереди с инъекцией зависимостей. Возвращает число успешно досланных действий.
- * Останавливается на первой retryable-ошибке (нет сети/5xx) и на 401/403 (сессия) — остаток уйдёт
- * на следующем тике / после релогина. Доменные 4xx помечает конфликтом и идёт дальше.
+ * - нет сети / 5xx кроме 500 (инфраструктура, деплой) → стоп, остаток уйдёт на следующем тике (счётчик не растёт);
+ * - 401/403 (сессия) → стоп + флаг authRequired;
+ * - HTTP 500 (необработанная ошибка приложения): наращиваем attempts и стоп; после SERVER_ERROR_LIMIT
+ *   подряд — помечаем конфликтом (SERVER_REJECTED) и идём дальше (предохранитель от вечной блокировки);
+ * - доменная 4xx → конфликт и идём дальше.
  */
 export async function runQueueOnce(deps: QueueDeps): Promise<number> {
   const actions = await deps.list();
@@ -45,10 +75,30 @@ export async function runQueueOnce(deps: QueueDeps): Promise<number> {
         deps.onAuthRequired(); // сессия истекла / права — стоп, НЕ конфликт (действие валидное)
         break;
       }
-      if (e instanceof ApiError && e.retryable) break; // нет сети/сервер лёг — стоп, повторим позже
+      if (e instanceof ApiError && e.retryable) {
+        // Нет сети (status 0) или любой 5xx, кроме 500 (инфраструктура/прокси при деплое) — временный
+        // сбой, не вина действия: отходим и повторим весь прогон на следующем тике, счётчик НЕ трогаем.
+        if (!isAppServerError(e.status)) break;
+        // HTTP 500 (необработанная ошибка) — возможно, действие «ядовитое» (детерминированный отказ,
+        // инцидент 06.07). Считаем последовательные 500-отказы одного действия. (?? 0 — на случай
+        // legacy-записи без поля attempts, иначе NaN сломал бы порог; так же страхует public/sw.js.)
+        const attempts = (a.attempts ?? 0) + 1;
+        if (attempts >= SERVER_ERROR_LIMIT) {
+          // Порог достигнут — изолируем застрявшее действие, но прогон ПРОДОЛЖАЕМ (не break),
+          // чтобы остальные действия очереди досылались.
+          await deps.markConflict(
+            a,
+            { code: "SERVER_REJECTED", message: "Сервер не принимает действие — обратитесь к диспетчеру" },
+            attempts,
+          );
+          continue;
+        }
+        await deps.bumpAttempts(a, attempts); // сохраняем счётчик, чтобы порог копился между тиками
+        break; // ещё не порог — отходим (сохраняем FIFO и не долбим сервер), повторим на следующем тике
+      }
       const lastError =
         e instanceof ApiError ? { code: e.code, message: e.message } : { code: "UNKNOWN", message: "Ошибка" };
-      await deps.markConflict(a, lastError);
+      await deps.markConflict(a, lastError, (a.attempts ?? 0) + 1);
     }
   }
   return sent;
@@ -61,8 +111,9 @@ const DEPS = {
   send: sendAction,
   remove: dequeue,
   dropBlob: (blobId: string) => idbDelete(STORE_BLOBS, blobId),
-  markConflict: (a: QueuedAction, lastError: { code: string; message: string }) =>
-    putQueued({ ...a, status: "conflict", attempts: a.attempts + 1, lastError }),
+  markConflict: (a: QueuedAction, lastError: { code: string; message: string }, attempts: number) =>
+    putQueued({ ...a, status: "conflict", attempts, lastError }),
+  bumpAttempts: (a: QueuedAction, attempts: number) => putQueued({ ...a, attempts }),
   onAuthRequired: () => setAuthRequired(true),
   onAuthOk: () => setAuthRequired(false),
 };

@@ -28,7 +28,13 @@ export type QueuedAction = {
   blobId?: string; // ключ файла в STORE_BLOBS — для multipart (фото офлайн)
   blobMeta?: { name: string; type: string; kind: "PHOTO" | "DOCUMENT" };
   status: QueuedActionStatus;
+  // Счётчик неудачных попыток досылки. Растёт между тиками ТОЛЬКО на HTTP 500 (необработанная ошибка
+  // приложения — сигнатура «ядовитого» действия, см. sync.ts): по достижении порога SERVER_ERROR_LIMIT
+  // действие уходит в conflict (SERVER_REJECTED), чтобы одно застрявшее действие не блокировало очередь
+  // навсегда (инцидент 06.07). Обрывы связи (status 0) и прочие 5xx (502/503/504/501/505… — инфраструктура/
+  // деплой) счётчик НЕ трогают. Для доменного 4xx-конфликта = число попыток до отклонения (обычно 1).
   attempts: number;
-  lastError?: { code: string; message: string }; // последняя ошибка досылки (для conflict — доменная 4xx)
+  // последняя ошибка досылки (для conflict — доменная 4xx или серверный отказ SERVER_REJECTED после порога)
+  lastError?: { code: string; message: string };
   createdAt: string; // ISO
 };
