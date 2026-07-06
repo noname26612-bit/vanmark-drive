@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { PRICING_ENABLED } from "../src/lib/features";
 
 const PASSWORD = process.env.SEED_PASSWORD ?? "vanmark123";
 
@@ -112,6 +113,9 @@ test("ведомость не заводится для типа без расц
 });
 
 test("ведомость на телефоне (360×740): водитель добавляет работу и отправляет через UI", async ({ browser }) => {
+  // Блок «Ведомость работ» у водителя скрыт под флагом PRICING_ENABLED (06.07). Заполнение/отправка
+  // через API проверяются тестами выше (эндпоинты живы). Тест оживёт сам при возврате флага.
+  test.skip(!PRICING_ENABLED, "Блок «Ведомость работ» скрыт под флагом");
   test.slow();
   const mctx = await browser.newContext();
   const milena = await mctx.newPage();

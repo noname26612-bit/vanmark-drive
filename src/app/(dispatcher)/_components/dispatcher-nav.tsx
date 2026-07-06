@@ -3,13 +3,16 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/cn";
+import { PRICING_ENABLED } from "@/lib/features";
 
+// Вкладка «Расценка» скрыта под флагом PRICING_ENABLED (06.07): процессом пока не пользуются.
+// Вернуть — включить флаг в src/lib/features.ts.
 const LINKS = [
   { href: "/board", label: "Сегодня" },
   { href: "/planning", label: "Планирование" },
   { href: "/capacity", label: "Календарь" },
   { href: "/tasks", label: "Все задачи" },
-  { href: "/pricing", label: "Расценка" },
+  ...(PRICING_ENABLED ? [{ href: "/pricing", label: "Расценка" }] : []),
   { href: "/summary", label: "Сводка" },
   { href: "/kpi", label: "KPI / Зарплата" },
 ];

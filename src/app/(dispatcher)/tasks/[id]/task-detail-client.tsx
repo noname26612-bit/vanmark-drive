@@ -10,6 +10,7 @@ import { fetcher, apiSend, apiUpload } from "@/lib/fetcher";
 import { compressImage } from "@/lib/image-compress";
 import { actState } from "@/domain/act";
 import { formatMinutes } from "@/domain/capacity";
+import { PRICING_ENABLED } from "@/lib/features";
 import type { DriverDTO, TaskDetailDTO, TaskTypeDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
 import {
@@ -186,19 +187,26 @@ export function TaskDetailClient({
     });
   const forward = NEXT_FORWARD[task.status];
   const isTerminal = task.status === "DONE" || task.status === "CANCELLED";
+  // Расценка ведомостей скрыта под флагом (06.07): весь блок расценки/итога по услугам не показываем.
+  // Вернуть — включить PRICING_ENABLED в src/lib/features.ts. Акт (ниже) от расценки не зависит.
   const pricingVisible =
+    PRICING_ENABLED &&
     task.type.requiresPricing &&
     task.workItems.length > 0 &&
     (task.worksheetStatus === "PRICING" || task.worksheetStatus === "PRICED");
   // Исправление цены после подписания акта (B2): возможно для SIGNED-ведомости, открывается по кнопке
   // в итоговом блоке. Тот же редактируемый блок, что и расценка, но с обязательным полем причины.
   const canReprice =
-    task.type.requiresPricing && task.workItems.length > 0 && task.worksheetStatus === "SIGNED";
+    PRICING_ENABLED &&
+    task.type.requiresPricing &&
+    task.workItems.length > 0 &&
+    task.worksheetStatus === "SIGNED";
   const pricingEditable = pricingVisible || (canReprice && repriceOpen);
   // Итог по услугам из закреплённых цен (№7): остаётся виден после расценки/подписания и в завершённой
   // заявке, когда редактируемый блок расценки уже скрыт. Сумма — из сохранённых WorkItem.price.
   const finalServicesTotal = task.workItems.reduce((s, w) => s + (w.price ?? 0) * w.quantity, 0);
   const showFinalServices =
+    PRICING_ENABLED &&
     task.type.requiresPricing &&
     task.workItems.length > 0 &&
     !pricingEditable &&
