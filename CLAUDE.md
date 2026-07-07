@@ -42,6 +42,7 @@
 - Ответы API: `{ data }` | `{ error: { code, message } }`.
 - Коммиты: conventional commits (`feat:`, `fix:`, `chore:`); один этап Roadmap = одна ветка.
 - Перед стартом проекта проверить актуальные стабильные версии стека (Next.js, Prisma, Auth.js, Serwist, Tailwind) в вебе — не брать из памяти.
+- Service worker обязан переживать деплой без залипания клиента: держи `controllerchange → reload` в регистрации И храни предыдущую версию app-кэша (fallback чанков). При любой правке `public/sw.js`, стратегии кэша или смене `BUILD_ID` проверяй build-skew — старый открытый клиент против нового билда (удалённые с сервера чанки `/_next/static` → 404 → белый экран у водителя в поле).
 
 ## Definition of Done (для каждого этапа Roadmap)
 
