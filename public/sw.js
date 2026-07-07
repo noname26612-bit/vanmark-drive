@@ -56,14 +56,16 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
-      // Чистим кэши прошлых версий оболочки (имя содержит версию сборки). Фото-кэш (vanmark-photos-*)
-      // и легаси vanmark-v1 не трогаем: фото иммутабельны, чистить их при деплое незачем.
-      const keys = await caches.keys();
-      await Promise.all(
-        keys
-          .filter((k) => k.startsWith("vanmark-app-") && k !== CACHE)
-          .map((k) => caches.delete(k)),
-      );
+      // Держим ДВЕ последние версии оболочки: текущую и одну предыдущую (инцидент 07.07). При деплое
+      // открытая вкладка какое-то время остаётся на старом BUILD_ID — до перезагрузки по смене
+      // контроллера (см. src/lib/offline/sw-update.ts) — и ещё может запросить хэш-чанки прошлой
+      // сборки. Они лежат в предыдущем кэше, поэтому навигация не падает в 404, даже если reload
+      // запоздал или не сработал (напр. в TWA). Более старые app-кэши удаляем. Фото-кэш
+      // (vanmark-photos-*) и легаси vanmark-v1 не трогаем: фото иммутабельны.
+      const appCaches = (await caches.keys()).filter((k) => k.startsWith("vanmark-app-"));
+      const prev = appCaches.filter((k) => k !== CACHE).slice(-1); // самый свежий из прошлых (порядок keys() ≈ вставка)
+      const keep = new Set([CACHE, ...prev]);
+      await Promise.all(appCaches.filter((k) => !keep.has(k)).map((k) => caches.delete(k)));
       await self.clients.claim();
     })(),
   );
@@ -99,11 +101,18 @@ self.addEventListener("fetch", (event) => {
 });
 
 async function cacheFirst(req) {
-  const cache = await caches.open(CACHE);
-  const hit = await cache.match(req);
+  // Ищем во ВСЕХ кэшах (текущий + предыдущий app-кэш), а не только в текущем: при деплое старый
+  // клиент, ещё живущий в памяти вкладки, может запросить хэш-чанк прошлой сборки — отдаём его из
+  // предыдущего кэша, чтобы навигация не упала в 404 до перезагрузки (инцидент 07.07). Хэш в имени
+  // файла гарантирует, что контент не перепутается между версиями. Вызывается только для
+  // /_next/static/ и /icons/ — эти пути не пересекаются с фото-кэшем (/api/attachments/).
+  const hit = await caches.match(req);
   if (hit) return hit;
   const res = await fetch(req);
-  if (res.ok) cache.put(req, res.clone());
+  if (res.ok) {
+    const cache = await caches.open(CACHE);
+    cache.put(req, res.clone());
+  }
   return res;
 }
 
