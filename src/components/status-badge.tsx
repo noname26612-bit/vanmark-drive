@@ -10,5 +10,12 @@ import { Badge } from "@/components/ui/badge";
  */
 export function StatusBadge({ status, className }: { status: TaskStatus; className?: string }) {
   if (isStatusBadgeHidden(status)) return null;
-  return <Badge className={cn(STATUS_BADGE[status], className)}>{STATUS_LABEL[status]}</Badge>;
+  // «В работе» показываем крупнее (size md) — активная задача должна бросаться в глаза на доске и у
+  // водителя (решение Артёма 07.07). Остальные статусы — стандартный размер.
+  const size = status === "IN_PROGRESS" ? "md" : "sm";
+  return (
+    <Badge size={size} className={cn(STATUS_BADGE[status], className)}>
+      {STATUS_LABEL[status]}
+    </Badge>
+  );
 }

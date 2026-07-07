@@ -133,6 +133,44 @@ export function idleCostRub(idleMinutes: number, baseSalary: number, monthNormHo
   return Math.round((idleMinutes / 60) * (baseSalary / monthNormHours));
 }
 
+/**
+ * Отработано/простой водителя за окно с учётом ручной коррекции простоя смены (07.07).
+ *
+ * Дни БЕЗ override считаем ПРЕЖНЕЙ глобальной семантикой: отработано = Σ по задачам, простой =
+ * max(0, Σсмен − Σотработано). Это сохраняет взаимозачёт между днями (переработка одного дня гасит
+ * недоработку другого) и сигнал загрузки >100% на «кривых» данных — цифры Сводки там, где диспетчер
+ * ничего не правил, не меняются. Дни С override считаем по факту: простой = заданный (clamp к длине
+ * смены), отработано = смена − простой. `override` со `shiftMin<=0` игнорируем (смены в этот день нет).
+ *
+ * `dayWorked` — отработано по каждому дню в порядке входа (для мини-графика days[]).
+ */
+export function computeWorkedIdle(
+  days: Array<{ shiftMin: number; autoWorkedMin: number; override: number | null }>,
+): { workedMinutes: number; idleMinutes: number; dayWorked: number[] } {
+  let autoWorked = 0;
+  let autoShift = 0;
+  let ovWorked = 0;
+  let ovIdle = 0;
+  const dayWorked: number[] = [];
+  for (const d of days) {
+    if (d.override != null && d.shiftMin > 0) {
+      const idle = Math.min(Math.max(0, d.override), d.shiftMin);
+      ovIdle += idle;
+      ovWorked += d.shiftMin - idle;
+      dayWorked.push(d.shiftMin - idle);
+    } else {
+      autoWorked += d.autoWorkedMin;
+      autoShift += d.shiftMin;
+      dayWorked.push(d.autoWorkedMin);
+    }
+  }
+  return {
+    workedMinutes: autoWorked + ovWorked,
+    idleMinutes: Math.max(0, autoShift - autoWorked) + ovIdle,
+    dayWorked,
+  };
+}
+
 /** Человекочитаемый заголовок периода: «14.06.2026» / «08.06 – 14.06.2026» / «июнь 2026». */
 export function formatWindowLabel(granularity: Granularity, anchor: string): string {
   const w = windowKeys(granularity, anchor);

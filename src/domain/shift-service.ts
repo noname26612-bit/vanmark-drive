@@ -34,6 +34,10 @@ export type ShiftView = {
   // Отработано за день по задачам (В работе → Завершено + текущая активная), мин — для полосы на
   // «Сегодня» (№5). Заполняется только в listShiftsForDate; в одиночных ответах не нужно.
   workedMinutes?: number;
+  // Ручная коррекция авто-простоя (07.07): фактический простой смены, мин (null = авто-расчёт). Доска
+  // и Сводка используют его вместо авто-расчёта, если задан. note — причина (для показа «скорректировано»).
+  idleMinutesOverride: number | null;
+  idleOverrideNote: string | null;
 };
 
 type ShiftRow = {
@@ -52,6 +56,8 @@ type ShiftRow = {
   closedAtReported: Date | null;
   closedAtAdjustedAt: Date | null;
   closedAtAdjustNote: string | null;
+  idleMinutesOverride: number | null;
+  idleOverrideNote: string | null;
   driver?: { name: string } | null;
 };
 
@@ -81,7 +87,19 @@ function toView(s: ShiftRow): ShiftView {
     closedAtReported: s.closedAtReported ? s.closedAtReported.toISOString() : null,
     closedAtAdjustedAt: s.closedAtAdjustedAt ? s.closedAtAdjustedAt.toISOString() : null,
     closedAtAdjustNote: s.closedAtAdjustNote,
+    idleMinutesOverride: s.idleMinutesOverride,
+    idleOverrideNote: s.idleOverrideNote,
   };
+}
+
+/**
+ * Убрать из ответа водителю диспетчерские поля коррекции простоя (изоляция, как пометки Милены):
+ * простой смены водителю на экранах не показывается вообще, а причина коррекции — диспетчерский текст,
+ * не для глаз водителя. Применять на границе всех водительских ответов (/api/my/shift).
+ */
+export function hideDispatcherIdle(view: ShiftView | null): ShiftView | null {
+  if (!view) return null;
+  return { ...view, idleMinutesOverride: null, idleOverrideNote: null };
 }
 
 /** Смена водителя на день (или null). driverId — ТОЛЬКО из сессии. */
@@ -404,6 +422,64 @@ export async function adjustShiftClosedAt(
   if (!shift) throw Errors.notFound();
   if (!shift.closedAt) throw Errors.validation("Смена ещё не закрыта — время закрытия править нельзя");
   return toView(await applyCloseAdjustment(shift, input.timeHHMM, input.reason, actor));
+}
+
+const MAX_IDLE_OVERRIDE_MINUTES = 720; // 12 часов — дольше смены не бывает (как в idle-note-service)
+
+/**
+ * Ручная коррекция авто-простоя смены (решение Артёма 07.07). Полоса «В работе / Простой» на доске и
+ * в Сводке считается автоматически (простой = длина смены − время задач «В работе»). Если водитель
+ * работал, но не взял задачу в работу (сел телефон), система засчитывает простой ошибочно — диспетчер/
+ * админ задаёт ФАКТИЧЕСКИЙ простой смены (мин), перебивая авто-расчёт. `idleMinutes = null` — сброс к
+ * авто-расчёту. Причина обязательна при установке значения; запрещено в закрытом месяце (простой влияет
+ * на деньги в Сводке). Гейт роли (Д/А) — в route handler; работаем по shiftId, личность водителя берётся
+ * из самой смены (изоляция цела). Аудит: кто/когда/причина.
+ */
+export async function adjustShiftIdle(
+  shiftId: string,
+  input: { idleMinutes: number | null; reason: string },
+  actor: Actor,
+): Promise<ShiftView> {
+  const shift = await prisma.shift.findUnique({
+    where: { id: shiftId },
+    include: { driver: { select: { name: true } } },
+  });
+  if (!shift) throw Errors.notFound();
+  if (await isPeriodClosed(periodOf(shift.date))) throw Errors.periodClosed();
+
+  if (input.idleMinutes === null) {
+    // Сброс к авто-расчёту: снимаем override и его причину, фиксируем факт сброса в аудите.
+    const updated = await prisma.shift.update({
+      where: { id: shift.id },
+      data: {
+        idleMinutesOverride: null,
+        idleOverrideNote: null,
+        idleOverrideById: actor.id,
+        idleOverrideAt: new Date(),
+      },
+      include: { driver: { select: { name: true } } },
+    });
+    return toView(updated);
+  }
+
+  const minutes = input.idleMinutes;
+  if (!Number.isInteger(minutes) || minutes < 0 || minutes > MAX_IDLE_OVERRIDE_MINUTES) {
+    throw Errors.validation(`Минуты простоя — целое от 0 до ${MAX_IDLE_OVERRIDE_MINUTES}`);
+  }
+  const reason = (input.reason ?? "").trim();
+  if (!reason) throw Errors.validation("Укажите причину коррекции простоя");
+
+  const updated = await prisma.shift.update({
+    where: { id: shift.id },
+    data: {
+      idleMinutesOverride: minutes,
+      idleOverrideNote: reason,
+      idleOverrideById: actor.id,
+      idleOverrideAt: new Date(),
+    },
+    include: { driver: { select: { name: true } } },
+  });
+  return toView(updated);
 }
 
 /**

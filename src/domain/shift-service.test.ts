@@ -4,17 +4,21 @@
 // фолбэк закрытия «за полночь», мягкая ошибка вместо тупика очереди.
 import { vi, describe, it, expect, beforeEach, afterEach } from "vitest";
 
-const { findUnique, findFirst, create, update } = vi.hoisted(() => ({
+const { findUnique, findFirst, create, update, payrollCount } = vi.hoisted(() => ({
   findUnique: vi.fn(),
   findFirst: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
+  payrollCount: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({
-  prisma: { shift: { findUnique, findFirst, create, update } },
+  prisma: {
+    shift: { findUnique, findFirst, create, update },
+    payrollStatement: { count: payrollCount },
+  },
 }));
 
-import { openShift, closeShift, reopenShift } from "./shift-service";
+import { openShift, closeShift, reopenShift, adjustShiftIdle } from "./shift-service";
 
 // Фиксированное «сейчас»: 08:30 МСК 2 июля (05:30 UTC) — до полуночи далеко, день однозначен.
 const NOW = new Date("2026-07-02T05:30:00.000Z");
@@ -33,6 +37,8 @@ function shiftRow(over: Partial<Record<string, unknown>> = {}) {
     openedOffline: false,
     confirmedAt: null,
     closedAt: null,
+    idleMinutesOverride: null,
+    idleOverrideNote: null,
     ...over,
   };
 }
@@ -42,6 +48,8 @@ beforeEach(() => {
   findFirst.mockReset();
   create.mockReset();
   update.mockReset();
+  payrollCount.mockReset();
+  payrollCount.mockResolvedValue(0); // по умолчанию месяц открыт (нет снимка PayrollStatement)
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
 });
@@ -161,5 +169,77 @@ describe("reopenShift — возобновление (O7)", () => {
     const view = await reopenShift("drv-1", NOW.toISOString());
     expect(view.status).toBe("OPEN");
     expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe("adjustShiftIdle — ручная коррекция простоя смены (07.07)", () => {
+  const actor = { id: "disp-1", role: "DISPATCHER" };
+
+  it("валидный ввод → override + причина + аудит; месяц открыт", async () => {
+    findUnique.mockResolvedValue(shiftRow({ status: "CLOSED", closedAt: NOW }));
+    update.mockImplementation(({ data }) => Promise.resolve(shiftRow({ ...data })));
+    const view = await adjustShiftIdle("shift-1", { idleMinutes: 0, reason: "сел телефон, работал" }, actor);
+    const data = update.mock.calls[0][0].data;
+    expect(data.idleMinutesOverride).toBe(0);
+    expect(data.idleOverrideNote).toBe("сел телефон, работал");
+    expect(data.idleOverrideById).toBe("disp-1");
+    expect(data.idleOverrideAt).toBeInstanceOf(Date);
+    expect(view.idleMinutesOverride).toBe(0);
+  });
+
+  it("число простоя (часы) сохраняется как есть", async () => {
+    findUnique.mockResolvedValue(shiftRow({ status: "CLOSED", closedAt: NOW }));
+    update.mockImplementation(({ data }) => Promise.resolve(shiftRow({ ...data })));
+    await adjustShiftIdle("shift-1", { idleMinutes: 90, reason: "обед" }, actor);
+    expect(update.mock.calls[0][0].data.idleMinutesOverride).toBe(90);
+  });
+
+  it("пустая причина при установке значения → ошибка валидации, update не зовём", async () => {
+    findUnique.mockResolvedValue(shiftRow({ status: "CLOSED", closedAt: NOW }));
+    await expect(adjustShiftIdle("shift-1", { idleMinutes: 30, reason: "  " }, actor)).rejects.toMatchObject({
+      code: "VALIDATION",
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("минуты вне диапазона (>720) → ошибка валидации", async () => {
+    findUnique.mockResolvedValue(shiftRow({ status: "CLOSED", closedAt: NOW }));
+    await expect(adjustShiftIdle("shift-1", { idleMinutes: 1000, reason: "x" }, actor)).rejects.toMatchObject({
+      code: "VALIDATION",
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("отрицательные минуты → ошибка валидации", async () => {
+    findUnique.mockResolvedValue(shiftRow({ status: "CLOSED", closedAt: NOW }));
+    await expect(adjustShiftIdle("shift-1", { idleMinutes: -5, reason: "x" }, actor)).rejects.toMatchObject({
+      code: "VALIDATION",
+    });
+  });
+
+  it("idleMinutes=null → сброс к авто-расчёту (override=null, причину не требуем)", async () => {
+    findUnique.mockResolvedValue(shiftRow({ status: "CLOSED", closedAt: NOW, idleMinutesOverride: 60 }));
+    update.mockImplementation(({ data }) => Promise.resolve(shiftRow({ ...data })));
+    const view = await adjustShiftIdle("shift-1", { idleMinutes: null, reason: "" }, actor);
+    const data = update.mock.calls[0][0].data;
+    expect(data.idleMinutesOverride).toBeNull();
+    expect(data.idleOverrideNote).toBeNull();
+    expect(view.idleMinutesOverride).toBeNull();
+  });
+
+  it("закрытый месяц (есть снимок PayrollStatement) → periodClosed, ничего не пишем", async () => {
+    findUnique.mockResolvedValue(shiftRow({ status: "CLOSED", closedAt: NOW }));
+    payrollCount.mockResolvedValue(1);
+    await expect(adjustShiftIdle("shift-1", { idleMinutes: 0, reason: "x" }, actor)).rejects.toMatchObject({
+      code: "PERIOD_CLOSED",
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("смены нет → notFound", async () => {
+    findUnique.mockResolvedValue(null);
+    await expect(adjustShiftIdle("nope", { idleMinutes: 0, reason: "x" }, actor)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
   });
 });

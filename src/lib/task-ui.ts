@@ -25,11 +25,13 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
 
 // Бейдж статуса — контурная метка (рамка + текст, прозрачный фон). Графит для нейтральных,
 // акцент только у «готово» (зелёный), «сорвано» (красный) и «внимание» (янтарь). Исключение —
-// «В работе»: мягкая синяя ЗАЛИВКА (решение Артёма 24.06), чтобы активная задача читалась в списке.
+// «В работе»: НАСЫЩЕННАЯ синяя заливка + крупнее (StatusBadge size md). Прежняя мягкая заливка
+// bg-blue-50 (Артём 24.06) почти терялась на доске — усилено до сплошного синего (решение Артёма
+// 07.07): активная задача должна сразу бросаться в глаза и у водителя, и у диспетчера.
 export const STATUS_BADGE: Record<TaskStatus, string> = {
   NEW: "border border-slate-300 text-slate-600",
   ASSIGNED: "border border-slate-300 text-slate-600",
-  IN_PROGRESS: "bg-blue-50 text-blue-700",
+  IN_PROGRESS: "bg-blue-600 text-white",
   ACCEPTED: "border border-slate-300 text-slate-600", // legacy
   EN_ROUTE: "border border-slate-300 text-slate-600", // legacy
   ON_SITE: "border border-slate-300 text-slate-600", // legacy
