@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
 import { requireDriver, errorResponse, readJson, idempotencyKey, occurredAt } from "@/lib/api-route";
-import { getMyShift, openShift, closeShift, reopenShift } from "@/domain/shift-service";
+import { getMyShift, openShift, closeShift, reopenShift, hideDispatcherIdle } from "@/domain/shift-service";
 import { isExternalDriver } from "@/domain/users";
 import { withIdempotency } from "@/domain/idempotency";
 import { Errors } from "@/domain/errors";
@@ -15,7 +15,7 @@ export async function GET(req: Request) {
   try {
     const user = await requireDriver();
     const date = new URL(req.url).searchParams.get("date") ?? "";
-    return NextResponse.json(ok(await getMyShift(user.id, date)));
+    return NextResponse.json(ok(hideDispatcherIdle(await getMyShift(user.id, date))));
   } catch (e) {
     return errorResponse(e);
   }
@@ -44,7 +44,7 @@ export async function POST(req: Request) {
           ? () => closeShift(user.id, at)
           : () => reopenShift(user.id, at);
     const result = await withIdempotency(idempotencyKey(req), user, `shift-${op}`, run);
-    return NextResponse.json(ok(result));
+    return NextResponse.json(ok(hideDispatcherIdle(result)));
   } catch (e) {
     return errorResponse(e);
   }

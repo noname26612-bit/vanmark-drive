@@ -4,6 +4,7 @@ import { requireDispatcher, errorResponse, readJson } from "@/lib/api-route";
 import {
   adjustShiftOpenedAt,
   adjustShiftClosedAt,
+  adjustShiftIdle,
   closeShiftById,
   reopenShiftById,
 } from "@/domain/shift-service";
@@ -19,6 +20,8 @@ type Ctx = { params: Promise<{ id: string }> };
 //  • {op:"reopen"} — переоткрыть закрытую смену (случайно закрыл);
 //  • {op:"close", closedAtTime?, reason?} — закрыть смену за водителя (№2): по умолчанию «сейчас»,
 //    можно задать время (ЧЧ:ММ) и причину;
+//  • {op:"idle", idleMinutes, reason} — коррекция авто-простоя смены (07.07): idleMinutes = фактический
+//    простой (мин) с обязательной причиной, либо null — сброс к авто-расчёту;
 //  • {closedAtTime:"ЧЧ:ММ", reason} — правка времени закрытия задним числом (№3): причина обязательна;
 //  • {openedAtTime:"ЧЧ:ММ", reason} — правка времени открытия задним числом (№3).
 // Только Д/А (requireDispatcher). Личность действующего — из сессии; правки в закрытом месяце — отказ.
@@ -36,6 +39,19 @@ export async function PATCH(req: Request, { params }: Ctx) {
     if (body.op === "close") {
       const closedAtTime = typeof body.closedAtTime === "string" ? body.closedAtTime : undefined;
       return NextResponse.json(ok(await closeShiftById(id, actor, { closedAtTime, reason })));
+    }
+    if (body.op === "idle") {
+      // null → сброс к авто-расчёту; число → фактический простой (мин). Причину проверяет домен.
+      const idleMinutes =
+        body.idleMinutes === null
+          ? null
+          : typeof body.idleMinutes === "number"
+            ? Math.trunc(body.idleMinutes)
+            : NaN;
+      if (idleMinutes !== null && !Number.isFinite(idleMinutes)) {
+        throw Errors.validation("Не указан фактический простой (мин)");
+      }
+      return NextResponse.json(ok(await adjustShiftIdle(id, { idleMinutes, reason }, actor)));
     }
 
     const closedAtTime = typeof body.closedAtTime === "string" ? body.closedAtTime : "";

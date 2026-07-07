@@ -18,6 +18,7 @@ import {
   averageMinutes,
   loadPercent,
   idleCostRub,
+  computeWorkedIdle,
   type Granularity,
 } from "./summary";
 import type {
@@ -53,6 +54,7 @@ type Acc = {
   shiftMs: number; // суммарная длина закрытых смен периода, мс (этап D) — для простоя
   dayWorkedMs: Map<string, number>; // по дням окна: отработано, мс (мини-график v2)
   dayShiftMs: Map<string, number>; // по дням окна: длительность смен, мс
+  dayIdleOverride: Map<string, number>; // по дням: ручная коррекция простоя смены, мин (07.07) — перебивает авто
   planMin: number; // Σ оценок (estimatedMinutes) по задачам с оценкой И фактом (план/факт v2)
   factMin: number; // Σ факта по тем же задачам
   planFactCount: number;
@@ -70,6 +72,7 @@ function emptyAcc(): Acc {
     shiftMs: 0,
     dayWorkedMs: new Map(),
     dayShiftMs: new Map(),
+    dayIdleOverride: new Map(),
     planMin: 0,
     factMin: 0,
     planFactCount: 0,
@@ -126,9 +129,10 @@ export async function getDriverSummary(
         select: { at: true, toStatus: true, task: { select: { assigneeId: true } } },
       }),
       // Закрытые смены периода (этап D) — для простоя. Грубый range по дню смены, точное окно ниже.
+      // idleMinutesOverride (07.07): ручная коррекция простоя смены — перебивает авто-расчёт (ниже).
       prisma.shift.findMany({
         where: { status: "CLOSED", closedAt: { not: null }, date: { gte: range.gte, lt: range.lt } },
-        select: { driverId: true, date: true, openedAt: true, closedAt: true },
+        select: { driverId: true, date: true, openedAt: true, closedAt: true, idleMinutesOverride: true },
       }),
       // Пометки о простое (v2): «зафиксированный простой» отдельной метрикой.
       prisma.driverIdleNote.findMany({
@@ -202,6 +206,9 @@ export async function getDriverSummary(
       a.shiftMs += ms;
       bump(a.dayShiftMs, dk, ms);
     }
+    // Ручная коррекция простоя (07.07): если у смены задан override — запоминаем по дню, ниже он
+    // перебьёт авто-расчёт простоя/отработанного (одна смена на водителя в день).
+    if (s.idleMinutesOverride != null) a.dayIdleOverride.set(dk, s.idleMinutesOverride);
   }
 
   // Зафиксированный простой (пометки Милены, v2).
@@ -226,13 +233,21 @@ export async function getDriverSummary(
   const driverViews: DriverSummaryView[] = drivers.map((d) => {
     const a = acc.get(d.id)!;
     // Отработано = сумма времени по задачам (В работе → Завершено); простой = смены − отработано (этап D).
-    const workedMinutes = Math.round(a.durations.reduce((s, x) => s + x, 0) / 60000);
+    // Ручная коррекция простоя (07.07) применяется поверх: дни без override считаются прежней глобальной
+    // формулой (взаимозачёт между днями сохранён), дни с override — по факту. Логика — в computeWorkedIdle.
     const shiftMinutes = Math.round(a.shiftMs / 60000);
-    const idleMinutes = Math.max(0, shiftMinutes - workedMinutes);
-    const days: DriverDayLoad[] = dayKeys.map((k) => ({
+    const perDay = dayKeys.map((k) => ({
+      shiftMin: Math.round((a.dayShiftMs.get(k) ?? 0) / 60000),
+      autoWorkedMin: Math.round((a.dayWorkedMs.get(k) ?? 0) / 60000),
+      override: a.dayIdleOverride.get(k) ?? null,
+    }));
+    const wi = computeWorkedIdle(perDay);
+    const workedMinutes = wi.workedMinutes;
+    const idleMinutes = wi.idleMinutes;
+    const days: DriverDayLoad[] = dayKeys.map((k, i) => ({
       dateKey: k,
-      workedMinutes: Math.round((a.dayWorkedMs.get(k) ?? 0) / 60000),
-      shiftMinutes: Math.round((a.dayShiftMs.get(k) ?? 0) / 60000),
+      workedMinutes: wi.dayWorked[i],
+      shiftMinutes: perDay[i].shiftMin,
     }));
     return {
       driverId: d.id,

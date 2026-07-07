@@ -410,6 +410,8 @@ type ShiftDTO = {
   closedAtAdjustNote: string | null; // если время закрытия правили — причина (№3)
   openedOffline: boolean; // открыта офлайн (O7): время открытия зафиксировал телефон, не сервер
   workedMinutes?: number; // отработано за день по задачам (для полосы, №5)
+  idleMinutesOverride: number | null; // ручная коррекция простоя (07.07): фактический простой, мин; null = авто
+  idleOverrideNote: string | null; // причина коррекции (для показа «простой скорректирован»)
 };
 
 // «чч:мм» из ISO в местной зоне (время открытия смены).
@@ -702,6 +704,41 @@ function ShiftWorkloadRow({
       setEditBusy(false);
     }
   }
+  // Коррекция авто-простоя смены (07.07): диспетчер задаёт ФАКТИЧЕСКИЙ простой, если авто-расчёт неверен
+  // (водитель работал, но не взял задачу в работу — сел телефон). Ввод в часах+минутах, причина обязательна;
+  // «Вернуть авто-расчёт» шлёт idleMinutes=null. Отдельно от пометок Милены (кнопка «Простой» выше).
+  const [idleEditing, setIdleEditing] = useState(false);
+  const [idleH, setIdleH] = useState("");
+  const [idleM, setIdleM] = useState("");
+  const [idleReason, setIdleReason] = useState("");
+  const [idleBusy, setIdleBusy] = useState(false);
+  const [idleErr, setIdleErr] = useState<string | null>(null);
+  function openIdleEdit(currentIdle: number) {
+    setIdleH(String(Math.floor(currentIdle / 60))); // префилл текущим простоем — видно, что правим
+    setIdleM(String(currentIdle % 60));
+    setIdleReason("");
+    setIdleErr(null);
+    setIdleEditing(true);
+  }
+  async function saveIdle(minutes: number | null) {
+    if (!shift) return;
+    if (minutes !== null && !idleReason.trim()) {
+      setIdleErr("Укажите причину коррекции");
+      return;
+    }
+    setIdleBusy(true);
+    setIdleErr(null);
+    try {
+      await apiSend(`/api/shifts/${shift.id}`, "PATCH", { op: "idle", idleMinutes: minutes, reason: idleReason });
+      await onChange();
+      setIdleEditing(false);
+    } catch (e) {
+      setIdleErr((e as Error).message);
+    } finally {
+      setIdleBusy(false);
+    }
+  }
+
   // Кнопка «Простой» + метка суммы за день (02.07) — и в строке без смены (пометка возможна всегда).
   const idleControls = (
     <>
@@ -737,8 +774,14 @@ function ShiftWorkloadRow({
   const opened = new Date(shift.openedAt).getTime();
   const end = shift.closedAt ? new Date(shift.closedAt).getTime() : now;
   const spanMin = Math.max(0, Math.round((end - opened) / 60000));
-  const worked = Math.min(spanMin, Math.max(0, shift.workedMinutes ?? 0));
-  const idle = Math.max(0, spanMin - worked);
+  const autoWorked = Math.min(spanMin, Math.max(0, shift.workedMinutes ?? 0));
+  const autoIdle = Math.max(0, spanMin - autoWorked); // авто-расчёт — для подсказки в панели коррекции
+  // Ручная коррекция простоя (07.07): если задан override — простой = фактический (clamp к длине смены),
+  // отработано = смена − простой; иначе — авто-расчёт. Для открытой смены span растёт, простой при
+  // override зафиксирован → отработанное растёт само (водитель продолжает работать).
+  const override = shift.idleMinutesOverride;
+  const idle = override != null ? Math.min(Math.max(0, override), spanMin) : autoIdle;
+  const worked = Math.max(0, spanMin - idle);
   const workedPct = spanMin > 0 ? (worked / spanMin) * 100 : 0;
   const idlePct = spanMin > 0 ? (idle / spanMin) * 100 : 0;
   return (
@@ -788,14 +831,28 @@ function ShiftWorkloadRow({
         <div className="bg-green-500" style={{ width: `${workedPct}%` }} />
         <div className="bg-slate-300" style={{ width: `${idlePct}%` }} />
       </div>
-      <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-slate-500">
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
         <span>
           <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-green-500 align-middle" />В работе {fmtDur(worked)}
         </span>
         <span>
           <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-slate-300 align-middle" />Простой {fmtDur(idle)}
         </span>
+        <button
+          type="button"
+          data-testid="shift-idle-edit"
+          onClick={() => openIdleEdit(override ?? idle)}
+          className="inline-flex items-center gap-1 text-slate-500 underline decoration-dotted underline-offset-2 hover:text-slate-700"
+          title="Поправить простой, если он посчитан неверно"
+        >
+          <Pencil className="h-3 w-3" /> Поправить
+        </button>
       </div>
+      {override != null ? (
+        <div className="mt-0.5 text-xs text-slate-400">
+          Простой задан вручную{shift.idleOverrideNote ? ` · ${shift.idleOverrideNote}` : ""}
+        </div>
+      ) : null}
       {closing ? (
         <div
           data-testid="shift-close-panel"
@@ -910,6 +967,100 @@ function ShiftWorkloadRow({
             </Button>
           </div>
           {editError ? <p className="mt-1 text-red-600">{editError}</p> : null}
+        </div>
+      ) : null}
+      {idleEditing ? (
+        <div
+          data-testid="shift-idle-panel"
+          className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs"
+        >
+          <p className="mb-1 font-medium text-slate-700">Простой смены — {name}</p>
+          <p className="mb-2 text-slate-500">
+            Автоматически насчитано: простой {fmtDur(autoIdle)}. Задайте фактический простой, если он
+            неверен — например, водитель работал, но не отметил задачу «в работе» (сел телефон).
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                max={12}
+                value={idleH}
+                onChange={(e) => setIdleH(e.target.value)}
+                data-testid="shift-idle-hours"
+                className="h-8 w-14 rounded-md border border-slate-300 px-2"
+              />
+              <span className="text-slate-500">ч</span>
+            </label>
+            <label className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                max={59}
+                value={idleM}
+                onChange={(e) => setIdleM(e.target.value)}
+                data-testid="shift-idle-minutes"
+                className="h-8 w-14 rounded-md border border-slate-300 px-2"
+              />
+              <span className="text-slate-500">мин</span>
+            </label>
+            <Button
+              variant="ghost"
+              className="h-8 px-2 text-xs"
+              data-testid="shift-idle-zero"
+              onClick={() => {
+                setIdleH("0");
+                setIdleM("0");
+              }}
+            >
+              Простоя не было
+            </Button>
+          </div>
+          <input
+            type="text"
+            value={idleReason}
+            onChange={(e) => setIdleReason(e.target.value)}
+            placeholder="Причина (напр. «сел телефон, водитель работал»)"
+            data-testid="shift-idle-reason"
+            className="mt-2 h-8 w-full rounded-md border border-slate-300 px-2"
+          />
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Button
+              data-testid="shift-idle-save"
+              className="h-8 px-3 text-xs"
+              disabled={idleBusy}
+              onClick={() =>
+                void saveIdle(
+                  Math.max(
+                    0,
+                    (Number.parseInt(idleH || "0", 10) || 0) * 60 + (Number.parseInt(idleM || "0", 10) || 0),
+                  ),
+                )
+              }
+            >
+              Сохранить
+            </Button>
+            {override != null ? (
+              <Button
+                variant="ghost"
+                className="h-8 px-3 text-xs text-indigo-700"
+                data-testid="shift-idle-reset"
+                disabled={idleBusy}
+                onClick={() => void saveIdle(null)}
+              >
+                Вернуть авто-расчёт
+              </Button>
+            ) : null}
+            <Button
+              variant="ghost"
+              className="h-8 px-3 text-xs"
+              disabled={idleBusy}
+              onClick={() => setIdleEditing(false)}
+            >
+              Отмена
+            </Button>
+          </div>
+          {idleErr ? <p className="mt-1 text-red-600">{idleErr}</p> : null}
         </div>
       ) : null}
     </div>

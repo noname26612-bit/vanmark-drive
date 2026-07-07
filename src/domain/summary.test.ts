@@ -10,6 +10,7 @@ import {
   windowDayKeys,
   loadPercent,
   idleCostRub,
+  computeWorkedIdle,
   formatWindowLabel,
 } from "./summary";
 
@@ -172,5 +173,50 @@ describe("summary v2 — idleCostRub", () => {
     expect(idleCostRub(0, 70_400, 176)).toBe(0);
     expect(idleCostRub(90, 0, 176)).toBe(0);
     expect(idleCostRub(90, 70_400, 0)).toBe(0);
+  });
+});
+
+describe("summary — computeWorkedIdle (простой с ручной коррекцией, 07.07)", () => {
+  it("без override: сохраняет взаимозачёт между днями (переработка гасит недоработку)", () => {
+    // День1 отработано > смены (кривые данные), День2 недоработка — глобальный простой = 60, не 180.
+    const r = computeWorkedIdle([
+      { shiftMin: 480, autoWorkedMin: 600, override: null },
+      { shiftMin: 480, autoWorkedMin: 300, override: null },
+    ]);
+    expect(r.workedMinutes).toBe(900);
+    expect(r.idleMinutes).toBe(60); // max(0, 960 − 900) — как в прежней глобальной формуле
+    expect(r.dayWorked).toEqual([600, 300]);
+  });
+
+  it("без override и без «кривых» дней: простой = смены − отработано", () => {
+    const r = computeWorkedIdle([
+      { shiftMin: 480, autoWorkedMin: 300, override: null },
+      { shiftMin: 480, autoWorkedMin: 400, override: null },
+    ]);
+    expect(r.workedMinutes).toBe(700);
+    expect(r.idleMinutes).toBe(260); // 960 − 700
+  });
+
+  it("день с override: простой = заданный, отработано = смена − простой (перебивает авто)", () => {
+    // День1: сел телефон — авто-отработано 100, но простоя не было (override=0) → отработано = смена 480.
+    const r = computeWorkedIdle([
+      { shiftMin: 480, autoWorkedMin: 100, override: 0 },
+      { shiftMin: 480, autoWorkedMin: 300, override: null },
+    ]);
+    expect(r.workedMinutes).toBe(480 + 300); // 480 (override-день) + 300 (авто-день)
+    expect(r.idleMinutes).toBe(0 + 180); // 0 (override) + max(0, 480−300)
+    expect(r.dayWorked).toEqual([480, 300]);
+  });
+
+  it("override больше длины смены → простой ограничен длиной смены", () => {
+    const r = computeWorkedIdle([{ shiftMin: 60, autoWorkedMin: 0, override: 180 }]);
+    expect(r.idleMinutes).toBe(60);
+    expect(r.workedMinutes).toBe(0);
+  });
+
+  it("override при отсутствии смены в этот день (shiftMin=0) — игнорируется", () => {
+    const r = computeWorkedIdle([{ shiftMin: 0, autoWorkedMin: 0, override: 120 }]);
+    expect(r.idleMinutes).toBe(0);
+    expect(r.workedMinutes).toBe(0);
   });
 });

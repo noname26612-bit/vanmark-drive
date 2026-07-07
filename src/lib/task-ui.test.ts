@@ -35,7 +35,7 @@ describe("палитра статусов (спокойная, редизайн 
   });
 
   it("метки контурные — без заливок и таблеток (border, не bg-/rounded-full)", () => {
-    // «В работе» — намеренное исключение: мягкая синяя заливка (решение Артёма 24.06).
+    // «В работе» — намеренное исключение: синяя заливка (усилена 07.07, Артём).
     for (const s of statuses) {
       if (s === "IN_PROGRESS") continue;
       expect(STATUS_BADGE[s]).toContain("border");
@@ -43,9 +43,9 @@ describe("палитра статусов (спокойная, редизайн 
     }
   });
 
-  it("«В работе» — мягкая синяя заливка (исключение, Артём 24.06)", () => {
-    expect(STATUS_BADGE.IN_PROGRESS).toContain("bg-blue-50");
-    expect(STATUS_BADGE.IN_PROGRESS).toContain("text-blue-700");
+  it("«В работе» — насыщенная синяя заливка (исключение, усилено Артём 07.07)", () => {
+    expect(STATUS_BADGE.IN_PROGRESS).toContain("bg-blue-600");
+    expect(STATUS_BADGE.IN_PROGRESS).toContain("text-white");
   });
 
   it("«Назначена» — метку не показываем; значимые статусы показываем", () => {
