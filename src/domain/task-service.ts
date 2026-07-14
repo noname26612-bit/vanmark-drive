@@ -6,6 +6,7 @@ import { Prisma } from "@/generated/prisma/client";
 import type { PassStatus, PaymentType, Role, TaskStatus, WorksheetStatus } from "@/generated/prisma/enums";
 import { checkTransition, isDispatcherRole } from "./task-status";
 import { resolveAssignedDate } from "./assign-date";
+import { resolveCompletionDate, formatDayRu } from "./completion-date";
 import { canViewTask } from "./authz";
 import { myTasksWhere, type MyTasksScope } from "./my-tasks";
 import { overdueWhere, tomorrowPassWhere } from "./attention";
@@ -776,6 +777,11 @@ export async function transitionTask(
   if (toStatus === "CANCELLED") data.cancelReason = reason;
   // Офлайн: completedAt = момент действия на телефоне (occurredAt), а не время досылки.
   if (toStatus === "DONE") data.completedAt = at;
+  // Заявка числится днём фактического завершения (решение Артёма 14.07.2026): при закрытии не в
+  // плановый день переносим scheduledDate на МСК-день completedAt — доска/календарь/списки покажут
+  // её в дне закрытия (сводка и KPI уже считают по completedAt). Плановая дата остаётся в журнале.
+  const completionDate = toStatus === "DONE" ? resolveCompletionDate(task.scheduledDate, at) : null;
+  if (completionDate) data.scheduledDate = completionDate;
   // Факт оплаты при ON_SITE-завершении (№8): получено / не получено + причина — сохраняем на задаче.
   if (toStatus === "DONE" && task.paymentType === "ON_SITE") {
     data.paymentReceived = opts.paymentConfirmed === true;
@@ -801,6 +807,19 @@ export async function transitionTask(
         at,
       },
     });
+    // Перенос на день фактического завершения — отдельная отметка: в истории видно, что заявка
+    // планировалась на другой день (плановая дата не теряется, журнал только на запись).
+    if (completionDate) {
+      await tx.taskEvent.create({
+        data: {
+          taskId,
+          actorId: actor.id,
+          kind: "reschedule",
+          comment: `Дата: ${formatDayRu(task.scheduledDate) ?? "без даты"} → ${formatDayRu(completionDate)} — день фактического завершения`,
+          at,
+        },
+      });
+    }
     // Оплата на месте подтверждена — отдельная неизменяемая отметка в журнал (PRD §5).
     if (toStatus === "DONE" && task.paymentType === "ON_SITE" && opts.paymentConfirmed) {
       const amount = opts.paymentAmount ?? task.paymentAmount ?? null;
