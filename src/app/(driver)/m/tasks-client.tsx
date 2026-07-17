@@ -18,6 +18,7 @@ import {
   PASS_LABEL,
   formatDate,
   formatDateShort,
+  paymentBadge,
   todayISO,
   navUrl,
 } from "@/lib/task-ui";
@@ -417,6 +418,9 @@ function TaskCard({
   const dateISO = task.scheduledDate?.slice(0, 10) ?? null;
   const overdue = dateISO !== null && dateISO < today && !isTerminal(displayStatus);
   const undated = dateISO === null && !isTerminal(displayStatus);
+  // Деньги на точке (17.07): водитель видит «Взять деньги · сумма» ещё в списке, до открытия карточки.
+  // Статус — отображаемый (учитывает взятие в работу офлайн), как и остальные метки карточки.
+  const pay = paymentBadge({ ...task, status: displayStatus });
   const timeline =
     task.timeFrom || task.timeTo
       ? `${task.timeFrom ?? ""}${task.timeTo ? "–" + task.timeTo : ""}`
@@ -469,8 +473,13 @@ function TaskCard({
         <p className="mt-1 text-base font-semibold leading-snug text-neutral-900">{task.title}</p>
         <p className="mt-0.5 text-sm leading-snug text-neutral-500">{task.address}</p>
 
-        {task.passStatus !== "NOT_NEEDED" ? (
-          <Badge className={`mt-2 ${PASS_BADGE[task.passStatus]}`}>{PASS_LABEL[task.passStatus]}</Badge>
+        {task.passStatus !== "NOT_NEEDED" || pay ? (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {task.passStatus !== "NOT_NEEDED" ? (
+              <Badge className={PASS_BADGE[task.passStatus]}>{PASS_LABEL[task.passStatus]}</Badge>
+            ) : null}
+            {pay ? <Badge className={pay.className}>{pay.label}</Badge> : null}
+          </div>
         ) : null}
       </CardLink>
 

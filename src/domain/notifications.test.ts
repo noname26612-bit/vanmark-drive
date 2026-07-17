@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { formatMoney } from "@/lib/task-ui";
 import {
   buildTaskPayload,
   buildMorningPayload,
@@ -42,6 +43,38 @@ describe("buildTaskPayload", () => {
   it("без типа — тело без префикса", () => {
     const p = buildTaskPayload({ id: "t2", number: 1, title: "Просто", type: null }, "assigned");
     expect(p.body).toBe("Просто");
+  });
+
+  // Деньги на точке (17.07): суффикс в теле — водитель видит суть, не открывая приложение.
+  describe("суффикс «Взять деньги» при оплате на месте", () => {
+    const onSite = { ...task, paymentType: "ON_SITE" as const, paymentAmount: 41000 };
+
+    it("назначение и изменение — суффикс с суммой (формат formatMoney)", () => {
+      expect(buildTaskPayload(onSite, "assigned").body).toBe(
+        `Доставка / забор из аренды: ЛБМ 200 · Взять деньги: ${formatMoney(41000)}`,
+      );
+      expect(buildTaskPayload(onSite, "changed").body).toContain("Взять деньги");
+    });
+
+    it("без суммы — «Взять деньги на точке»", () => {
+      const p = buildTaskPayload({ ...onSite, paymentAmount: null }, "assigned");
+      expect(p.body).toBe("Доставка / забор из аренды: ЛБМ 200 · Взять деньги на точке");
+    });
+
+    it("перенос и отмена — без суффикса (деньги там не новость)", () => {
+      expect(buildTaskPayload(onSite, "rescheduled").body).not.toContain("Взять деньги");
+      expect(buildTaskPayload(onSite, "cancelled").body).not.toContain("Взять деньги");
+    });
+
+    it("OFFICE/NONE и задачи без payment-полей — без суффикса", () => {
+      expect(
+        buildTaskPayload({ ...task, paymentType: "OFFICE" as const, paymentAmount: 5000 }, "assigned").body,
+      ).not.toContain("Взять деньги");
+      expect(
+        buildTaskPayload({ ...task, paymentType: "NONE" as const, paymentAmount: null }, "changed").body,
+      ).not.toContain("Взять деньги");
+      expect(buildTaskPayload(task, "assigned").body).not.toContain("Взять деньги");
+    });
   });
 });
 

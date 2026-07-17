@@ -107,6 +107,31 @@ export const PAYMENT_LABEL: Record<PaymentType, string> = {
   ON_SITE: "Оплата на месте",
 };
 
+// Бейдж «деньги на точке» (оживление оплаты на месте, решение Артёма 17.07). Только для ON_SITE:
+// пока задача не завершена — янтарный призыв «Взять деньги · сумма» (действие впереди), после
+// завершения — итог: зелёный «Оплачено» / красный «Не оплачено». OFFICE/NONE в списках не шумят.
+// Сумма — только на янтарном чипе: фактически полученная сумма живёт в событии журнала
+// (payment_received), Task.paymentAmount — плановая, в DONE-бейдже она могла бы врать.
+// paymentReceived опционален: старый офлайн-кэш списка мог сохраниться без поля — undefined
+// ведёт себя как null (легаси-завершения без бейджа).
+export function paymentBadge(t: {
+  paymentType: PaymentType;
+  paymentAmount: number | null;
+  status: TaskStatus;
+  paymentReceived?: boolean | null;
+}): { label: string; className: string } | null {
+  if (t.paymentType !== "ON_SITE" || t.status === "CANCELLED") return null;
+  if (t.status === "DONE") {
+    if (t.paymentReceived === true)
+      return { label: "Оплачено", className: "border border-green-600 text-green-700" };
+    if (t.paymentReceived === false)
+      return { label: "Не оплачено", className: "border border-red-600 text-red-700" };
+    return null;
+  }
+  const amount = t.paymentAmount ? ` · ${formatMoney(t.paymentAmount)}` : "";
+  return { label: `Взять деньги${amount}`, className: "border border-amber-500 text-amber-700" };
+}
+
 // Порядок статусов для фильтров/выбора (актуальные). Legacy ACCEPTED/EN_ROUTE/ON_SITE сюда не входят —
 // новых задач в них нет, в фильтре их предлагать незачем (история показывается своими подписями).
 export const STATUS_ORDER: TaskStatus[] = [

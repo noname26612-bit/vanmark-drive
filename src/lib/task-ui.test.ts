@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { addDaysISO, STATUS_BADGE, STATUS_BAR, PASS_BADGE, STATUS_LABEL, isStatusBadgeHidden } from "./task-ui";
+import {
+  addDaysISO,
+  formatMoney,
+  paymentBadge,
+  STATUS_BADGE,
+  STATUS_BAR,
+  PASS_BADGE,
+  STATUS_LABEL,
+  isStatusBadgeHidden,
+} from "./task-ui";
 
 describe("addDaysISO (горизонт доски/планирования)", () => {
   it("прибавляет дни внутри месяца", () => {
@@ -86,5 +95,61 @@ describe("палитра статусов (спокойная, редизайн 
     expect(PASS_BADGE.ORDERED).toContain("slate");
     expect(PASS_BADGE.ORDERED).not.toMatch(/green|amber|red/);
     expect(PASS_BADGE.ORDERED).toContain("border");
+  });
+});
+
+describe("paymentBadge (деньги на точке, 17.07)", () => {
+  const onSite = (over: Partial<Parameters<typeof paymentBadge>[0]> = {}) =>
+    paymentBadge({
+      paymentType: "ON_SITE",
+      paymentAmount: 41000,
+      status: "ASSIGNED",
+      paymentReceived: null,
+      ...over,
+    });
+
+  it("активная задача — янтарный контурный призыв с суммой", () => {
+    const b = onSite();
+    expect(b).not.toBeNull();
+    expect(b!.label).toBe(`Взять деньги · ${formatMoney(41000)}`);
+    expect(b!.className).toContain("amber");
+    expect(b!.className).toContain("border");
+    expect(b!.className).not.toContain("bg-");
+  });
+
+  it("без суммы — просто «Взять деньги»", () => {
+    expect(onSite({ paymentAmount: null })!.label).toBe("Взять деньги");
+  });
+
+  it("в работе и на паузе призыв сохраняется", () => {
+    expect(onSite({ status: "IN_PROGRESS" })!.label).toContain("Взять деньги");
+    expect(onSite({ status: "ON_HOLD" })!.label).toContain("Взять деньги");
+  });
+
+  it("DONE: получено — зелёный «Оплачено», без суммы (факт живёт в журнале)", () => {
+    const b = onSite({ status: "DONE", paymentReceived: true });
+    expect(b!.label).toBe("Оплачено");
+    expect(b!.className).toContain("green");
+    expect(b!.className).toContain("border");
+  });
+
+  it("DONE: не получено — красный «Не оплачено»", () => {
+    const b = onSite({ status: "DONE", paymentReceived: false });
+    expect(b!.label).toBe("Не оплачено");
+    expect(b!.className).toContain("red");
+  });
+
+  it("DONE без отметки (легаси до фичи / старый офлайн-кэш) — бейджа нет", () => {
+    expect(onSite({ status: "DONE", paymentReceived: null })).toBeNull();
+    expect(onSite({ status: "DONE", paymentReceived: undefined })).toBeNull();
+  });
+
+  it("OFFICE и NONE в списках не шумят", () => {
+    expect(onSite({ paymentType: "OFFICE" })).toBeNull();
+    expect(onSite({ paymentType: "NONE" })).toBeNull();
+  });
+
+  it("отменённая задача — бейджа нет", () => {
+    expect(onSite({ status: "CANCELLED" })).toBeNull();
   });
 });

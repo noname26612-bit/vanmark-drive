@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { apiSend } from "@/lib/fetcher";
 import type { DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
 import type { PassStatus, PaymentType } from "@/generated/prisma/enums";
@@ -95,6 +95,25 @@ export function CreateTaskModal({
   function onTypeChange(id: string) {
     const tt = types.find((x) => x.id === id);
     setForm((f) => ({ ...f, typeId: id, requiresAct: tt?.requiresSignedDoc ?? false, actWaivedNote: "" }));
+  }
+
+  // Тумблер «Взять деньги на точке» ↔ paymentType=ON_SITE (решение Артёма 17.07: поле оплаты должно
+  // быть на виду, а не под «Показать все поля»). Источник истины один — form.paymentType, тумблер и
+  // селект в доп.полях биндятся на него, рассинхрон невозможен. Выключение тумблера возвращает
+  // предыдущее не-ON_SITE значение, чтобы случайный клик не стирал выбранное «Через офис».
+  const prevPaymentRef = useRef<PaymentType>(form.paymentType === "ON_SITE" ? "NONE" : form.paymentType);
+  const onSiteMoney = form.paymentType === "ON_SITE";
+  function toggleOnSite(on: boolean) {
+    if (on) {
+      if (form.paymentType !== "ON_SITE") prevPaymentRef.current = form.paymentType;
+      set("paymentType", "ON_SITE");
+    } else {
+      set("paymentType", prevPaymentRef.current);
+    }
+  }
+  function onPaymentSelect(v: PaymentType) {
+    if (v !== "ON_SITE") prevPaymentRef.current = v;
+    set("paymentType", v);
   }
 
   function buildBody(): Record<string, unknown> {
@@ -351,6 +370,43 @@ export function CreateTaskModal({
           ) : null}
         </div>
 
+        {/* Деньги на точке — всегда на виду (решение Артёма 17.07 по заявке №657: раньше поля оплаты
+            прятались под «Показать все поля», и водитель узнавал о деньгах только на словах). */}
+        <div className="rounded-lg border border-neutral-200 p-3">
+          <label className="flex items-center gap-2 text-sm font-medium text-neutral-800">
+            <input
+              type="checkbox"
+              data-testid="create-onsite-toggle"
+              checked={onSiteMoney}
+              onChange={(e) => toggleOnSite(e.target.checked)}
+              className="h-4 w-4"
+            />
+            Взять деньги на точке
+          </label>
+          {onSiteMoney ? (
+            <div className="mt-2 grid grid-cols-2 gap-3">
+              <Field label="Сумма, ₽">
+                <Input
+                  data-testid="create-onsite-amount"
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  value={form.paymentAmount}
+                  onChange={(e) => set("paymentAmount", e.target.value)}
+                />
+              </Field>
+              <Field label="Примечание">
+                <Input
+                  data-testid="create-onsite-note"
+                  value={form.paymentNote}
+                  onChange={(e) => set("paymentNote", e.target.value)}
+                  placeholder="наличными при выгрузке"
+                />
+              </Field>
+            </div>
+          ) : null}
+        </div>
+
         <button
           type="button"
           onClick={() => setShowAll((v) => !v)}
@@ -381,11 +437,11 @@ export function CreateTaskModal({
             <Field label="Комментарий ко времени">
               <Input value={form.timeNote} onChange={(e) => set("timeNote", e.target.value)} placeholder="после обеда" />
             </Field>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <Field label="Оплата">
                 <Select
                   value={form.paymentType}
-                  onChange={(e) => set("paymentType", e.target.value as PaymentType)}
+                  onChange={(e) => onPaymentSelect(e.target.value as PaymentType)}
                 >
                   {Object.entries(PAYMENT_LABEL).map(([v, label]) => (
                     <option key={v} value={v}>
@@ -393,13 +449,6 @@ export function CreateTaskModal({
                     </option>
                   ))}
                 </Select>
-              </Field>
-              <Field label="Сумма, ₽">
-                <Input
-                  type="number"
-                  value={form.paymentAmount}
-                  onChange={(e) => set("paymentAmount", e.target.value)}
-                />
               </Field>
               <Field label="Пропуск">
                 <Select
@@ -415,9 +464,22 @@ export function CreateTaskModal({
                 </Select>
               </Field>
             </div>
-            <Field label="Примечание к оплате">
-              <Input value={form.paymentNote} onChange={(e) => set("paymentNote", e.target.value)} />
-            </Field>
+            {/* Сумма и примечание при «на месте» живут в блоке-тумблере выше; здесь — только для
+                «через офис» («доставка 5000, оплатят по счёту»). При «без оплаты» не нужны нигде. */}
+            {form.paymentType === "OFFICE" ? (
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Сумма, ₽">
+                  <Input
+                    type="number"
+                    value={form.paymentAmount}
+                    onChange={(e) => set("paymentAmount", e.target.value)}
+                  />
+                </Field>
+                <Field label="Примечание к оплате">
+                  <Input value={form.paymentNote} onChange={(e) => set("paymentNote", e.target.value)} />
+                </Field>
+              </div>
+            ) : null}
             <Field label="Описание">
               <Textarea rows={3} value={form.description} onChange={(e) => set("description", e.target.value)} />
             </Field>

@@ -1,6 +1,8 @@
 // Чистые билдеры полезной нагрузки пушей и валидация подписки (PRD §7, ARCHITECTURE §8).
 // Здесь НЕТ web-push, prisma и server-only — модуль импортируется юнит-тестами (vitest, node).
 // Транспорт (отправка) — в src/lib/push.ts.
+import type { PaymentType } from "@/generated/prisma/enums";
+import { formatMoney } from "@/lib/task-ui";
 
 // Минимальная нагрузка пуша (ARCHITECTURE §8): заголовок/тело + deeplink в карточку.
 export type PushPayload = {
@@ -17,6 +19,10 @@ export type NotifiableTask = {
   number: number;
   title: string;
   type?: { name: string } | null;
+  // Деньги на точке (17.07): опциональны — узкие вызовы (например «priced» из work-service)
+  // их не передают; полные строки Task из task-service подхватываются structural typing.
+  paymentType?: PaymentType | null;
+  paymentAmount?: number | null;
 };
 
 const TASK_TITLE: Record<TaskNotifyKind, string> = {
@@ -29,9 +35,17 @@ const TASK_TITLE: Record<TaskNotifyKind, string> = {
 
 export function buildTaskPayload(task: NotifiableTask, kind: TaskNotifyKind): PushPayload {
   const typeName = task.type?.name ? `${task.type.name}: ` : "";
+  // «Взять деньги» в теле пуша при назначении/изменении ON_SITE-задачи (17.07): водитель видит
+  // суть, не открывая приложение. Для переноса/отмены/расценки суффикс не добавляем.
+  const money =
+    (kind === "assigned" || kind === "changed") && task.paymentType === "ON_SITE"
+      ? task.paymentAmount
+        ? ` · Взять деньги: ${formatMoney(task.paymentAmount)}`
+        : " · Взять деньги на точке"
+      : "";
   return {
     title: `${TASK_TITLE[kind]} №${task.number}`,
-    body: `${typeName}${task.title}`,
+    body: `${typeName}${task.title}${money}`,
     url: `/m/${task.id}`,
     tag: `task-${task.id}`,
   };

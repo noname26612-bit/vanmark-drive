@@ -35,6 +35,10 @@ export type TaskDTO = {
   paymentType: PaymentType;
   paymentAmount: number | null;
   paymentNote: string | null;
+  // Факт оплаты при ON_SITE-завершении (№8): true получено / false не получено / null не относится.
+  // Приходит и в списках (TaskListWire отдаёт все скалярные поля) — нужен бейджу «Оплачено/Не оплачено».
+  // Водителю не скрывается: это результат его же действия при завершении.
+  paymentReceived: boolean | null;
   scheduledDate: string | null;
   timeFrom: string | null;
   timeTo: string | null;
@@ -128,8 +132,7 @@ export type TaskDetailDTO = TaskDTO & {
   events: TaskEventDTO[];
   attachments: AttachmentDTO[];
   workItems: WorkItemDTO[];
-  // Факт оплаты при ON_SITE-завершении (№8): true получено / false не получено / null не относится.
-  paymentReceived: boolean | null;
+  // Причина неоплаты при ON_SITE-завершении (№8); сам факт (paymentReceived) — в TaskDTO.
   paymentMissedReason: string | null;
   // Причина водителя при завершении актовой задачи без акта (акты до 20:00, 02.07); null — не выбиралась.
   actMissedReason: string | null;

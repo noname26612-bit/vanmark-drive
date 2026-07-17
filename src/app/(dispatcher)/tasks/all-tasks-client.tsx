@@ -8,7 +8,7 @@ import { Plus } from "lucide-react";
 import { fetcher } from "@/lib/fetcher";
 import type { DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
 import { actState } from "@/domain/act";
-import { STATUS_LABEL, STATUS_ORDER, actBadge, formatDate } from "@/lib/task-ui";
+import { STATUS_LABEL, STATUS_ORDER, actBadge, formatDate, paymentBadge } from "@/lib/task-ui";
 import { StatusBadge } from "@/components/status-badge";
 import { TypeIcon } from "@/components/type-icon";
 import { Badge } from "@/components/ui/badge";
@@ -121,13 +121,14 @@ export function AllTasksClient({
               <th className="px-3 py-2">Дата</th>
               <th className="px-3 py-2">Исполнитель</th>
               <th className="px-3 py-2">Статус</th>
+              <th className="px-3 py-2">Оплата</th>
               <th className="px-3 py-2">Акт</th>
             </tr>
           </thead>
           <tbody>
             {error && tasks.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-3 py-8 text-center">
+                <td colSpan={9} className="px-3 py-8 text-center">
                   <p className="text-sm text-red-600">Не удалось загрузить список.</p>
                   <button
                     type="button"
@@ -140,7 +141,7 @@ export function AllTasksClient({
               </tr>
             ) : tasks.length === 0 && !isLoading ? (
               <tr>
-                <td colSpan={8} className="px-3 py-8 text-center text-neutral-400">
+                <td colSpan={9} className="px-3 py-8 text-center text-neutral-400">
                   Задач не найдено
                 </td>
               </tr>
@@ -182,6 +183,9 @@ export function AllTasksClient({
                     <StatusBadge status={t.status} />
                   </td>
                   <td className="px-3 py-2">
+                    <PaymentCell task={t} />
+                  </td>
+                  <td className="px-3 py-2">
                     <ActCell task={t} />
                   </td>
                 </tr>
@@ -209,6 +213,13 @@ export function AllTasksClient({
       />
     </div>
   );
+}
+
+// Деньги на точке (17.07): «Взять деньги · сумма» на активной ON_SITE-задаче, итог на завершённой.
+function PaymentCell({ task }: { task: TaskDTO }) {
+  const badge = paymentBadge(task);
+  if (!badge) return <span className="text-neutral-300">—</span>;
+  return <Badge className={badge.className}>{badge.label}</Badge>;
 }
 
 // Признак комплектности акта в списке (этап 14, PRD §13). hasSignedDoc приходит со списком.
