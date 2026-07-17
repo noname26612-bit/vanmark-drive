@@ -5,7 +5,7 @@
 import { useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { Phone, Navigation, Camera, X, FileText } from "lucide-react";
+import { Phone, Navigation, Camera, X, FileText, Banknote } from "lucide-react";
 import { fetcher, apiSend, apiUpload } from "@/lib/fetcher";
 import { compressImage } from "@/lib/image-compress";
 import { actState } from "@/domain/act";
@@ -276,7 +276,21 @@ export function TaskDetailClient({
           </Row>
         ) : null}
         <Row label="Исполнитель">{task.assignee?.name ?? "Не назначено"}</Row>
-        {task.paymentType !== "NONE" ? (
+        {task.paymentType === "ON_SITE" && !isTerminal ? (
+          /* Деньги на точке, вопрос открыт (17.07): янтарная плашка на всю ширину — видна сразу,
+             как у водителя. После завершения гаснет в обычную строку с итогом «Оплачено/Не оплачено». */
+          <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 sm:col-span-2">
+            <p className="flex flex-wrap items-center gap-1.5 text-sm font-medium text-amber-900">
+              <Banknote className="h-4 w-4 shrink-0" /> Взять деньги на точке
+              {task.paymentAmount ? (
+                <span className="font-semibold">· {formatMoney(task.paymentAmount)}</span>
+              ) : (
+                <span className="font-normal text-amber-800">· сумма не указана</span>
+              )}
+            </p>
+            {task.paymentNote ? <p className="mt-0.5 text-sm text-amber-800">{task.paymentNote}</p> : null}
+          </div>
+        ) : task.paymentType !== "NONE" ? (
           <Row label="Оплата">
             {PAYMENT_LABEL[task.paymentType]}
             {task.paymentAmount ? ` · ${formatMoney(task.paymentAmount)}` : ""}

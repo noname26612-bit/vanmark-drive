@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
-import { Phone, Navigation, Loader2, Camera, X, FileText } from "lucide-react";
+import { Phone, Navigation, Loader2, Camera, X, FileText, Banknote } from "lucide-react";
 import { ApiError } from "@/lib/fetcher";
 import { cachedFetcher } from "@/lib/offline/cached-fetcher";
 import { useOnline } from "@/lib/offline/net";
@@ -476,10 +476,34 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
           </section>
         ) : null}
 
-        {/* Оплата — крупно при оплате на месте */}
-        {onSite ? (
+        {/* Оплата — крупно при оплате на месте. Янтарный призыв — только пока задача не закрыта;
+            после завершения вопрос закрыт, блок показывает итог (зелёный «получены» / красный
+            «не получены»). Закрытые без отметки (легаси/отмена) — нейтральная строка без призыва. */}
+        {onSite && displayStatus === "DONE" && t.paymentReceived === true ? (
+          <section className="rounded-xl border-2 border-green-600 bg-green-50 p-3">
+            <p className="flex items-center gap-1.5 text-sm font-medium text-green-800">
+              <Banknote className="h-5 w-5" /> Деньги получены
+            </p>
+          </section>
+        ) : onSite && displayStatus === "DONE" && t.paymentReceived === false ? (
+          <section className="rounded-xl border-2 border-red-300 bg-red-50 p-3">
+            <p className="flex items-center gap-1.5 text-sm font-medium text-red-800">
+              <Banknote className="h-5 w-5" /> Деньги не получены
+            </p>
+            {t.paymentMissedReason ? (
+              <p className="mt-0.5 text-sm text-red-700">{t.paymentMissedReason}</p>
+            ) : null}
+          </section>
+        ) : onSite && (displayStatus === "DONE" || displayStatus === "CANCELLED") ? (
+          <section className="rounded-xl border border-neutral-200 p-3 text-sm text-neutral-600">
+            Оплата на месте{t.paymentAmount ? ` · ${formatMoney(t.paymentAmount)}` : ""}
+            {t.paymentNote ? ` · ${t.paymentNote}` : ""}
+          </section>
+        ) : onSite ? (
           <section className="rounded-xl border-2 border-amber-300 bg-amber-50 p-3">
-            <p className="text-sm font-medium text-amber-900">Взять оплату на месте</p>
+            <p className="flex items-center gap-1.5 text-sm font-medium text-amber-900">
+              <Banknote className="h-5 w-5" /> Взять деньги на точке
+            </p>
             <p className="mt-0.5 text-2xl font-bold text-amber-900">
               {t.paymentAmount ? formatMoney(t.paymentAmount) : "сумма не указана"}
             </p>

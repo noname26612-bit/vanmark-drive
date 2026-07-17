@@ -30,6 +30,7 @@ import {
   addDaysISO,
   formatDate,
   formatDateShort,
+  paymentBadge,
 } from "@/lib/task-ui";
 import { actState } from "@/domain/act";
 import { TypeIcon } from "@/components/type-icon";
@@ -1533,6 +1534,8 @@ function BoardCard({
     hasSignedDoc: task.hasSignedDoc ?? false,
   });
   const act = task.status === "DONE" && (actSt === "COMPLETE" || actSt === "PENDING") ? actBadge(actSt, true) : null;
+  // Деньги на точке (17.07): янтарный «Взять деньги · сумма» на активной, «Оплачено/Не оплачено» на DONE.
+  const pay = paymentBadge(task);
   return (
     <div
       draggable
@@ -1576,11 +1579,12 @@ function BoardCard({
           </p>
         ) : null}
       </div>
-      {task.passStatus !== "NOT_NEEDED" || act ? (
+      {task.passStatus !== "NOT_NEEDED" || act || pay ? (
         <div className="mt-1 flex flex-wrap items-center gap-1">
           {task.passStatus !== "NOT_NEEDED" ? (
             <Badge className={PASS_BADGE[task.passStatus]}>{PASS_LABEL[task.passStatus]}</Badge>
           ) : null}
+          {pay ? <Badge className={pay.className}>{pay.label}</Badge> : null}
           {act ? <Badge className={act.className}>{act.label}</Badge> : null}
         </div>
       ) : null}
