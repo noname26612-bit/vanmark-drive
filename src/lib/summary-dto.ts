@@ -21,6 +21,7 @@ export type DriverSummaryView = {
   driverName: string;
   isExternal: boolean; // внешний перевозчик: без смен, загрузка не считается
   doneCount: number; // выполнено задач (по дате закрытия в окне)
+  pairDoneCount: number; // из них рядом: выполнено «в паре» (водитель был напарником; 20.07.2026)
   lateCount: number; // подтверждённые «поздно открыл смену» (KPI)
   missedStopCount: number; // подтверждённые невыполненные точки (KPI)
   cancelledCount: number; // отмен в окне (по журналу)

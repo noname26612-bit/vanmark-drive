@@ -46,6 +46,7 @@ export type {
 
 type Acc = {
   done: number;
+  pairDone: number; // выполнено «в паре» (водитель был напарником; деньги/акты — на ответственном)
   late: number;
   missed: number;
   cancelled: number;
@@ -64,6 +65,7 @@ type Acc = {
 function emptyAcc(): Acc {
   return {
     done: 0,
+    pairDone: 0,
     late: 0,
     missed: 0,
     cancelled: 0,
@@ -113,6 +115,7 @@ export async function getDriverSummary(
         where: { status: "DONE", assigneeId: { not: null }, completedAt: { gte: range.gte, lt: range.lt } },
         select: {
           assigneeId: true,
+          coDriverId: true, // напарник (20.07): задача видна в сводке обоим, деньги — ответственному
           completedAt: true,
           estimatedMinutes: true, // план/факт (v2)
           carrierCost: true, // затраты на внешних — в «Деньги за период» (v2)
@@ -170,17 +173,25 @@ export async function getDriverSummary(
     a.done += 1;
     if (t.assignee?.isExternal && t.carrierCost) carrierCostTotal += t.carrierCost;
     const startedAt = t.events[0]?.at; // первый переход в «В работе» (этап A; раньше — «На месте»)
-    if (startedAt) {
-      const ms = t.completedAt.getTime() - startedAt.getTime();
-      if (ms > 0) {
-        a.durations.push(ms); // отрицательные/нулевые (кривые данные) не учитываем
-        bump(a.dayWorkedMs, dk, ms); // занятость по дням (v2): отработанное — к дню закрытия
-        // План/факт (v2): только задачи, где есть И оценка, И факт — честное сравнение.
-        if (t.estimatedMinutes != null && t.estimatedMinutes > 0) {
-          a.planMin += t.estimatedMinutes;
-          a.factMin += Math.round(ms / 60000);
-          a.planFactCount += 1;
-        }
+    const ms = startedAt ? t.completedAt.getTime() - startedAt.getTime() : 0;
+    if (ms > 0) {
+      a.durations.push(ms); // отрицательные/нулевые (кривые данные) не учитываем
+      bump(a.dayWorkedMs, dk, ms); // занятость по дням (v2): отработанное — к дню закрытия
+      // План/факт (v2): только задачи, где есть И оценка, И факт — честное сравнение.
+      if (t.estimatedMinutes != null && t.estimatedMinutes > 0) {
+        a.planMin += t.estimatedMinutes;
+        a.factMin += Math.round(ms / 60000);
+        a.planFactCount += 1;
+      }
+    }
+    // Напарник (20.07, решение Артёма): задача числится выполненной И у него (с пометкой «в паре»),
+    // рабочее время зачисляется обоим (полоса «В работе/Простой» доски и сводка сходятся).
+    // Деньги/план-факт/среднее — только у ответственного, суммы не удваиваются.
+    if (t.coDriverId) {
+      const ca = acc.get(t.coDriverId);
+      if (ca) {
+        ca.pairDone += 1;
+        if (ms > 0) bump(ca.dayWorkedMs, dk, ms);
       }
     }
   }
@@ -254,6 +265,7 @@ export async function getDriverSummary(
       driverName: d.name,
       isExternal: d.isExternal,
       doneCount: a.done,
+      pairDoneCount: a.pairDone,
       lateCount: a.late,
       missedStopCount: a.missed,
       cancelledCount: a.cancelled,
@@ -385,7 +397,13 @@ export async function getSummaryDetails(
         ...(m === "carrier" ? { assignee: { isExternal: true } } : {}),
         ...(m === "payments" ? { paymentReceived: true } : {}),
         ...(m === "priced-works" ? { worksheetStatus: { in: ["PRICED", "SIGNED"] } } : {}),
-        ...(driverId ? { assigneeId: driverId } : { assigneeId: { not: null } }),
+        // «Выполнено» включает задачи, где водитель был напарником (20.07); денежные метрики
+        // (payments/carrier/priced-works) и план/факт — строго по ответственному, без удвоения.
+        ...(driverId
+          ? m === "done"
+            ? { OR: [{ assigneeId: driverId }, { coDriverId: driverId }] }
+            : { assigneeId: driverId }
+          : { assigneeId: { not: null } }),
       },
       select: {
         id: true,
@@ -396,6 +414,8 @@ export async function getSummaryDetails(
         paymentAmount: true,
         carrierCost: true,
         assignee: { select: { name: true } },
+        coDriverId: true,
+        coDriver: { select: { name: true } },
         workItems: m === "priced-works" ? { select: { price: true, quantity: true } } : false,
         events:
           m === "done" || m === "plan-fact"
@@ -422,7 +442,16 @@ export async function getSummaryDetails(
         dateKey: dk,
         driverName: t.assignee?.name,
       };
-      if (m === "done") out.push({ ...base, minutes: factMin ?? undefined });
+      if (m === "done") {
+        // Пометка пары: в списке напарника — «в паре · отв. Имя», в общем — «в паре · Имя напарника».
+        const pairNote =
+          driverId && t.coDriverId === driverId
+            ? `в паре · отв. ${t.assignee?.name ?? "—"}`
+            : t.coDriverId
+              ? `в паре · ${t.coDriver?.name ?? ""}`
+              : undefined;
+        out.push({ ...base, minutes: factMin ?? undefined, extra: pairNote });
+      }
       else if (m === "plan-fact")
         out.push({ ...base, minutes: factMin ?? undefined, extra: `план ${t.estimatedMinutes} мин → факт ${factMin} мин` });
       else if (m === "payments") out.push({ ...base, amount: t.paymentAmount ?? 0 });

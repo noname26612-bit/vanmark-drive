@@ -83,6 +83,11 @@ export function parseTaskFields(body: Record<string, unknown>): Partial<CreateTa
     const v = body.assigneeId;
     if (v === null || typeof v === "string") out.assigneeId = v;
   }
+  // Напарник (20.07.2026, PRD §4) — по образцу assigneeId; правила пары проверяет домен.
+  if ("coDriverId" in body) {
+    const v = body.coDriverId;
+    if (v === null || typeof v === "string") out.coDriverId = v;
+  }
   // Оценка времени (Фаза 2, PRD §14): число → ручная оценка; null → сброс к авто-расчёту.
   if ("estimatedMinutes" in body) {
     const v = body.estimatedMinutes;

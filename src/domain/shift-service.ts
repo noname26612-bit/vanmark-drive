@@ -4,6 +4,7 @@
 // админ (гейт в route handler). Учёт отработанного/простоя по сменам — этап D, из openedAt/closedAt.
 import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
+import { unionDurationMs, type IntervalMs } from "./intervals";
 import { detectShiftLate, periodOf, parseHHMM, dateKeyInTz, KPI_TZ } from "./kpi";
 import { resolveOccurredAt } from "./occurred-at";
 import type { ShiftStatus } from "@/generated/prisma/enums";
@@ -483,8 +484,10 @@ export async function adjustShiftIdle(
 }
 
 /**
- * Отработано за день по задачам (мин) для каждого водителя: сумма «В работе → Завершено» по DONE
- * задачам дня + текущая активная (старт → сейчас). Для полосы рабочего времени на «Сегодня» (№5).
+ * Отработано за день по задачам (мин) для каждого водителя: «В работе → Завершено» по DONE задачам
+ * дня + текущая активная (старт → сейчас). Для полосы рабочего времени на «Сегодня» (№5).
+ * Напарник (20.07.2026): интервал парной задачи занимает день ОБОИМ; на водителя интервалы
+ * объединяются (unionDurationMs) — парная параллельно своей активной не задваивает «отработано».
  */
 async function workedMinutesByDriver(driverIds: string[], date: Date): Promise<Map<string, number>> {
   const result = new Map<string, number>();
@@ -493,29 +496,38 @@ async function workedMinutesByDriver(driverIds: string[], date: Date): Promise<M
   const dayStart = new Date(`${dateKey}T00:00:00.000+03:00`); // начало дня в МСК
   const dayEnd = new Date(`${dateKey}T23:59:59.999+03:00`);
   const now = new Date();
+  const ids = new Set(driverIds);
   const tasks = await prisma.task.findMany({
     where: {
-      assigneeId: { in: driverIds },
-      OR: [{ status: "DONE", completedAt: { gte: dayStart, lte: dayEnd } }, { status: "IN_PROGRESS" }],
+      AND: [
+        { OR: [{ assigneeId: { in: driverIds } }, { coDriverId: { in: driverIds } }] },
+        { OR: [{ status: "DONE", completedAt: { gte: dayStart, lte: dayEnd } }, { status: "IN_PROGRESS" }] },
+      ],
     },
     select: {
       assigneeId: true,
+      coDriverId: true,
       status: true,
       completedAt: true,
       events: { where: { toStatus: "IN_PROGRESS" }, orderBy: { at: "asc" }, take: 1, select: { at: true } },
     },
   });
-  const acc = new Map<string, number>();
+  const acc = new Map<string, IntervalMs[]>();
   for (const t of tasks) {
-    if (!t.assigneeId) continue;
     const startedAt = t.events[0]?.at;
     if (!startedAt) continue;
     const end = t.status === "DONE" ? t.completedAt : now;
     if (!end) continue;
-    const ms = end.getTime() - startedAt.getTime();
-    if (ms > 0) acc.set(t.assigneeId, (acc.get(t.assigneeId) ?? 0) + ms);
+    const interval = { start: startedAt.getTime(), end: end.getTime() };
+    if (interval.end <= interval.start) continue;
+    for (const id of [t.assigneeId, t.coDriverId]) {
+      if (!id || !ids.has(id)) continue;
+      const list = acc.get(id);
+      if (list) list.push(interval);
+      else acc.set(id, [interval]);
+    }
   }
-  for (const [k, ms] of acc) result.set(k, Math.round(ms / 60000));
+  for (const [k, intervals] of acc) result.set(k, Math.round(unionDurationMs(intervals) / 60000));
   return result;
 }
 

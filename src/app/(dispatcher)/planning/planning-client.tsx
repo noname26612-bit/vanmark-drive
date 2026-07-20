@@ -97,8 +97,17 @@ export function PlanningClient({
     });
   }
 
+  // Парная задача (20.07) видна в строках обоих водителей; в строке напарника — зеркало (не draggable).
   const cellTasks = (row: Row, day: string): TaskDTO[] =>
-    bySearch(list.filter((t) => dateOf(t) === day && (t.assigneeId ?? null) === row.driverId));
+    bySearch(
+      list.filter(
+        (t) =>
+          dateOf(t) === day &&
+          (row.driverId === null
+            ? (t.assigneeId ?? null) === null
+            : t.assigneeId === row.driverId || t.coDriverId === row.driverId),
+      ),
+    );
 
   async function plan(taskId: string, day: string, assigneeId: string | null) {
     const task = list.find((t) => t.id === taskId);
@@ -302,6 +311,7 @@ function RowCells({
           showLoad={row.driverId !== null && searchQuery === null}
           workdayMinutes={workdayMinutes}
           searchQuery={searchQuery}
+          rowDriverId={row.driverId}
         />
       ))}
     </>
@@ -317,6 +327,7 @@ function Cell({
   showLoad,
   workdayMinutes,
   searchQuery = null,
+  rowDriverId = null,
 }: {
   rowKey: string;
   day: string;
@@ -326,6 +337,7 @@ function Cell({
   showLoad: boolean;
   workdayMinutes: number;
   searchQuery?: ParsedQuery | null;
+  rowDriverId?: string | null;
 }) {
   const [over, setOver] = useState(false);
   // Сумма оценок задач ячейки (Фаза 2, §14.4) — из уже загруженных задач, без доп. запроса.
@@ -366,21 +378,30 @@ function Cell({
         </div>
       ) : null}
       {tasks.map((t) => (
-        <PlanCard key={t.id} task={t} query={searchQuery} />
+        <PlanCard key={t.id} task={t} query={searchQuery} rowDriverId={rowDriverId} />
       ))}
     </div>
   );
 }
 
-function PlanCard({ task, query = null }: { task: TaskDTO; query?: ParsedQuery | null }) {
+function PlanCard({
+  task,
+  query = null,
+  rowDriverId = null,
+}: {
+  task: TaskDTO;
+  query?: ParsedQuery | null;
+  rowDriverId?: string | null; // чья строка: у напарника карточка-зеркало (не draggable)
+}) {
   const router = useRouter();
-  const draggable = !TERMINAL.includes(task.status);
+  const isMirror = task.coDriverId !== null && rowDriverId === task.coDriverId;
+  const draggable = !TERMINAL.includes(task.status) && !isMirror;
   // Провал в заявку — кликом по любой части плашки (решение Артёма 02.07.2026).
   const openTask = () => router.push(`/tasks/${task.id}`);
   return (
     <div
       draggable={draggable}
-      data-testid="plan-card"
+      data-testid={isMirror ? "plan-card-mirror" : "plan-card"}
       role="link"
       tabIndex={0}
       aria-label={`Заявка №${task.number}: ${task.title}`}
@@ -405,6 +426,15 @@ function PlanCard({ task, query = null }: { task: TaskDTO; query?: ParsedQuery |
       <span className="mt-0.5 block truncate text-neutral-700">
         <Highlighted text={task.title} query={query} />
       </span>
+      {isMirror ? (
+        <span className="mt-0.5 inline-block rounded border border-neutral-300 px-1 text-[10px] leading-4 text-neutral-500">
+          напарник
+        </span>
+      ) : task.coDriver ? (
+        <span className="mt-0.5 inline-block truncate rounded border border-neutral-300 px-1 text-[10px] leading-4 text-neutral-500">
+          в паре · {task.coDriver.name}
+        </span>
+      ) : null}
       {task.timeFrom || task.timeTo ? (
         <span className="text-neutral-500">
           {task.timeFrom ?? ""}

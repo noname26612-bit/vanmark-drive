@@ -192,6 +192,7 @@ export async function buildWorkloadCalendar(fromKey: string, toKey: string): Pro
       },
       select: {
         assigneeId: true,
+        coDriverId: true, // напарник (20.07): день занят у обоих — минуты в обе колонки
         scheduledDate: true,
         estimatedMinutes: true,
         type: { select: { onSiteMinutes: true } },
@@ -209,13 +210,17 @@ export async function buildWorkloadCalendar(fromKey: string, toKey: string): Pro
 
   for (const t of tasks) {
     if (!t.assigneeId || !t.scheduledDate) continue;
-    const col = cells[t.assigneeId];
-    if (!col) continue; // задача на неактивного/несписочного исполнителя — пропускаем
     const key = dayKey(t.scheduledDate);
-    const cell = col[key];
-    if (!cell) continue;
-    cell.minutes += t.estimatedMinutes ?? t.type.onSiteMinutes ?? 0;
-    cell.count += 1;
+    const minutes = t.estimatedMinutes ?? t.type.onSiteMinutes ?? 0;
+    // Минуты и счётчик задачи кладутся в ячейки ОБОИХ участников пары (день занят у обоих) —
+    // «двоение» суммарных минут между водителями осознанное: это загрузка людей, не сумма работ.
+    for (const id of [t.assigneeId, t.coDriverId]) {
+      if (!id) continue;
+      const cell = cells[id]?.[key];
+      if (!cell) continue; // неактивный/несписочный участник — пропускаем
+      cell.minutes += minutes;
+      cell.count += 1;
+    }
   }
 
   // Отпуска/больничные по водителям (№9) — для затенения дней в календаре. Только списочные водители.

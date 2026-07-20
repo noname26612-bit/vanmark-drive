@@ -36,6 +36,7 @@ function formFromTask(t: TaskDTO): FormState {
     passStatus: t.passStatus,
     priority: t.priority,
     assigneeId: t.assigneeId ?? "",
+    coDriverId: t.coDriverId ?? "",
     requiresAct: t.requiresSignedDoc,
     actWaivedNote: t.actWaivedNote ?? "",
     carrierCost: t.carrierCost == null ? "" : String(t.carrierCost),
@@ -76,7 +77,10 @@ export function CreateTaskModal({
   const [form, setForm] = useState<FormState>(() =>
     editTask
       ? formFromTask(editTask)
-      : (initialForm ?? emptyForm(firstType, defaultDate, types[0]?.requiresSignedDoc ?? false)),
+      : initialForm
+        ? // Старый черновик localStorage (до 20.07) может не иметь coDriverId — читаем с дефолтом.
+          { ...initialForm, coDriverId: initialForm.coDriverId ?? "" }
+        : emptyForm(firstType, defaultDate, types[0]?.requiresSignedDoc ?? false),
   );
   const [showAll, setShowAll] = useState(isEdit);
   const [noDate, setNoDate] = useState(false);
@@ -150,6 +154,13 @@ export function CreateTaskModal({
         ? null
         : undefined;
     if (!isEdit && form.assigneeId) body.assigneeId = form.assigneeId;
+    // Напарник (20.07): при создании шлём только выбранного; при правке открытой задачи пустое
+    // значение = снять напарника (null). Закрытые задачи пару не меняют (поле скрыто, сервер игнорирует).
+    if (!isEdit) {
+      if (form.assigneeId && form.coDriverId) body.coDriverId = form.coDriverId;
+    } else if (!isTerminalEdit) {
+      body.coDriverId = form.assigneeId && form.coDriverId ? form.coDriverId : null;
+    }
     body.requiresAct = form.requiresAct;
     if (!form.requiresAct && form.actWaivedNote.trim()) body.actWaivedNote = form.actWaivedNote.trim();
     else if (isEdit) body.actWaivedNote = null;
@@ -318,7 +329,15 @@ export function CreateTaskModal({
               <Select
                 data-testid="create-assignee"
                 value={form.assigneeId}
-                onChange={(e) => set("assigneeId", e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  // Смена/снятие ответственного чинит пару: напарник не может совпасть или остаться без ведущего.
+                  setForm((f) => ({
+                    ...f,
+                    assigneeId: v,
+                    coDriverId: !v || f.coDriverId === v ? "" : f.coDriverId,
+                  }));
+                }}
               >
                 <option value="">Не назначено</option>
                 {drivers.map((d) => (
@@ -326,6 +345,24 @@ export function CreateTaskModal({
                     {d.name}
                   </option>
                 ))}
+              </Select>
+            </Field>
+          ) : null}
+          {form.assigneeId && (!isEdit || !isTerminalEdit) ? (
+            <Field label="Напарник (не обязательно)">
+              <Select
+                data-testid="create-co-driver"
+                value={form.coDriverId}
+                onChange={(e) => set("coDriverId", e.target.value)}
+              >
+                <option value="">— нет —</option>
+                {drivers
+                  .filter((d) => d.id !== form.assigneeId)
+                  .map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
               </Select>
             </Field>
           ) : null}

@@ -9,6 +9,7 @@ import type { SummaryOverview } from "./summary-dto";
 export const SUMMARY_CSV_HEADERS = [
   "Водитель",
   "Выполнено",
+  "В паре",
   "Поздние смены",
   "Невыполненные точки",
   "Отмены",
@@ -34,6 +35,7 @@ export function buildSummaryCsv(overview: SummaryOverview): string {
       const base: (string | number)[] = [
         d.driverName,
         d.doneCount,
+        d.pairDoneCount,
         d.lateCount,
         d.missedStopCount,
         d.cancelledCount,
@@ -56,6 +58,7 @@ export function buildSummaryCsv(overview: SummaryOverview): string {
       const base: (string | number)[] = [
         "Итого",
         t.doneCount,
+        "", // «В паре» в итогах не суммируем: это участия, не отдельные задачи (удвоения нет)
         t.lateCount,
         t.missedStopCount,
         t.cancelledCount,

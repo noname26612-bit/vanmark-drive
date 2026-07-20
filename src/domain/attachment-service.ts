@@ -36,7 +36,7 @@ const attachmentSelect = {
 export async function addAttachment(taskId: string, actor: Actor, input: NewAttachment) {
   const task = await prisma.task.findUnique({
     where: { id: taskId },
-    select: { id: true, assigneeId: true, status: true },
+    select: { id: true, assigneeId: true, coDriverId: true, status: true },
   });
   if (!task) throw Errors.notFound();
   if (!canViewTask(actor, task)) throw Errors.notFound(); // чужая → 404, не 403
@@ -84,7 +84,7 @@ export async function addAttachment(taskId: string, actor: Actor, input: NewAtta
 export async function getAttachmentForDownload(attachmentId: string, actor: Actor) {
   const att = await prisma.attachment.findUnique({
     where: { id: attachmentId },
-    select: { filePath: true, mimeType: true, task: { select: { assigneeId: true } } },
+    select: { filePath: true, mimeType: true, task: { select: { assigneeId: true, coDriverId: true } } },
   });
   if (!att) throw Errors.notFound();
   if (!canViewTask(actor, att.task)) throw Errors.notFound();
@@ -101,7 +101,7 @@ export async function deleteAttachment(attachmentId: string, actor: Actor): Prom
       createdById: true,
       kind: true,
       taskId: true,
-      task: { select: { assigneeId: true, status: true } },
+      task: { select: { assigneeId: true, coDriverId: true, status: true } },
     },
   });
   if (!att) throw Errors.notFound();

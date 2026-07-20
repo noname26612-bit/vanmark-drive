@@ -59,7 +59,12 @@ export async function runMorningReminders(): Promise<void> {
   await Promise.all(
     drivers.map(async (d) => {
       const count = await prisma.task.count({
-        where: { assigneeId: d.id, scheduledDate: today, status: { notIn: ["DONE", "CANCELLED"] } },
+        // Парные задачи (напарник) занимают день так же, как свои (PRD §7, 20.07.2026).
+        where: {
+          OR: [{ assigneeId: d.id }, { coDriverId: d.id }],
+          scheduledDate: today,
+          status: { notIn: ["DONE", "CANCELLED"] },
+        },
       });
       if (count > 0) await sendPushToUser(d.id, buildMorningPayload(count));
     }),

@@ -7,6 +7,7 @@ import webpush, { type WebPushError } from "web-push";
 import { prisma } from "@/lib/prisma";
 import {
   buildTaskPayload,
+  buildCoDriverPayload,
   buildPricingRequestPayload,
   type PushPayload,
   type TaskNotifyKind,
@@ -74,16 +75,34 @@ export async function sendPushToUser(userId: string, payload: PushPayload): Prom
 }
 
 /**
- * Уведомить назначенного водителя об изменении задачи (fire-and-forget). Вызывается из доменных
- * мутаций ПОСЛЕ коммита. Не уведомляем, если действие совершил сам исполнитель (он и так знает).
+ * Уведомить участников задачи об изменении (fire-and-forget). Вызывается из доменных мутаций
+ * ПОСЛЕ коммита. Не уведомляем того, кто сам совершил действие (он и так знает).
+ * Напарник (20.07.2026, PRD §7): изменения/переносы/отмены/расценка приходят ОБОИМ; «assigned»
+ * напарнику не дублируем — при добавлении в пару ему уходит отдельный notifyCoDriverAssigned.
  */
 export function notifyTaskAssignee(
-  task: NotifiableTask & { assigneeId: string | null },
+  task: NotifiableTask & { assigneeId: string | null; coDriverId?: string | null },
   kind: TaskNotifyKind,
   actorId?: string,
 ): void {
-  if (!task.assigneeId || task.assigneeId === actorId) return;
-  void sendPushToUser(task.assigneeId, buildTaskPayload(task, kind)).catch(() => {});
+  const payload = buildTaskPayload(task, kind);
+  if (task.assigneeId && task.assigneeId !== actorId) {
+    void sendPushToUser(task.assigneeId, payload).catch(() => {});
+  }
+  const coDriverId = task.coDriverId ?? null;
+  if (kind !== "assigned" && coDriverId && coDriverId !== actorId) {
+    void sendPushToUser(coDriverId, payload).catch(() => {});
+  }
+}
+
+/** Пуш водителю, добавленному в пару напарником («Ты напарник по заявке №N»). */
+export function notifyCoDriverAssigned(
+  task: NotifiableTask & { coDriverId?: string | null; assignee?: { name: string } | null },
+  actorId?: string,
+): void {
+  const coDriverId = task.coDriverId ?? null;
+  if (!coDriverId || coDriverId === actorId) return;
+  void sendPushToUser(coDriverId, buildCoDriverPayload(task, task.assignee?.name)).catch(() => {});
 }
 
 /**

@@ -147,6 +147,9 @@ export function TaskDetailClient({
     run(() => apiSend(key + "/transition", "POST", { toStatus, reason: r }));
   const assign = (assigneeId: string) =>
     run(() => apiSend(key, "PATCH", { op: "assign", assigneeId: assigneeId || null }));
+  // Напарник (20.07): правка пары идёт через op:edit (единая точка записи updateTaskFields).
+  const setCoDriver = (coDriverId: string) =>
+    run(() => apiSend(key, "PATCH", { op: "edit", coDriverId: coDriverId || null }));
   // Плашка «Нужен акт» (решение Артёма 02.07.2026): тумблер прямо в карточке, доступен и для завершённых.
   // Один PATCH меняет требование у всех и пересчитывает KPI открытого месяца (сервер: syncUnsignedDocMark).
   const toggleAct = (next: boolean) =>
@@ -276,6 +279,7 @@ export function TaskDetailClient({
           </Row>
         ) : null}
         <Row label="Исполнитель">{task.assignee?.name ?? "Не назначено"}</Row>
+        {task.coDriver ? <Row label="Напарник">{task.coDriver.name}</Row> : null}
         {task.paymentType === "ON_SITE" && !isTerminal ? (
           /* Деньги на точке, вопрос открыт (17.07): янтарная плашка на всю ширину — видна сразу,
              как у водителя. После завершения гаснет в обычную строку с итогом «Оплачено/Не оплачено». */
@@ -359,6 +363,25 @@ export function TaskDetailClient({
               </option>
             ))}
           </Select>
+          {task.assigneeId ? (
+            <Select
+              data-testid="card-co-driver"
+              value={task.coDriverId ?? ""}
+              disabled={busy}
+              onChange={(e) => setCoDriver(e.target.value)}
+              className="w-48"
+              aria-label="Напарник"
+            >
+              <option value="">— без напарника —</option>
+              {drivers
+                .filter((d) => d.id !== task.assigneeId)
+                .map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name} (напарник)
+                  </option>
+                ))}
+            </Select>
+          ) : null}
           <Button variant="secondary" disabled={busy} onClick={() => setAction("reschedule")}>
             Перенести
           </Button>
@@ -580,7 +603,11 @@ export function TaskDetailClient({
                 />
               </a>
               <span className="absolute inset-x-0 bottom-0 rounded-b-lg bg-black/50 py-0.5 text-center text-[10px] text-white">
-                {a.createdById === task.assigneeId ? "исполнитель" : "диспетчер"}
+                {a.createdById === task.assigneeId
+                  ? "исполнитель"
+                  : a.createdById === task.coDriverId
+                    ? "напарник"
+                    : "диспетчер"}
               </span>
               <button
                 type="button"
