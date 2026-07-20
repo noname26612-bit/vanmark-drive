@@ -555,6 +555,19 @@ export async function updateTaskFields(
   if (fields.coDriverId !== undefined && !terminal) {
     const wanted = fields.coDriverId ? await assertAssignableDriver(fields.coDriverId) : null;
     newCoDriverId = checkCoDriverRules(wanted, task.assigneeId);
+    // Жёсткий запрет (20.07): в АКТИВНУЮ задачу нельзя добавить напарника, занятого другой активной
+    // (своей или парной) — иначе он был бы «в работе» в двух местах сразу.
+    if (newCoDriverId && newCoDriverId !== task.coDriverId && task.status === "IN_PROGRESS") {
+      const busy = await prisma.task.findFirst({
+        where: {
+          OR: [{ assigneeId: newCoDriverId }, { coDriverId: newCoDriverId }],
+          status: "IN_PROGRESS",
+          id: { not: taskId },
+        },
+        select: { number: true },
+      });
+      if (busy) throw Errors.activeTaskExists(busy.number);
+    }
     if ((task.coDriverId ?? null) !== newCoDriverId) {
       coDriverChanged = true;
       data.coDriver = newCoDriverId ? { connect: { id: newCoDriverId } } : { disconnect: true };
@@ -648,10 +661,18 @@ async function assertNoOtherActiveTask(
 ): Promise<void> {
   if (!newAssigneeId || newAssigneeId === currentAssigneeId || status !== "IN_PROGRESS") return;
   const other = await prisma.task.findFirst({
-    where: { assigneeId: newAssigneeId, status: "IN_PROGRESS", id: { not: taskId } },
-    select: { number: true },
+    where: {
+      OR: [{ assigneeId: newAssigneeId }, { coDriverId: newAssigneeId }],
+      status: "IN_PROGRESS",
+      id: { not: taskId },
+    },
+    select: { number: true, coDriverId: true },
   });
-  if (other) throw Errors.activeTaskExists(other.number);
+  if (other) {
+    throw other.coDriverId === newAssigneeId
+      ? Errors.activePairTaskExists(other.number)
+      : Errors.activeTaskExists(other.number);
+  }
 }
 
 export async function assignTask(
@@ -918,11 +939,21 @@ export async function transitionTask(
     }
     // Одна активная задача (этап B): у исполнителя не больше одной задачи «В работе» одновременно.
     // Правило по assigneeId — работает и когда водитель берёт сам, и когда диспетчер ведёт за исполнителя.
+    // Жёсткий запрет (Артём 20.07): занятость НАПАРНИКОМ в активной парной блокирует так же, как своя
+    // активная. Пока парная лишь назначена (не IN_PROGRESS) — не блокирует.
     const other = await prisma.task.findFirst({
-      where: { assigneeId: task.assigneeId, status: "IN_PROGRESS", id: { not: taskId } },
-      select: { number: true },
+      where: {
+        OR: [{ assigneeId: task.assigneeId }, { coDriverId: task.assigneeId }],
+        status: "IN_PROGRESS",
+        id: { not: taskId },
+      },
+      select: { number: true, coDriverId: true },
     });
-    if (other) throw Errors.activeTaskExists(other.number);
+    if (other) {
+      throw other.coDriverId === task.assigneeId
+        ? Errors.activePairTaskExists(other.number)
+        : Errors.activeTaskExists(other.number);
+    }
   }
 
   // Время события: момент действия на телефоне (офлайн) с проверкой достоверности, иначе — сервера.

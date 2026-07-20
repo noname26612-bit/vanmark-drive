@@ -17,11 +17,14 @@ function psql(sql: string): void {
 // Подготовка водителей к взятию задач: (1) гасим зависшие IN_PROGRESS (правило «одна активная»);
 // (2) открываем смену на сегодня каждому водителю — иначе взятие в работу даёт SHIFT_REQUIRED
 // (этап D: работать можно только при открытой смене).
+// День смены — МОСКОВСКИЙ (как shiftDateOf в домене): CURRENT_DATE постгреса — UTC-день, и в окно
+// 00:00–03:00 МСК он «вчерашний» → клиент водителя (todayISO = МСК) не видел смену и ловил ложный
+// SHIFT_REQUIRED (пойман ночным прогоном 21.07.2026).
 export async function resetActiveTasks(): Promise<void> {
   psql(`UPDATE \\"Task\\" SET status='DONE', \\"completedAt\\"=now() WHERE status='IN_PROGRESS'`);
   psql(
     `INSERT INTO \\"Shift\\" (id,\\"driverId\\",date,status,\\"openedAt\\",\\"createdAt\\") ` +
-      `SELECT gen_random_uuid(),u.id,CURRENT_DATE,'OPEN',now(),now() FROM \\"User\\" u WHERE u.role='DRIVER' ` +
+      `SELECT gen_random_uuid(),u.id,(now() AT TIME ZONE 'Europe/Moscow')::date,'OPEN',now(),now() FROM \\"User\\" u WHERE u.role='DRIVER' ` +
       `ON CONFLICT (\\"driverId\\",date) DO UPDATE SET status='OPEN'`,
   );
 }
