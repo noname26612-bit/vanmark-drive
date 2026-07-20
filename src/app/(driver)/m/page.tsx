@@ -15,5 +15,5 @@ export default async function DriverHomePage() {
     isPayrollDriver(user.id),
     isExternalDriver(user.id),
   ]);
-  return <DriverTasksClient showPayroll={showPayroll} showShift={!isExternal} />;
+  return <DriverTasksClient showPayroll={showPayroll} showShift={!isExternal} meId={user.id} />;
 }

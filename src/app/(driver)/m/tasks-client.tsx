@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { Phone, Navigation } from "lucide-react";
+import { Phone, Navigation, Users } from "lucide-react";
 import { ApiError } from "@/lib/fetcher";
 import { cachedFetcher, readCachedMeta } from "@/lib/offline/cached-fetcher";
 import { enqueueOrSend } from "@/lib/offline/send";
@@ -69,9 +69,11 @@ function usePrefetchCards(ids: string[], online: boolean, needCatalog: boolean):
 export function DriverTasksClient({
   showPayroll = true,
   showShift = true,
+  meId = "",
 }: {
   showPayroll?: boolean;
   showShift?: boolean;
+  meId?: string; // id водителя из сессии — для бейджа роли в паре (20.07)
 }) {
   const today = todayISO();
   const [tab, setTab] = useState<Tab>("today");
@@ -190,7 +192,7 @@ export function DriverTasksClient({
         <ul className="flex flex-col gap-3">
           {active.map((t) => (
             <li key={t.id}>
-              <TaskCard task={t} displayStatus={display(t)} pending={pendingCountFor(t)} today={today} online={online} />
+              <TaskCard task={t} displayStatus={display(t)} pending={pendingCountFor(t)} today={today} online={online} meId={meId} />
             </li>
           ))}
           {done.length > 0 ? (
@@ -200,7 +202,7 @@ export function DriverTasksClient({
               </li>
               {done.map((t) => (
                 <li key={t.id}>
-                  <TaskCard task={t} displayStatus={display(t)} pending={pendingCountFor(t)} today={today} online={online} dimmed />
+                  <TaskCard task={t} displayStatus={display(t)} pending={pendingCountFor(t)} today={today} online={online} dimmed meId={meId} />
                 </li>
               ))}
             </>
@@ -403,6 +405,7 @@ function TaskCard({
   today,
   online,
   dimmed,
+  meId = "",
 }: {
   task: TaskDTO;
   displayStatus: TaskStatus;
@@ -410,6 +413,7 @@ function TaskCard({
   today: string;
   online: boolean;
   dimmed?: boolean;
+  meId?: string;
 }) {
   // Офлайн-переход в карточку (O10): клиентский RSC-переход Next без сети ненадёжен (нужен серверный
   // payload). Полная навигация через <a> гарантированно проходит через SW (networkFirst → кэш HTML +
@@ -468,6 +472,19 @@ function TaskCard({
             ) : null}
             {undated ? <Badge className="bg-neutral-100 text-neutral-500">Без даты</Badge> : null}
           </div>
+        ) : null}
+
+        {/* Пара (20.07): у напарника — «В паре · отв. Имя», у ответственного — «В паре · Имя». */}
+        {task.coDriverId ? (
+          <Badge
+            data-testid="pair-badge-driver"
+            className="mt-1 inline-flex items-center gap-1 border border-neutral-300 text-neutral-600"
+          >
+            <Users className="h-3.5 w-3.5" />
+            {task.coDriverId === meId
+              ? `В паре · отв. ${task.assignee?.name ?? "—"}`
+              : `В паре · ${task.coDriver?.name ?? ""}`}
+          </Badge>
         ) : null}
 
         <p className="mt-1 text-base font-semibold leading-snug text-neutral-900">{task.title}</p>

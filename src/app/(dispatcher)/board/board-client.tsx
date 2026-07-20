@@ -15,6 +15,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Pencil,
+  Users,
 } from "lucide-react";
 import { fetcher, apiSend } from "@/lib/fetcher";
 import { mergeOrder, moveTo } from "@/lib/pool-order";
@@ -270,7 +271,8 @@ export function BoardClient({
         poolKey: key,
         title: d.name,
         isDriver: true,
-        tasks: todaysVisible.filter((t) => t.assigneeId === d.id),
+        // Парная задача видна в колонках ОБОИХ водителей (20.07): у напарника — зеркало с бейджем.
+        tasks: todaysVisible.filter((t) => t.assigneeId === d.id || t.coDriverId === d.id),
         target: { kind: "driver", driverId: d.id },
       };
     }
@@ -1573,6 +1575,7 @@ function Column({
               showAssign={!isDriver}
               onQuickAssign={onQuickAssign}
               query={searchQuery}
+              columnDriverId={target?.kind === "driver" ? target.driverId : null}
             />
           ))
         )}
@@ -1588,6 +1591,7 @@ function BoardCard({
   showAssign = false,
   onQuickAssign,
   query = null,
+  columnDriverId = null,
 }: {
   task: TaskDTO;
   drivers: DriverDTO[];
@@ -1595,6 +1599,7 @@ function BoardCard({
   showAssign?: boolean; // селект-исполнитель показываем только в пулах (в колонке водителя он лишний)
   onQuickAssign: (taskId: string, assigneeId: string) => void;
   query?: ParsedQuery | null; // активный поиск: подсветка совпадений + сниппет скрытого поля
+  columnDriverId?: string | null; // чья колонка: в колонке напарника карточка — «зеркало» (не draggable)
 }) {
   const router = useRouter();
   // Провал в заявку — кликом по любой части плашки (решение Артёма 02.07.2026). Вложенный select
@@ -1604,6 +1609,14 @@ function BoardCard({
   // Сниппет «почему нашлось»: совпадение только в скрытом поле карточки (телефон/организация/…)
   // показываем отдельной строчкой — иначе Милене непонятно, почему карточка осталась на доске.
   const hiddenMatch = query ? firstHiddenMatch(task, query, [task.title, task.address]) : null;
+  // Пара (20.07): в колонке напарника карточка — «зеркало» (правда живёт у ответственного,
+  // перетаскивать нельзя — двусмысленно); в колонке ответственного и пулах — обычная с бейджем пары.
+  const isMirror = task.coDriverId !== null && columnDriverId === task.coDriverId;
+  const pairBadge = task.coDriverId
+    ? isMirror
+      ? `напарник · отв. ${task.assignee?.name ?? "—"}`
+      : `в паре · ${task.coDriver?.name ?? ""}`
+    : null;
   // Признак комплектности акта на доске (этап 14, «хвост»): показываем ТОЛЬКО на завершённой актовой
   // задаче — это сигнал Милене «акт приложен ✓ / не приложен». На текущих задачах акт ещё рано — не шумим.
   const actSt = actState({
@@ -1616,8 +1629,8 @@ function BoardCard({
   const pay = paymentBadge(task);
   return (
     <div
-      draggable
-      data-testid="board-card"
+      draggable={!isMirror}
+      data-testid={isMirror ? "board-card-mirror" : "board-card"}
       role="link"
       tabIndex={0}
       aria-label={`Заявка №${task.number}: ${task.title}`}
@@ -1671,8 +1684,17 @@ function BoardCard({
           <Highlighted text={hiddenMatch.text} query={query} phone={hiddenMatch.phone} />
         </p>
       ) : null}
-      {task.passStatus !== "NOT_NEEDED" || act || pay ? (
+      {task.passStatus !== "NOT_NEEDED" || act || pay || pairBadge ? (
         <div className="mt-1 flex flex-wrap items-center gap-1">
+          {pairBadge ? (
+            <Badge
+              data-testid="pair-badge"
+              className="inline-flex items-center gap-1 border border-slate-400 text-slate-600"
+            >
+              <Users className="h-3 w-3" />
+              {pairBadge}
+            </Badge>
+          ) : null}
           {task.passStatus !== "NOT_NEEDED" ? (
             <Badge className={PASS_BADGE[task.passStatus]}>{PASS_LABEL[task.passStatus]}</Badge>
           ) : null}

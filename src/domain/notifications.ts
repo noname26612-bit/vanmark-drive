@@ -51,6 +51,22 @@ export function buildTaskPayload(task: NotifiableTask, kind: TaskNotifyKind): Pu
   };
 }
 
+// Пуш напарнику при добавлении в пару (20.07.2026, PRD §7): отдельный от «Новая задача» текст —
+// человек сразу понимает свою роль (статусы ведёт ответственный). Ведёт в карточку PWA.
+export function buildCoDriverPayload(
+  task: NotifiableTask,
+  assigneeName?: string | null,
+): PushPayload {
+  const typeName = task.type?.name ? `${task.type.name}: ` : "";
+  const lead = assigneeName ? ` · ответственный ${assigneeName}` : "";
+  return {
+    title: `Ты напарник по заявке №${task.number}`,
+    body: `${typeName}${task.title}${lead}`,
+    url: `/m/${task.id}`,
+    tag: `task-${task.id}`,
+  };
+}
+
 // Пуш диспетчеру: водитель отправил ведомость на расценку (этап 13, PRD §13.1). Ведёт на карточку
 // задачи у диспетчера (не /m/), т.к. расценивает диспетчер.
 export function buildPricingRequestPayload(task: NotifiableTask): PushPayload {

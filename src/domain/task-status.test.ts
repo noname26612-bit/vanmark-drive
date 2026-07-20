@@ -53,6 +53,14 @@ describe("статусная матрица — водитель (назначе
       code: "FORBIDDEN",
     });
   });
+
+  // Напарник (20.07.2026): isAssignee строго по assigneeId → напарник для матрицы «не исполнитель».
+  // Регресс-тест фиксирует, что пара НЕ открыла напарнику переходы (матрица не менялась).
+  it("напарник (isAssignee=false) не двигает статусы парной задачи", () => {
+    expect(checkTransition(driverOther, "ASSIGNED", "IN_PROGRESS").ok).toBe(false);
+    expect(checkTransition(driverOther, "IN_PROGRESS", "DONE").ok).toBe(false);
+    expect(checkTransition(driverOther, "IN_PROGRESS", "ON_HOLD").ok).toBe(false);
+  });
 });
 
 describe("статусная матрица — диспетчер/админ", () => {

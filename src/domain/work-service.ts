@@ -168,6 +168,9 @@ export async function updateWorkCatalogItem(id: string, input: Partial<WorkCatal
 // ───────────────────────────── Ведомость задачи ─────────────────────────────
 
 // Загружает задачу с проверкой доступа (изоляция: чужая → 404) и флага requiresPricing.
+// Ведомость — зона ОТВЕТСТВЕННОГО (PRD §4, 20.07.2026): напарник видит задачу через canViewTask,
+// но заполнять/отправлять ведомость не может — для роли DRIVER требуем assigneeId === actor.id
+// (без этого гейта расширение canViewTask на напарника открыло бы ему DRAFT-мутации).
 async function loadTaskForWorksheet(taskId: string, actor: Actor) {
   const task = await prisma.task.findUnique({
     where: { id: taskId },
@@ -175,6 +178,7 @@ async function loadTaskForWorksheet(taskId: string, actor: Actor) {
   });
   if (!task) throw Errors.notFound();
   if (!canViewTask(actor, task)) throw Errors.notFound();
+  if (actor.role === "DRIVER" && task.assigneeId !== actor.id) throw Errors.forbidden();
   return task;
 }
 

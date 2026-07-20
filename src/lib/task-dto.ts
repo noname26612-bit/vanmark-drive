@@ -61,6 +61,9 @@ export type TaskDTO = {
   status: TaskStatus;
   assigneeId: string | null;
   assignee: AssigneeDTO;
+  // Напарник (20.07.2026, PRD §4): второй водитель парного выезда; null — обычная задача.
+  coDriverId: string | null;
+  coDriver: AssigneeDTO;
   createdById: string;
   cancelReason: string | null;
   holdReason: string | null;

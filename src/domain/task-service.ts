@@ -8,11 +8,12 @@ import { checkTransition, isDispatcherRole } from "./task-status";
 import { resolveAssignedDate } from "./assign-date";
 import { resolveCompletionDate, formatDayRu } from "./completion-date";
 import { canViewTask } from "./authz";
+import { resolveCoDriverOnAssign, validateCoDriver, CoDriverRuleError } from "./co-driver";
 import { myTasksWhere, type MyTasksScope } from "./my-tasks";
 import { overdueWhere, tomorrowPassWhere } from "./attention";
 import { Errors } from "./errors";
 import { resolveOccurredAt } from "./occurred-at";
-import { notifyTaskAssignee } from "@/lib/push";
+import { notifyTaskAssignee, notifyCoDriverAssigned } from "@/lib/push";
 import { geocodeAddress } from "@/lib/geocode";
 import { computeEstimate } from "./capacity-service";
 import { syncUnsignedDocMark } from "./kpi-service";
@@ -41,6 +42,7 @@ export type CreateTaskInput = {
   passStatus?: PassStatus;
   priority?: boolean;
   assigneeId?: string | null;
+  coDriverId?: string | null; // напарник (20.07.2026, PRD §4): только при назначенном ответственном
   requiresAct?: boolean | null; // override требования акта (по умолчанию из типа); false = «акт не нужен»
   actWaivedNote?: string | null; // причина снятия требования акта на заявке
   carrierCost?: number | null; // стоимость поездки внешнего перевозчика, ₽ (этап 3, 02.07); водителям не отдаётся
@@ -65,6 +67,7 @@ export type ListFilters = {
 const taskInclude = {
   type: true,
   assignee: { select: { id: true, name: true, login: true } },
+  coDriver: { select: { id: true, name: true, login: true } },
 } satisfies Prisma.TaskInclude;
 
 // Списки-чтения дополнительно тянут число приложенных актов (DOCUMENT-вложений) — лёгкий
@@ -79,6 +82,7 @@ const taskListInclude = {
 const taskDetailInclude = {
   type: true,
   assignee: { select: { id: true, name: true, login: true } },
+  coDriver: { select: { id: true, name: true, login: true } },
   createdBy: { select: { id: true, name: true } },
   events: {
     orderBy: { at: "asc" },
@@ -151,6 +155,16 @@ export function stripMoneyForDriver<T extends { carrierCost?: number | null }>(
   return rest;
 }
 
+// Правила пары «ответственный + напарник» → единый формат ошибок API (Errors.validation).
+function checkCoDriverRules(coDriverId: string | null, assigneeId: string | null): string | null {
+  try {
+    return validateCoDriver(coDriverId, assigneeId);
+  } catch (e) {
+    if (e instanceof CoDriverRuleError) throw Errors.validation(e.message);
+    throw e;
+  }
+}
+
 function clean(v: string | null | undefined): string | null {
   if (v === null || v === undefined) return null;
   const t = v.trim();
@@ -201,7 +215,10 @@ export async function listTasks(filters: ListFilters): Promise<TaskListWire[]> {
   }
 
   if (filters.assigneeId === "none") and.push({ assigneeId: null });
-  else if (filters.assigneeId) and.push({ assigneeId: filters.assigneeId });
+  // Фильтр «исполнитель» показывает всё, что занимает день водителя, включая парные задачи,
+  // где он напарник (20.07.2026) — консистентно с ячейками календаря загрузки.
+  else if (filters.assigneeId)
+    and.push({ OR: [{ assigneeId: filters.assigneeId }, { coDriverId: filters.assigneeId }] });
 
   if (filters.status) and.push({ status: filters.status });
   if (filters.typeId) and.push({ typeId: filters.typeId });
@@ -385,6 +402,18 @@ export async function createTask(
   }
   const status: TaskStatus = assigneeId ? "ASSIGNED" : "NEW";
 
+  // Напарник (20.07.2026, PRD §4): активный водитель, только при ответственном и != ему.
+  let coDriverId: string | null = null;
+  let coDriverName = "";
+  if (input.coDriverId) {
+    coDriverId = await assertAssignableDriver(input.coDriverId);
+    coDriverId = checkCoDriverRules(coDriverId, assigneeId);
+    if (coDriverId) {
+      const u = await prisma.user.findUnique({ where: { id: coDriverId }, select: { name: true } });
+      coDriverName = u?.name ?? "";
+    }
+  }
+
   // Стоимость поездки перевозчика (этап 3, 02.07): целое ≥ 0, вводит диспетчер.
   const carrierCost = validateCarrierCost(input.carrierCost);
 
@@ -426,6 +455,7 @@ export async function createTask(
         worksheetStatus,
         status,
         assigneeId,
+        coDriverId,
         // Ёмкость (Фаза 2): координаты геокода + авто-оценка времени (estimateIsManual=false).
         lat: point?.lat ?? null,
         lng: point?.lng ?? null,
@@ -443,10 +473,18 @@ export async function createTask(
         comment: assigneeId ? "Создана и назначена" : "Создана",
       },
     });
+    // Пара — отдельным событием журнала (kind:"assist"), как назначение (CLAUDE.md правило 3).
+    if (coDriverId) {
+      await tx.taskEvent.create({
+        data: { taskId: task.id, actorId: actor.id, kind: "assist", comment: `Напарник: ${coDriverName}` },
+      });
+    }
     return task;
   });
   // Пуш назначенному водителю (PRD §7). notifyTaskAssignee — no-op, если задача не назначена.
   notifyTaskAssignee(created, "assigned", actor.id);
+  // Напарнику — отдельный пуш «Ты напарник по заявке №N» (PRD §7, 20.07.2026).
+  notifyCoDriverAssigned(created, actor.id);
   return created;
 }
 
@@ -508,6 +546,28 @@ export async function updateTaskFields(
     data.actWaivedNote = req ? null : clean(fields.actWaivedNote);
   }
 
+  // Напарник (20.07.2026, PRD §4): правка пары из формы/карточки. Ответственного эта ручка не
+  // меняет — валидируем против текущего task.assigneeId. Для закрытых задач пару не трогаем
+  // (подстраховка от прямого API-вызова, как со scheduledDate; в UI селект скрыт).
+  let coDriverChanged = false;
+  let newCoDriverId: string | null = task.coDriverId;
+  let newCoDriverName = "";
+  if (fields.coDriverId !== undefined && !terminal) {
+    const wanted = fields.coDriverId ? await assertAssignableDriver(fields.coDriverId) : null;
+    newCoDriverId = checkCoDriverRules(wanted, task.assigneeId);
+    if ((task.coDriverId ?? null) !== newCoDriverId) {
+      coDriverChanged = true;
+      data.coDriver = newCoDriverId ? { connect: { id: newCoDriverId } } : { disconnect: true };
+      if (newCoDriverId) {
+        const u = await prisma.user.findUnique({
+          where: { id: newCoDriverId },
+          select: { name: true },
+        });
+        newCoDriverName = u?.name ?? "";
+      }
+    }
+  }
+
   // --- Оценка времени (Фаза 2, PRD §14) ---
   // Ручная оценка диспетчера: number → фиксируем (manual, не пересчитываем); null → сброс к авто.
   const resetToAuto = fields.estimatedMinutes === null;
@@ -553,12 +613,26 @@ export async function updateTaskFields(
     await tx.taskEvent.create({
       data: { taskId, actorId: actor.id, kind: "edit", comment: "Изменены поля задачи" },
     });
+    if (coDriverChanged) {
+      await tx.taskEvent.create({
+        data: {
+          taskId,
+          actorId: actor.id,
+          kind: "assist",
+          comment: newCoDriverId ? `Напарник: ${newCoDriverName}` : "Напарник снят",
+        },
+      });
+    }
     return updated;
   });
   // Смена требования акта могла повлиять на KPI-нарушение «без акта»: пересчитываем открытый месяц
   // (снятие → гасим подтверждённый штраф, возврат → возвращаем кандидата). Закрытый снимок не трогаем.
   if (actRequirementTouched) await syncUnsignedDocMark(taskId, actor);
-  notifyTaskAssignee(result, "changed", actor.id);
+  // «Изменена» шлём, только если менялись обычные поля: правка одного напарника не должна давать
+  // ответственному лишний пуш (напарнику уходит свой, ниже).
+  const otherFieldsTouched = Object.keys(data).length > (coDriverChanged ? 1 : 0);
+  if (otherFieldsTouched) notifyTaskAssignee(result, "changed", actor.id);
+  if (coDriverChanged && newCoDriverId) notifyCoDriverAssigned(result, actor.id);
   return result;
 }
 
@@ -601,6 +675,13 @@ export async function assignTask(
   // Перенос активной задачи другому водителю не должен дать ему вторую «В работе» (В3).
   await assertNoOtherActiveTask(taskId, assigneeId, task.assigneeId, task.status);
 
+  // Судьба напарника при смене ответственного (20.07.2026): на напарника → swap ролей,
+  // на третьего/снятие → пара распадается, тот же → без изменений (см. co-driver.ts).
+  const pair = resolveCoDriverOnAssign(
+    { assigneeId: task.assigneeId, coDriverId: task.coDriverId },
+    assigneeId,
+  );
+
   // Назначение задаёт ASSIGNED для новой; снятие назначения возвращает в NEW.
   let status = task.status;
   if (assigneeId && task.status === "NEW") status = "ASSIGNED";
@@ -614,7 +695,12 @@ export async function assignTask(
   const result = await prisma.$transaction(async (tx) => {
     const updated = await tx.task.update({
       where: { id: taskId },
-      data: { assigneeId, status, ...(autoDate ? { scheduledDate: autoDate } : {}) },
+      data: {
+        assigneeId,
+        coDriverId: pair.coDriverId,
+        status,
+        ...(autoDate ? { scheduledDate: autoDate } : {}),
+      },
       include: taskInclude,
     });
     await tx.taskEvent.create({
@@ -627,6 +713,19 @@ export async function assignTask(
         comment: assigneeId ? `Назначен: ${name}` : "Снято назначение",
       },
     });
+    if (pair.event) {
+      await tx.taskEvent.create({
+        data: {
+          taskId,
+          actorId: actor.id,
+          kind: "assist",
+          comment:
+            pair.event === "swap"
+              ? "Ответственный и напарник поменялись ролями"
+              : "Напарник снят (смена ответственного)",
+        },
+      });
+    }
     // Отдельная неизменяемая отметка в журнал об авто-простановке даты (CLAUDE.md правило 3).
     if (autoDate) {
       await tx.taskEvent.create({
@@ -642,6 +741,8 @@ export async function assignTask(
   });
   // Назначение → пуш новому исполнителю; снятие назначения (assigneeId=null) — no-op.
   notifyTaskAssignee(result, "assigned", actor.id);
+  // Swap: экс-ответственный стал напарником — сообщаем ему новую роль.
+  if (pair.event === "swap") notifyCoDriverAssigned(result, actor.id);
   return result;
 }
 
@@ -673,6 +774,12 @@ export async function planTask(
   // Перенос активной задачи другому водителю не должен дать ему вторую «В работе» (В3).
   await assertNoOtherActiveTask(taskId, assigneeId, task.assigneeId, task.status);
 
+  // Судьба напарника при смене ответственного — как в assignTask (swap/removed/none).
+  const pair = resolveCoDriverOnAssign(
+    { assigneeId: task.assigneeId, coDriverId: task.coDriverId },
+    assigneeId,
+  );
+
   // Статус по оси назначения (как в assignTask): NEW↔ASSIGNED, прочие статусы не трогаем.
   let status = task.status;
   if (assigneeId && task.status === "NEW") status = "ASSIGNED";
@@ -685,7 +792,7 @@ export async function planTask(
   const result = await prisma.$transaction(async (tx) => {
     const updated = await tx.task.update({
       where: { id: taskId },
-      data: { scheduledDate: newDate, assigneeId, status },
+      data: { scheduledDate: newDate, assigneeId, coDriverId: pair.coDriverId, status },
       include: taskInclude,
     });
     if (dateChanged) {
@@ -714,11 +821,26 @@ export async function planTask(
         },
       });
     }
+    if (pair.event) {
+      await tx.taskEvent.create({
+        data: {
+          taskId,
+          actorId: actor.id,
+          kind: "assist",
+          comment:
+            pair.event === "swap"
+              ? "Ответственный и напарник поменялись ролями"
+              : "Напарник снят (смена ответственного)",
+        },
+      });
+    }
     return updated;
   });
   // Пуш новому исполнителю при назначении/смене (no-op, если назначения нет).
   if (assigneeChanged) notifyTaskAssignee(result, "assigned", actor.id);
   else if (dateChanged) notifyTaskAssignee(result, "rescheduled", actor.id);
+  // Swap: экс-ответственный стал напарником — сообщаем ему новую роль.
+  if (pair.event === "swap") notifyCoDriverAssigned(result, actor.id);
   return result;
 }
 

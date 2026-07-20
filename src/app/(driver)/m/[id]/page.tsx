@@ -11,5 +11,5 @@ export default async function DriverTaskPage({ params }: { params: Promise<{ id:
   const { id } = await params;
   // Внешний перевозчик смен не ведёт (02.07): клиент не грузит смену и не блокирует «В работу».
   const isExternal = await isExternalDriver(user.id);
-  return <DriverTaskClient taskId={id} isExternal={isExternal} />;
+  return <DriverTaskClient taskId={id} isExternal={isExternal} meId={user.id} />;
 }

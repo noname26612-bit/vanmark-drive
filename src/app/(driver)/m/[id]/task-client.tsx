@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
-import { Phone, Navigation, Loader2, Camera, X, FileText, Banknote } from "lucide-react";
+import { Phone, Navigation, Loader2, Camera, X, FileText, Banknote, Users } from "lucide-react";
 import { ApiError } from "@/lib/fetcher";
 import { cachedFetcher } from "@/lib/offline/cached-fetcher";
 import { useOnline } from "@/lib/offline/net";
@@ -92,7 +92,15 @@ function groupCatalog(items: WorkCatalogItemDTO[]): { name: string | null; items
 }
 
 // isExternal — внешний перевозчик (02.07): смен не ведёт, гейт «Сначала откройте смену» не применяется.
-export function DriverTaskClient({ taskId, isExternal = false }: { taskId: string; isExternal?: boolean }) {
+export function DriverTaskClient({
+  taskId,
+  isExternal = false,
+  meId = "",
+}: {
+  taskId: string;
+  isExternal?: boolean;
+  meId?: string; // id водителя из сессии (сервер, page.tsx) — для роли в паре (20.07)
+}) {
   const key = `/api/tasks/${taskId}`;
   const online = useOnline();
   // cachedFetcher: при связи кэширует ответ, без связи отдаёт сохранённое — карточка открывается офлайн.
@@ -168,13 +176,18 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
   const pendingPhotos = pending.filter((a) => a.kind === "attachment" && a.blobMeta?.kind === "PHOTO").length;
   const pendingDocs = pending.filter((a) => a.kind === "attachment" && a.blobMeta?.kind === "DOCUMENT").length;
 
-  const myPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && a.createdById === t.assigneeId);
-  const refPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && a.createdById !== t.assigneeId);
+  // Роль в паре (20.07, PRD §4): напарник видит всё и шлёт фото/комментарии, но статусы,
+  // паузу и ведомость ведёт только ответственный (сервер это тоже гарантирует).
+  const isCoDriver = t.coDriverId !== null && t.coDriverId === meId;
+  const isCrew = (a: { createdById: string }) =>
+    a.createdById === t.assigneeId || (t.coDriverId !== null && a.createdById === t.coDriverId);
+  const myPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && isCrew(a));
+  const refPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && !isCrew(a));
   const docs = t.attachments.filter((a) => a.kind === "DOCUMENT");
   const requiresSignedDoc = t.requiresSignedDoc; // требование акта на уровне задачи (этап 11; не блокирует DONE)
   // Ведомость работ + расценка (этап 12) скрыты под флагом PRICING_ENABLED (06.07): процессом пока
   // не пользуются. Гасим весь блок ведомости у водителя. Акт (ниже) от этого не зависит.
-  const requiresPricing = PRICING_ENABLED && t.type.requiresPricing;
+  const requiresPricing = PRICING_ENABLED && t.type.requiresPricing && !isCoDriver;
   const ws = t.worksheetStatus;
   const wsEditable = requiresPricing && (ws === null || ws === "DRAFT");
   const worksheetTotal = t.workItems.reduce((s, w) => s + (w.price ?? 0) * w.quantity, 0);
@@ -392,8 +405,8 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
     }
   }
 
-  const next = NEXT[displayStatus];
-  const canHold = CAN_HOLD.includes(displayStatus);
+  const next = isCoDriver ? undefined : NEXT[displayStatus];
+  const canHold = !isCoDriver && CAN_HOLD.includes(displayStatus);
   // Одна активная задача (этап B): если уже есть другая «В работе», кнопку взятия блокируем.
   const activeOther = myToday.find((x) => x.status === "IN_PROGRESS" && x.id !== t.id);
   const blockedByActive = next?.to === "IN_PROGRESS" && !!activeOther;
@@ -432,6 +445,17 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
         </div>
         <h1 className="mt-1 text-xl font-bold leading-snug text-neutral-900">{t.title}</h1>
         <p className="mt-1 text-base font-semibold text-neutral-700">{t.type.name}</p>
+        {t.coDriver ? (
+          <p
+            data-testid="pair-role"
+            className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-neutral-300 px-2 py-1 text-sm font-medium text-neutral-700"
+          >
+            <Users className="h-4 w-4 text-neutral-500" />
+            {isCoDriver
+              ? `Ты напарник · ответственный: ${t.assignee?.name ?? "—"}`
+              : `Напарник: ${t.coDriver.name}`}
+          </p>
+        ) : null}
       </div>
 
       {/* Пропуск — крупный индикатор */}
@@ -837,6 +861,10 @@ export function DriverTaskClient({ taskId, isExternal = false }: { taskId: strin
           <p className="py-2 text-center text-base font-medium text-green-700">Задача выполнена ✓</p>
         ) : displayStatus === "CANCELLED" ? (
           <p className="py-2 text-center text-base text-neutral-500">Задача отменена</p>
+        ) : isCoDriver ? (
+          <p data-testid="co-driver-hint" className="py-2 text-center text-sm text-neutral-500">
+            Статусы ведёт ответственный — тебе доступны фото и комментарии
+          </p>
         ) : null}
 
         {canHold ? (

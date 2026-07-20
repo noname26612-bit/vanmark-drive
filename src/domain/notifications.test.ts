@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { formatMoney } from "@/lib/task-ui";
 import {
   buildTaskPayload,
+  buildCoDriverPayload,
   buildMorningPayload,
   buildPassWarningPayload,
   buildActViolationsPayload,
@@ -20,6 +21,23 @@ describe("pluralTasks", () => {
     expect(pluralTasks(21)).toBe("задача");
     expect(pluralTasks(22)).toBe("задачи");
     expect(pluralTasks(0)).toBe("задач");
+  });
+});
+
+describe("buildCoDriverPayload — пуш напарнику (20.07.2026)", () => {
+  const task = { id: "t9", number: 615, title: "Капремонт ЛБМ", type: { name: "Выездной ремонт" } };
+
+  it("свой заголовок с ролью, имя ответственного в теле, deeplink в PWA", () => {
+    const p = buildCoDriverPayload(task, "Алексей Каширский");
+    expect(p.title).toBe("Ты напарник по заявке №615");
+    expect(p.body).toBe("Выездной ремонт: Капремонт ЛБМ · ответственный Алексей Каширский");
+    expect(p.url).toBe("/m/t9");
+    expect(p.tag).toBe("task-t9");
+  });
+
+  it("без имени ответственного — тело без хвоста", () => {
+    expect(buildCoDriverPayload(task).body).toBe("Выездной ремонт: Капремонт ЛБМ");
+    expect(buildCoDriverPayload(task, null).body).toBe("Выездной ремонт: Капремонт ЛБМ");
   });
 });
 

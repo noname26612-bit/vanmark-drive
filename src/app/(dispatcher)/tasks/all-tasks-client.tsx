@@ -206,7 +206,15 @@ export function AllTasksClient({
                   <td className="px-3 py-2 text-neutral-500">{formatDate(t.scheduledDate)}</td>
                   <td className="px-3 py-2 text-neutral-600">
                     {t.assignee?.name ? (
-                      <Highlighted text={t.assignee.name} query={searchQuery} />
+                      <>
+                        <Highlighted text={t.assignee.name} query={searchQuery} />
+                        {t.coDriver ? (
+                          <span className="text-neutral-400">
+                            {" + "}
+                            <Highlighted text={t.coDriver.name} query={searchQuery} /> (нап.)
+                          </span>
+                        ) : null}
+                      </>
                     ) : (
                       "—"
                     )}

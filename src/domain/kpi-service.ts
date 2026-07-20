@@ -157,6 +157,8 @@ async function loadKpiConfig(): Promise<KpiConfig> {
  * по которым акт фактически требуется (Task.requiresSignedDoc=true; учитывает галочку «акт не нужен»,
  * §4). Комплект — из них с приложенным подписанным актом (DOCUMENT-вложение, тот же признак, что у
  * детектора UNSIGNED_DOCS). Период — по completedAt в границах месяца (МСК).
+ * Напарник (20.07.2026, решение Артёма): where ОСОЗНАННО строго по assigneeId — парные задачи в базу
+ * бонуса напарника НЕ входят (акт — зона ответственного; иначе чужая задача портила бы его долю ≥80%).
  */
 async function getActCompletenessCounts(driverId: string, period: string): Promise<{ base: number; complete: number }> {
   const { start, end } = periodBoundsUtc(period);

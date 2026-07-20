@@ -28,6 +28,7 @@ export type FormState = {
   passStatus: PassStatus;
   priority: boolean;
   assigneeId: string;
+  coDriverId: string; // напарник (20.07.2026, PRD §4); "" — нет. Старые черновики читаются с дефолтом ""
   requiresAct: boolean; // требование акта (дефолт из типа, диспетчер может снять)
   actWaivedNote: string; // причина снятия требования акта
   carrierCost: string; // стоимость поездки внешнего перевозчика, ₽ (этап 3; видна при внешнем исполнителе)
@@ -55,6 +56,7 @@ export function emptyForm(typeId: string, date: string, requiresAct: boolean): F
     passStatus: "NOT_NEEDED",
     priority: false,
     assigneeId: "",
+    coDriverId: "",
     requiresAct,
     actWaivedNote: "",
     carrierCost: "",
@@ -86,6 +88,7 @@ export function isDirtyForm(form: FormState): boolean {
   return (
     filledText ||
     form.assigneeId !== "" ||
+    form.coDriverId !== "" ||
     form.priority ||
     form.paymentType !== "NONE" ||
     form.passStatus !== "NOT_NEEDED"

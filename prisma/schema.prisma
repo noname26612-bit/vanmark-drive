@@ -101,6 +101,7 @@ model User {
   createdAt      DateTime             @default(now())
 
   tasks        Task[]             @relation("assignee")
+  coTasks      Task[]             @relation("coDriver") // парные задачи, где этот водитель — напарник
   createdTasks Task[]             @relation("creator")
   events       TaskEvent[]
   pushSubs     PushSubscription[] // этап 5 (web-push): подписки устройств этого пользователя
@@ -191,6 +192,12 @@ model Task {
 
   assigneeId  String?
   assignee    User?   @relation("assignee", fields: [assigneeId], references: [id])
+  // Напарник — второй водитель на парном выезде (20.07.2026, PRD §4). Существует только при
+  // назначенном ответственном (coDriverId != null => assigneeId != null, coDriverId != assigneeId,
+  // инвариант держит домен). Статусы/деньги/акты/KPI — на ответственном; напарник видит задачу,
+  // шлёт фото и комментарии, занятость учитывается обоим.
+  coDriverId  String?
+  coDriver    User?   @relation("coDriver", fields: [coDriverId], references: [id])
   createdById String
   createdBy   User    @relation("creator", fields: [createdById], references: [id])
 
@@ -207,6 +214,7 @@ model Task {
   completedAt DateTime?
 
   @@index([assigneeId, scheduledDate])
+  @@index([coDriverId, scheduledDate])
   @@index([status, scheduledDate])
 }
 

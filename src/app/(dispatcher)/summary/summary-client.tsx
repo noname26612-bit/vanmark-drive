@@ -234,6 +234,11 @@ function DriverCard({
         >
           <span className="text-2xl font-semibold text-neutral-900">{driver.doneCount}</span>
           <span className="text-xs text-neutral-500">выполнено</span>
+          {driver.pairDoneCount > 0 ? (
+            <span data-testid="summary-pair-done" className="text-xs text-neutral-400">
+              +{driver.pairDoneCount} в паре
+            </span>
+          ) : null}
         </button>
       </div>
 
