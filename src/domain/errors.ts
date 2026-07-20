@@ -31,6 +31,13 @@ export const Errors = {
         : "У водителя уже есть задача в работе",
       409,
     ),
+  // Жёсткий запрет (решение Артёма 20.07): водитель занят как НАПАРНИК в активной парной задаче.
+  activePairTaskExists: (taskNumber: number) =>
+    new DomainError(
+      "ACTIVE_TASK_EXISTS",
+      `Идёт парная задача №${taskNumber} — водитель занят в ней как напарник`,
+      409,
+    ),
   shiftRequired: () =>
     new DomainError("SHIFT_REQUIRED", "Сначала откройте смену", 409),
   uploadInvalid: (message: string) => new DomainError("UPLOAD_INVALID", message, 422),

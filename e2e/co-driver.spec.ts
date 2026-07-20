@@ -187,3 +187,88 @@ test("изоляция: третий водитель не видит парну
   await nctx.close();
   await cctx.close();
 });
+
+test("жёсткий запрет: активная парная блокирует личную задачу напарника (до старта и после завершения — можно)", async ({
+  browser,
+}) => {
+  test.slow();
+  await resetActiveTasks();
+  const mctx = await browser.newContext();
+  const milena = await mctx.newPage();
+  await login(milena, "milena");
+
+  // Парная задача (K отв., P напарник) + ДВЕ личные задачи Писарева на сегодня.
+  const pair = await createPairTask(milena);
+  const own1 = `e2e личная-1 ${Date.now()}`;
+  const own2 = `e2e личная-2 ${Date.now()}`;
+  for (const title of [own1, own2]) {
+    await milena.goto("/tasks");
+    await milena.getByRole("button", { name: "Задача" }).click();
+    await milena.locator('[data-testid="create-type"]').selectOption({ label: "Сдача / забор из ТК" });
+    await milena.getByPlaceholder("ЛБМ 200 + нож, 0,7 мм").fill(title);
+    await milena.getByPlaceholder("Москва, ул. ..., д. ...").fill("Личный адрес");
+    await milena.locator('[data-testid="create-org"]').fill("ООО Личное");
+    await milena.locator('[data-testid="create-contact-name"]').fill("Контакт");
+    await milena.locator('[data-testid="create-contact-phone"]').fill("+70000000002");
+    const todayISO = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
+    await milena.locator('[data-testid="create-date"]').fill(todayISO);
+    await milena.locator('[data-testid="create-date"]').press("Enter");
+    await milena.locator('[data-testid="create-assignee"]').selectOption({ label: CO });
+    await milena.getByRole("button", { name: "Создать", exact: true }).click();
+    await expect(milena.getByRole("dialog")).toBeHidden();
+  }
+
+  const pctx = await browser.newContext({ viewport: { width: 360, height: 740 }, hasTouch: true });
+  const pisarev = await pctx.newPage();
+  await login(pisarev, "pisarev");
+
+  // ДО старта парной: парная лишь назначена — Писарев свободно работает со своей задачей.
+  await pisarev.goto("/m");
+  await pisarev.locator("a", { hasText: own1 }).first().click();
+  await pisarev.getByRole("button", { name: /В работу/ }).click();
+  await expect(pisarev.getByRole("button", { name: "Завершить →" })).toBeVisible();
+  await pisarev.getByRole("button", { name: "Завершить →" }).click();
+  await pisarev.getByRole("button", { name: "Завершить", exact: true }).click();
+  await expect(pisarev.getByText("Задача выполнена ✓")).toBeVisible();
+
+  // Каширский стартует парную.
+  const kctx = await browser.newContext({ viewport: { width: 360, height: 740 }, hasTouch: true });
+  const kash = await kctx.newPage();
+  await login(kash, "kashirskiy");
+  await kash.goto(`/m/${pair.id}`);
+  await kash.getByRole("button", { name: /В работу/ }).click();
+  await expect(kash.getByRole("button", { name: "Завершить →" })).toBeVisible();
+
+  // ВО ВРЕМЯ парной: у Писарева личная задача заблокирована — кнопка disabled, подпись про пару.
+  await pisarev.goto("/m");
+  await pisarev.locator("a", { hasText: own2 }).first().click();
+  const takeBtn = pisarev.getByRole("button", { name: /В работу/ });
+  await expect(takeBtn).toBeDisabled();
+  await expect(pisarev.getByText(/Идёт парная задача №\d+ — ты в ней напарник/)).toBeVisible();
+
+  // Сервер тоже отбивает прямой POST (ACTIVE_TASK_EXISTS, 409).
+  const ownUrl = pisarev.url();
+  const ownId = ownUrl.split("/m/")[1];
+  const res = await pisarev.evaluate(async (taskId) => {
+    const r = await fetch(`/api/tasks/${taskId}/transition`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ toStatus: "IN_PROGRESS" }),
+    });
+    return { status: r.status, body: await r.text() };
+  }, ownId);
+  expect(res.status).toBe(409);
+  expect(res.body).toContain("ACTIVE_TASK_EXISTS");
+
+  // ПОСЛЕ завершения парной: блок снят, Писарев берёт свою.
+  await kash.getByRole("button", { name: "Завершить →" }).click();
+  await kash.getByRole("button", { name: "Завершить", exact: true }).click();
+  await expect(kash.getByText("Задача выполнена ✓")).toBeVisible();
+  await pisarev.reload();
+  await pisarev.getByRole("button", { name: /В работу/ }).click();
+  await expect(pisarev.getByRole("button", { name: "Завершить →" })).toBeVisible();
+
+  await mctx.close();
+  await pctx.close();
+  await kctx.close();
+});

@@ -115,11 +115,9 @@ export function DriverTaskClient({
   );
   // Одна активная задача (этап B): знаем про другую задачу водителя «В работе», чтобы заранее
   // заблокировать кнопку «В работу» (сервер всё равно запретит — это проактивная подсказка в UI).
-  const { data: myToday = [] } = useSWR<{ id: string; status: TaskStatus; number: number }[]>(
-    `/api/my/tasks?date=${todayISO()}&scope=today`,
-    cachedFetcher,
-    { refreshInterval: 10_000 },
-  );
+  const { data: myToday = [] } = useSWR<
+    { id: string; status: TaskStatus; number: number; coDriverId: string | null }[]
+  >(`/api/my/tasks?date=${todayISO()}&scope=today`, cachedFetcher, { refreshInterval: 10_000 });
   // Открытая смена нужна, чтобы брать задачу в работу (этап D). Кэшируем статус, а поверх — оверлей
   // очереди (O7): смена, открытая офлайн минуту назад, сразу разблокирует «В работу», не дожидаясь
   // досылки на сервер. Наутро кэш может отдать вчерашнюю смену — нормализуем (currentShift).
@@ -408,7 +406,10 @@ export function DriverTaskClient({
   const next = isCoDriver ? undefined : NEXT[displayStatus];
   const canHold = !isCoDriver && CAN_HOLD.includes(displayStatus);
   // Одна активная задача (этап B): если уже есть другая «В работе», кнопку взятия блокируем.
+  // Жёсткий запрет (20.07): активная ПАРНАЯ задача (я — напарник) блокирует так же; myToday
+  // включает парные (my/tasks OR), поэтому находится тем же поиском.
   const activeOther = myToday.find((x) => x.status === "IN_PROGRESS" && x.id !== t.id);
+  const activeOtherIsPair = !!activeOther && activeOther.coDriverId === meId;
   const blockedByActive = next?.to === "IN_PROGRESS" && !!activeOther;
   // Открытая смена (этап D): без неё взять задачу в работу нельзя. O7: считаем по оверлею очереди —
   // смена, открытая офлайн (ещё не досланная), уже разблокирует работу. Внешний перевозчик смен не
@@ -853,7 +854,9 @@ export function DriverTaskClient({
               <p className="mt-1 text-center text-sm text-amber-700">Сначала откройте смену</p>
             ) : blockedByActive ? (
               <p className="mt-1 text-center text-sm text-amber-700">
-                Сначала завершите активную задачу №{activeOther?.number}
+                {activeOtherIsPair
+                  ? `Идёт парная задача №${activeOther?.number} — ты в ней напарник`
+                  : `Сначала завершите активную задачу №${activeOther?.number}`}
               </p>
             ) : null}
           </>
