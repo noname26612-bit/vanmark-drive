@@ -30,7 +30,7 @@ test("диспетчер: создание → назначение → пере
   await page.getByRole("button", { name: "Создать", exact: true }).click();
 
   // Сужаем список по названию (серверный поиск ?q=) — устойчиво к размеру общей dev-БД.
-  await page.getByPlaceholder("Поиск: № / текст / счёт").fill(title);
+  await page.getByTestId("task-search").fill(title);
   // появилась в таблице, открываем карточку
   await expect(page.getByRole("link", { name: title })).toBeVisible();
   await page.getByRole("link", { name: title }).click();
@@ -123,7 +123,7 @@ test("«Все задачи»: клик по любой части строки 
   await page.getByRole("button", { name: "Создать", exact: true }).click();
 
   // Сужаем список по названию (серверный поиск ?q=) — устойчиво к размеру общей dev-БД.
-  await page.getByPlaceholder("Поиск: № / текст / счёт").fill(title);
+  await page.getByTestId("task-search").fill(title);
   const row = page.getByRole("row").filter({ hasText: title });
   await expect(row).toBeVisible();
   // Клик по ячейке адреса (обычный текст, не ссылка) — раньше не открывал; теперь строка кликабельна.

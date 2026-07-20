@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { ChevronLeft, ChevronRight, RefreshCw, Move, GripVertical } from "lucide-react";
@@ -9,10 +9,13 @@ import { mergeOrder, moveTo } from "@/lib/pool-order";
 import { persistUiPref } from "@/lib/ui-prefs-client";
 import type { DriverDTO, TaskDTO } from "@/lib/task-dto";
 import { STATUS_BAR, addDaysISO, formatDate } from "@/lib/task-ui";
+import { parseQuery, taskMatches, type ParsedQuery } from "@/lib/task-search";
 import { StatusBadge } from "@/components/status-badge";
 import { formatMinutes } from "@/domain/capacity";
 import { TypeIcon } from "@/components/type-icon";
 import { Button } from "@/components/ui/button";
+import { TaskSearchInput } from "../_components/task-search-input";
+import { Highlighted } from "../_components/highlight";
 
 const LIVE = { refreshInterval: 10_000, keepPreviousData: true, revalidateOnFocus: true } as const;
 const HORIZON_DAYS = 7; // окно планирования — неделя (решение Артёма 17.06)
@@ -58,9 +61,21 @@ export function PlanningClient({
   const { data: tasks, isLoading, error: loadError, mutate } = useSWR<TaskDTO[]>(key, fetcher, LIVE);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const list = tasks ?? [];
+  const list = useMemo(() => tasks ?? [], [tasks]);
   const dateOf = (t: TaskDTO): string | null => (t.scheduledDate ? t.scheduledDate.slice(0, 10) : null);
-  const undated = list.filter((t) => !t.scheduledDate);
+
+  // Умный поиск по сетке недели: клиентская фильтрация загруженных задач (как на «Сегодня»).
+  const [searchText, setSearchText] = useState("");
+  const searchQuery = useMemo(() => parseQuery(searchText), [searchText]);
+  const searchActive = searchQuery.active;
+  const matchedIds = useMemo(() => {
+    if (!searchQuery.active) return null;
+    return new Set(list.filter((t) => taskMatches(t, searchQuery)).map((t) => t.id));
+  }, [list, searchQuery]);
+  const bySearch = (arr: TaskDTO[]) => (matchedIds ? arr.filter((t) => matchedIds.has(t.id)) : arr);
+  const foundCount = matchedIds ? matchedIds.size : null;
+
+  const undated = bySearch(list.filter((t) => !t.scheduledDate));
 
   // Строки сетки: «Без водителя» (дата есть, исполнителя нет) + по строке на водителя.
   const rows: Row[] = [
@@ -83,7 +98,7 @@ export function PlanningClient({
   }
 
   const cellTasks = (row: Row, day: string): TaskDTO[] =>
-    list.filter((t) => dateOf(t) === day && (t.assigneeId ?? null) === row.driverId);
+    bySearch(list.filter((t) => dateOf(t) === day && (t.assigneeId ?? null) === row.driverId));
 
   async function plan(taskId: string, day: string, assigneeId: string | null) {
     const task = list.find((t) => t.id === taskId);
@@ -116,6 +131,7 @@ export function PlanningClient({
     <div className="p-4" data-testid="planning">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold text-neutral-900">Планирование</h1>
+        <TaskSearchInput value={searchText} onChange={setSearchText} found={foundCount} />
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -203,13 +219,18 @@ export function PlanningClient({
                   onPlan={plan}
                   workdayMinutes={workdayMinutes}
                   onReorder={reorderRows}
+                  searchQuery={searchActive ? searchQuery : null}
                 />
               ))}
             </div>
           </div>
 
           {/* Пул «Без даты» */}
-          <UndatedPool tasks={undated} onDropUndated={toUndated} />
+          <UndatedPool
+            tasks={undated}
+            onDropUndated={toUndated}
+            searchQuery={searchActive ? searchQuery : null}
+          />
         </>
       )}
     </div>
@@ -224,6 +245,7 @@ function RowCells({
   onPlan,
   workdayMinutes,
   onReorder,
+  searchQuery = null,
 }: {
   row: Row;
   days: string[];
@@ -232,6 +254,7 @@ function RowCells({
   onPlan: (taskId: string, day: string, assigneeId: string | null) => void;
   workdayMinutes: number;
   onReorder: (dragKey: string, targetKey: string) => void;
+  searchQuery?: ParsedQuery | null;
 }) {
   const [reorderOver, setReorderOver] = useState(false);
   return (
@@ -275,8 +298,10 @@ function RowCells({
           tasks={cellTasks(row, day)}
           onDropTask={(taskId) => onPlan(taskId, day, row.driverId)}
           // Индикатор загрузки — только в строках водителей (в «Без водителя» он не имеет смысла).
-          showLoad={row.driverId !== null}
+          // При активном поиске чип скрываем: сумма по отфильтрованным карточкам врала бы про день.
+          showLoad={row.driverId !== null && searchQuery === null}
           workdayMinutes={workdayMinutes}
+          searchQuery={searchQuery}
         />
       ))}
     </>
@@ -291,6 +316,7 @@ function Cell({
   onDropTask,
   showLoad,
   workdayMinutes,
+  searchQuery = null,
 }: {
   rowKey: string;
   day: string;
@@ -299,6 +325,7 @@ function Cell({
   onDropTask: (taskId: string) => void;
   showLoad: boolean;
   workdayMinutes: number;
+  searchQuery?: ParsedQuery | null;
 }) {
   const [over, setOver] = useState(false);
   // Сумма оценок задач ячейки (Фаза 2, §14.4) — из уже загруженных задач, без доп. запроса.
@@ -339,13 +366,13 @@ function Cell({
         </div>
       ) : null}
       {tasks.map((t) => (
-        <PlanCard key={t.id} task={t} />
+        <PlanCard key={t.id} task={t} query={searchQuery} />
       ))}
     </div>
   );
 }
 
-function PlanCard({ task }: { task: TaskDTO }) {
+function PlanCard({ task, query = null }: { task: TaskDTO; query?: ParsedQuery | null }) {
   const router = useRouter();
   const draggable = !TERMINAL.includes(task.status);
   // Провал в заявку — кликом по любой части плашки (решение Артёма 02.07.2026).
@@ -371,10 +398,13 @@ function PlanCard({ task }: { task: TaskDTO }) {
     >
       <span className={`absolute left-0 top-0 h-full w-1 rounded-l ${STATUS_BAR[task.status]}`} />
       <span className="flex items-center gap-1 font-medium text-neutral-900">
-        <TypeIcon name={task.type.icon} className="h-3.5 w-3.5 text-neutral-500" />№{task.number}
+        <TypeIcon name={task.type.icon} className="h-3.5 w-3.5 text-neutral-500" />№
+        <Highlighted text={String(task.number)} query={query} />
         {task.priority ? <span className="text-red-500">●</span> : null}
       </span>
-      <span className="mt-0.5 block truncate text-neutral-700">{task.title}</span>
+      <span className="mt-0.5 block truncate text-neutral-700">
+        <Highlighted text={task.title} query={query} />
+      </span>
       {task.timeFrom || task.timeTo ? (
         <span className="text-neutral-500">
           {task.timeFrom ?? ""}
@@ -389,9 +419,11 @@ function PlanCard({ task }: { task: TaskDTO }) {
 function UndatedPool({
   tasks,
   onDropUndated,
+  searchQuery = null,
 }: {
   tasks: TaskDTO[];
   onDropUndated: (taskId: string) => void;
+  searchQuery?: ParsedQuery | null;
 }) {
   const [over, setOver] = useState(false);
   return (
@@ -415,12 +447,14 @@ function UndatedPool({
     >
       <div className="mb-1.5 px-1 text-xs font-semibold text-neutral-600">Без даты · {tasks.length}</div>
       {tasks.length === 0 ? (
-        <p className="px-1 py-2 text-center text-xs text-neutral-400">Пусто</p>
+        <p className="px-1 py-2 text-center text-xs text-neutral-400">
+          {searchQuery ? "Нет совпадений" : "Пусто"}
+        </p>
       ) : (
         <div className="flex flex-wrap gap-1.5">
           {tasks.map((t) => (
             <div key={t.id} className="w-44">
-              <PlanCard task={t} />
+              <PlanCard task={t} query={searchQuery} />
             </div>
           ))}
         </div>

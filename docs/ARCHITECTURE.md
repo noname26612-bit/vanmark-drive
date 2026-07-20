@@ -428,7 +428,7 @@ estimate   = type.onSiteMinutes + travelMin     (round)
 | Метод и путь | Кто | Что |
 |---|---|---|
 | POST /api/auth/[...nextauth] | все | вход/выход |
-| GET /api/tasks?date&status&assigneeId&q | Д | список с фильтрами |
+| GET /api/tasks?date&status&assigneeId&q | Д | список с фильтрами. `q` (20.07.2026): ILIKE по title/orgName/invoiceNumber/contactName/address/description/equipment/contactPhone + № заявки (короткие числа, включая «№615»); ≥3 цифр в запросе — доп. поиск по цифрам телефона (`regexp_replace`, «8…»≈«+7…», параметризованный $queryRaw) |
 | POST /api/tasks | Д | создать (номер выдаёт сервер) |
 | PATCH /api/tasks/:id | Д | редактирование полей, назначение, перенос |
 | GET /api/my/tasks?date&scope=today\|upcoming | В | только свои (assigneeId из сессии). today: на сегодня + просроченные открытые + без даты; upcoming: завтра+ |
