@@ -33,11 +33,14 @@ import {
   paymentBadge,
 } from "@/lib/task-ui";
 import { actState } from "@/domain/act";
+import { parseQuery, taskMatches, firstHiddenMatch, type ParsedQuery } from "@/lib/task-search";
 import { TypeIcon } from "@/components/type-icon";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CreateTaskModal } from "../_components/create-task-modal";
+import { TaskSearchInput } from "../_components/task-search-input";
+import { Highlighted } from "../_components/highlight";
 import { useTaskDrafts } from "../_components/task-drafts";
 import type { FormState } from "@/lib/task-draft";
 
@@ -151,7 +154,7 @@ export function BoardClient({
     });
   }
 
-  const list = tasks ?? [];
+  const list = useMemo(() => tasks ?? [], [tasks]);
   const dateOf = (t: TaskDTO): string | null => (t.scheduledDate ? t.scheduledDate.slice(0, 10) : null);
 
   const undated = list.filter((t) => !t.scheduledDate);
@@ -164,6 +167,31 @@ export function BoardClient({
     if (d === today) return !t.assigneeId;
     return d > today && d <= horizonEnd;
   });
+
+  // Умный поиск по доске: чисто клиентская фильтрация уже загруженных задач (данные целиком на
+  // клиенте). Совпавшие остаются в своих пулах, несовпавшие скрываются; счётчики дня не трогаем.
+  const [searchText, setSearchText] = useState("");
+  const searchQuery = useMemo(() => parseQuery(searchText), [searchText]);
+  const searchActive = searchQuery.active;
+  const matchedIds = useMemo(() => {
+    if (!searchQuery.active) return null;
+    const s = new Set<string>();
+    for (const t of list) if (taskMatches(t, searchQuery)) s.add(t.id);
+    // Задачи блока «Требуют внимания» могут быть вне горизонта доски (просрочки прошлых дней).
+    for (const t of [...(attention?.overdue ?? []), ...(attention?.tomorrowPasses ?? [])])
+      if (taskMatches(t, searchQuery)) s.add(t.id);
+    return s;
+  }, [list, attention, searchQuery]);
+  const bySearch = (arr: TaskDTO[]) => (matchedIds ? arr.filter((t) => matchedIds.has(t.id)) : arr);
+  const foundCount = matchedIds ? matchedIds.size : null;
+  const undatedVisible = bySearch(undated);
+  const todaysVisible = bySearch(todays);
+  const upcomingVisible = bySearch(upcoming);
+  const attentionVisible: AttentionDTO | null = attention
+    ? { overdue: bySearch(attention.overdue), tomorrowPasses: bySearch(attention.tomorrowPasses) }
+    : null;
+  const attentionVisibleCount =
+    (attentionVisible?.overdue.length ?? 0) + (attentionVisible?.tomorrowPasses.length ?? 0);
 
   const total = todays.length;
   const inWork = todays.filter((t) => t.status === "IN_PROGRESS").length;
@@ -221,7 +249,7 @@ export function BoardClient({
         title: "Без даты",
         hint: "пул для планирования",
         headIcon: <CalendarOff className="h-4 w-4 text-slate-300" />,
-        tasks: undated,
+        tasks: undatedVisible,
         target: { kind: "undated" },
       };
     }
@@ -231,7 +259,7 @@ export function BoardClient({
         title: "Ближайшие 3 дня",
         hint: "планирование",
         headIcon: <CalendarClock className="h-4 w-4 text-slate-300" />,
-        tasks: upcoming,
+        tasks: upcomingVisible,
         showDate: true,
       };
     }
@@ -242,7 +270,7 @@ export function BoardClient({
         poolKey: key,
         title: d.name,
         isDriver: true,
-        tasks: todays.filter((t) => t.assigneeId === d.id),
+        tasks: todaysVisible.filter((t) => t.assigneeId === d.id),
         target: { kind: "driver", driverId: d.id },
       };
     }
@@ -253,14 +281,17 @@ export function BoardClient({
     <div className="p-4" data-testid="board">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold text-neutral-900">Сегодня · {formatDate(today)}</h1>
-        <Button
-          onClick={() => {
-            setEditingDraft(null);
-            setCreateOpen(true);
-          }}
-        >
-          <Plus className="h-4 w-4" /> Задача
-        </Button>
+        <div className="flex flex-1 flex-wrap items-center justify-end gap-3">
+          <TaskSearchInput value={searchText} onChange={setSearchText} found={foundCount} />
+          <Button
+            onClick={() => {
+              setEditingDraft(null);
+              setCreateOpen(true);
+            }}
+          >
+            <Plus className="h-4 w-4" /> Задача
+          </Button>
+        </div>
       </div>
 
       {/* Счётчики (PRD §8, ui-guidelines): всего / в работе / выполнено / требуют внимания.
@@ -301,7 +332,9 @@ export function BoardClient({
             <ShiftsBlock shifts={requestedShifts} onChange={refresh} />
           ) : null}
 
-          {attentionCount > 0 && attention ? <AttentionBlock attention={attention} /> : null}
+          {attentionVisibleCount > 0 && attentionVisible ? (
+            <AttentionBlock attention={attentionVisible} query={searchActive ? searchQuery : null} />
+          ) : null}
 
           {/* Пулы в персональном порядке. Шапку можно перетащить, чтобы поменять пулы местами;
               стрелка в шапке сворачивает пул в узкую полосу — остальные расширяются. */}
@@ -309,6 +342,9 @@ export function BoardClient({
             {displayOrder.map((key) => {
               const p = poolByKey(key);
               if (!p) return null;
+              // При активном поиске свёрнутая колонка с совпадениями временно разворачивается
+              // (раскладку в аккаунте не трогаем — после очистки поиска свернётся обратно).
+              const forceExpanded = searchActive && collapsed.has(key) && p.tasks.length > 0;
               return (
                 <Column
                   key={key}
@@ -323,7 +359,9 @@ export function BoardClient({
                   showDate={p.showDate}
                   onDropTask={onDrop}
                   onQuickAssign={quickAssign}
-                  collapsed={collapsed.has(key)}
+                  collapsed={collapsed.has(key) && !forceExpanded}
+                  forceExpanded={forceExpanded}
+                  searchQuery={searchActive ? searchQuery : null}
                   onToggleCollapse={() => toggleCollapse(key)}
                   onReorder={handleReorder}
                 />
@@ -1246,7 +1284,13 @@ function IdleNotesModal({
   );
 }
 
-function AttentionBlock({ attention }: { attention: AttentionDTO }) {
+function AttentionBlock({
+  attention,
+  query = null,
+}: {
+  attention: AttentionDTO;
+  query?: ParsedQuery | null;
+}) {
   return (
     <section
       id="attention"
@@ -1262,6 +1306,7 @@ function AttentionBlock({ attention }: { attention: AttentionDTO }) {
           <AttentionItem
             key={`pass-${t.id}`}
             task={t}
+            query={query}
             chip={
               <Badge className="border border-amber-500 text-amber-700">
                 Пропуск на завтра не заказан
@@ -1273,6 +1318,7 @@ function AttentionBlock({ attention }: { attention: AttentionDTO }) {
           <AttentionItem
             key={`overdue-${t.id}`}
             task={t}
+            query={query}
             chip={
               <Badge className="border border-red-600 text-red-700">
                 Просрочено · {formatDateShort(t.scheduledDate)}
@@ -1285,7 +1331,15 @@ function AttentionBlock({ attention }: { attention: AttentionDTO }) {
   );
 }
 
-function AttentionItem({ task, chip }: { task: TaskDTO; chip: React.ReactNode }) {
+function AttentionItem({
+  task,
+  chip,
+  query = null,
+}: {
+  task: TaskDTO;
+  chip: React.ReactNode;
+  query?: ParsedQuery | null;
+}) {
   return (
     <Link
       href={`/tasks/${task.id}`}
@@ -1293,14 +1347,17 @@ function AttentionItem({ task, chip }: { task: TaskDTO; chip: React.ReactNode })
     >
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-sm font-semibold tabular-nums text-slate-900">
-          <TypeIcon name={task.type.icon} className="h-4 w-4 text-slate-500" />№{task.number}
+          <TypeIcon name={task.type.icon} className="h-4 w-4 text-slate-500" />№
+          <Highlighted text={String(task.number)} query={query} />
           {task.priority ? <span className="text-red-500">●</span> : null}
         </span>
         <StatusBadge status={task.status} />
       </div>
-      <span className="truncate text-sm text-slate-800">{task.title}</span>
+      <span className="truncate text-sm text-slate-800">
+        <Highlighted text={task.title} query={query} />
+      </span>
       <span className="truncate text-xs text-slate-500">
-        {task.assignee?.name ?? "Не назначено"} · {task.address}
+        {task.assignee?.name ?? "Не назначено"} · <Highlighted text={task.address} query={query} />
       </span>
       <span>{chip}</span>
     </Link>
@@ -1348,6 +1405,8 @@ function Column({
   onDropTask,
   onQuickAssign,
   collapsed,
+  forceExpanded = false,
+  searchQuery = null,
   onToggleCollapse,
   onReorder,
 }: {
@@ -1363,6 +1422,8 @@ function Column({
   onDropTask?: (taskId: string, target: DropTarget) => void;
   onQuickAssign: (taskId: string, assigneeId: string) => void;
   collapsed: boolean;
+  forceExpanded?: boolean; // развёрнута поиском: кнопку «Свернуть» прячем (клик ничего бы не менял)
+  searchQuery?: ParsedQuery | null; // активный поиск: подсветка в карточках, приглушение пустых
   onToggleCollapse: () => void;
   onReorder: (dragKey: string, targetKey: string) => void;
 }) {
@@ -1452,8 +1513,15 @@ function Column({
     );
   }
 
+  // Активный поиск, совпадений в колонке нет — колонка приглушается, но остаётся на месте
+  // (раскладка не прыгает, ui-guidelines «Плотный пульт»).
+  const dimmed = searchQuery !== null && tasks.length === 0;
+
   return (
-    <div className={`flex min-w-[18rem] flex-1 flex-col ${ringCls}`} data-testid={testId}>
+    <div
+      className={`flex min-w-[18rem] flex-1 flex-col transition-opacity ${dimmed ? "opacity-60" : ""} ${ringCls}`}
+      data-testid={testId}
+    >
       {/* Графитовая шапка: грип (перетащить пул), аватар/иконка, заголовок, счётчик, кнопка свернуть. */}
       <div
         {...headDragProps}
@@ -1473,15 +1541,17 @@ function Column({
           {hint ? `${hint} · ` : ""}
           {tasks.length}
         </span>
-        <button
-          type="button"
-          onClick={onToggleCollapse}
-          aria-label={`Свернуть пул «${title}»`}
-          data-testid={`col-collapse-${poolKey}`}
-          className="shrink-0 rounded p-0.5 text-slate-300 hover:bg-slate-700 hover:text-white"
-        >
-          <ChevronLeft className="h-4 w-4" />
-        </button>
+        {!forceExpanded ? (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            aria-label={`Свернуть пул «${title}»`}
+            data-testid={`col-collapse-${poolKey}`}
+            className="shrink-0 rounded p-0.5 text-slate-300 hover:bg-slate-700 hover:text-white"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+        ) : null}
       </div>
       <div
         {...dropProps}
@@ -1490,7 +1560,9 @@ function Column({
         }`}
       >
         {tasks.length === 0 ? (
-          <p className="px-1 py-6 text-center text-xs text-slate-400">Пусто</p>
+          <p className="px-1 py-6 text-center text-xs text-slate-400">
+            {searchQuery ? "Нет совпадений" : "Пусто"}
+          </p>
         ) : (
           tasks.map((t) => (
             <BoardCard
@@ -1500,6 +1572,7 @@ function Column({
               showDate={showDate}
               showAssign={!isDriver}
               onQuickAssign={onQuickAssign}
+              query={searchQuery}
             />
           ))
         )}
@@ -1514,18 +1587,23 @@ function BoardCard({
   showDate = false,
   showAssign = false,
   onQuickAssign,
+  query = null,
 }: {
   task: TaskDTO;
   drivers: DriverDTO[];
   showDate?: boolean;
   showAssign?: boolean; // селект-исполнитель показываем только в пулах (в колонке водителя он лишний)
   onQuickAssign: (taskId: string, assigneeId: string) => void;
+  query?: ParsedQuery | null; // активный поиск: подсветка совпадений + сниппет скрытого поля
 }) {
   const router = useRouter();
   // Провал в заявку — кликом по любой части плашки (решение Артёма 02.07.2026). Вложенный select
   // исполнителя гасит всплытие (stopPropagation ниже), поэтому общий клик его не перехватывает.
   const openTask = () => router.push(`/tasks/${task.id}`);
   const hasTime = task.timeFrom || task.timeTo || task.timeNote;
+  // Сниппет «почему нашлось»: совпадение только в скрытом поле карточки (телефон/организация/…)
+  // показываем отдельной строчкой — иначе Милене непонятно, почему карточка осталась на доске.
+  const hiddenMatch = query ? firstHiddenMatch(task, query, [task.title, task.address]) : null;
   // Признак комплектности акта на доске (этап 14, «хвост»): показываем ТОЛЬКО на завершённой актовой
   // задаче — это сигнал Милене «акт приложен ✓ / не приложен». На текущих задачах акт ещё рано — не шумим.
   const actSt = actState({
@@ -1556,7 +1634,8 @@ function BoardCard({
       <span className={`absolute left-0 top-0 h-full w-[3px] ${STATUS_BAR[task.status]}`} />
       <div className="flex items-center justify-between gap-2">
         <span className="flex min-w-0 items-center gap-1.5 text-sm font-semibold tabular-nums text-slate-900">
-          <TypeIcon name={task.type.icon} className="h-4 w-4 shrink-0 text-slate-500" />№{task.number}
+          <TypeIcon name={task.type.icon} className="h-4 w-4 shrink-0 text-slate-500" />№
+          <Highlighted text={String(task.number)} query={query} />
           {task.priority ? <span className="text-red-500">●</span> : null}
         </span>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -1569,9 +1648,13 @@ function BoardCard({
           <StatusBadge status={task.status} />
         </div>
       </div>
-      <span className="mt-0.5 block truncate text-sm text-slate-800">{task.title}</span>
+      <span className="mt-0.5 block truncate text-sm text-slate-800">
+        <Highlighted text={task.title} query={query} />
+      </span>
       <div className="flex items-center justify-between gap-2">
-        <p className="min-w-0 flex-1 truncate text-xs text-slate-500">{task.address}</p>
+        <p className="min-w-0 flex-1 truncate text-xs text-slate-500">
+          <Highlighted text={task.address} query={query} />
+        </p>
         {hasTime ? (
           <p className="shrink-0 whitespace-nowrap text-xs tabular-nums text-slate-500">
             {task.timeFrom || task.timeTo ? `${task.timeFrom ?? ""}–${task.timeTo ?? ""} ` : ""}
@@ -1579,6 +1662,15 @@ function BoardCard({
           </p>
         ) : null}
       </div>
+      {hiddenMatch ? (
+        <p
+          data-testid="board-card-snippet"
+          className="mt-0.5 truncate rounded bg-slate-50 px-1 py-0.5 text-[11px] text-slate-600"
+        >
+          {hiddenMatch.label}:{" "}
+          <Highlighted text={hiddenMatch.text} query={query} phone={hiddenMatch.phone} />
+        </p>
+      ) : null}
       {task.passStatus !== "NOT_NEEDED" || act || pay ? (
         <div className="mt-1 flex flex-wrap items-center gap-1">
           {task.passStatus !== "NOT_NEEDED" ? (

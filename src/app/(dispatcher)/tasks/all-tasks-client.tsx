@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
@@ -9,14 +9,17 @@ import { fetcher } from "@/lib/fetcher";
 import type { DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
 import { actState } from "@/domain/act";
 import { STATUS_LABEL, STATUS_ORDER, actBadge, formatDate, paymentBadge } from "@/lib/task-ui";
+import { parseQuery } from "@/lib/task-search";
+import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { StatusBadge } from "@/components/status-badge";
 import { TypeIcon } from "@/components/type-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { DateField } from "@/components/ui/date-field";
 import { Select } from "@/components/ui/select";
 import { CreateTaskModal } from "../_components/create-task-modal";
+import { TaskSearchInput } from "../_components/task-search-input";
+import { Highlighted } from "../_components/highlight";
 import { useTaskDrafts } from "../_components/task-drafts";
 import type { FormState } from "@/lib/task-draft";
 
@@ -49,8 +52,17 @@ export function AllTasksClient({
     [registerOpenHandler],
   );
 
+  // Серверный поиск (период произвольный — данных может быть много), запрос уходит «вдогонку»
+  // через 250 мс после остановки ввода; keepPreviousData сглаживает перезапросы.
+  const debouncedQ = useDebouncedValue(q, 250);
+  // Подсветка в таблице — по тому запросу, который реально отфильтровал сервер.
+  const searchQuery = useMemo(
+    () => (debouncedQ.trim() ? parseQuery(debouncedQ) : null),
+    [debouncedQ],
+  );
+
   const params = new URLSearchParams();
-  if (q.trim()) params.set("q", q.trim());
+  if (debouncedQ.trim()) params.set("q", debouncedQ.trim());
   if (status) params.set("status", status);
   if (assigneeId) params.set("assigneeId", assigneeId);
   if (typeId) params.set("typeId", typeId);
@@ -76,7 +88,12 @@ export function AllTasksClient({
       </div>
 
       <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-        <Input placeholder="Поиск: № / текст / счёт" value={q} onChange={(e) => setQ(e.target.value)} />
+        <TaskSearchInput
+          value={q}
+          onChange={setQ}
+          inputClassName="w-full"
+          placeholder="Поиск: № / телефон / текст / счёт"
+        />
         <Select value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="">Любой статус</option>
           {STATUS_ORDER.map((s) => (
@@ -108,6 +125,12 @@ export function AllTasksClient({
 
       {isLoading && tasks.length === 0 ? (
         <p className="text-sm text-neutral-400">Загрузка…</p>
+      ) : null}
+
+      {searchQuery?.active && !isLoading ? (
+        <p data-testid="all-tasks-found" className="mb-2 text-xs tabular-nums text-neutral-500">
+          Найдено: {tasks.length}
+        </p>
       ) : null}
 
       <div className="overflow-x-auto rounded-xl border border-neutral-200 bg-white">
@@ -158,7 +181,8 @@ export function AllTasksClient({
                       onClick={(e) => e.stopPropagation()}
                       className="hover:underline"
                     >
-                      {t.priority ? <span className="mr-1 text-red-500">●</span> : null}№{t.number}
+                      {t.priority ? <span className="mr-1 text-red-500">●</span> : null}№
+                      <Highlighted text={String(t.number)} query={searchQuery} />
                     </Link>
                   </td>
                   <td className="px-3 py-2">
@@ -173,12 +197,20 @@ export function AllTasksClient({
                       onClick={(e) => e.stopPropagation()}
                       className="text-neutral-800 hover:underline"
                     >
-                      {t.title}
+                      <Highlighted text={t.title} query={searchQuery} />
                     </Link>
                   </td>
-                  <td className="max-w-48 truncate px-3 py-2 text-neutral-500">{t.address}</td>
+                  <td className="max-w-48 truncate px-3 py-2 text-neutral-500">
+                    <Highlighted text={t.address} query={searchQuery} />
+                  </td>
                   <td className="px-3 py-2 text-neutral-500">{formatDate(t.scheduledDate)}</td>
-                  <td className="px-3 py-2 text-neutral-600">{t.assignee?.name ?? "—"}</td>
+                  <td className="px-3 py-2 text-neutral-600">
+                    {t.assignee?.name ? (
+                      <Highlighted text={t.assignee.name} query={searchQuery} />
+                    ) : (
+                      "—"
+                    )}
+                  </td>
                   <td className="px-3 py-2">
                     <StatusBadge status={t.status} />
                   </td>

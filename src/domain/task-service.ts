@@ -214,9 +214,23 @@ export async function listTasks(filters: ListFilters): Promise<TaskListWire[]> {
       { invoiceNumber: { contains: q, mode: "insensitive" } },
       { contactName: { contains: q, mode: "insensitive" } },
       { address: { contains: q, mode: "insensitive" } },
+      { description: { contains: q, mode: "insensitive" } },
+      { equipment: { contains: q, mode: "insensitive" } },
+      { contactPhone: { contains: q, mode: "insensitive" } },
     ];
-    const asNumber = Number.parseInt(q, 10);
-    if (!Number.isNaN(asNumber)) or.push({ number: asNumber });
+    // № заявки: только короткие цифровые строки — длинные (телефон) переполнили бы Int-колонку
+    // (Prisma кидает ошибку валидации на where number = 8926… → 500 на весь список).
+    if (/^\d{1,9}$/.test(q)) or.push({ number: Number.parseInt(q, 10) });
+
+    // Цифры запроса: «№615» находит № заявки, «8 926 123-45-67» — телефон в любом формате записи.
+    const digits = q.replace(/\D/g, "");
+    if (digits && digits !== q && /^\d{1,9}$/.test(digits) && digits.length <= 6) {
+      or.push({ number: Number.parseInt(digits, 10) });
+    }
+    if (digits.length >= 3) {
+      const ids = await findTaskIdsByPhoneDigits(digits);
+      if (ids.length > 0) or.push({ id: { in: ids } });
+    }
     and.push({ OR: or });
   }
 
@@ -226,6 +240,25 @@ export async function listTasks(filters: ListFilters): Promise<TaskListWire[]> {
     orderBy: [{ priority: "desc" }, { scheduledDate: "asc" }, { number: "asc" }],
   });
   return rows.map(withActFlag);
+}
+
+/**
+ * Поиск задач по цифрам телефона: сравниваем цифры запроса с цифрами contactPhone, «8…» и «+7…»
+ * считаем одним номером. Милена вводит телефоны в свободном формате («+7 (926) 123-45-67»,
+ * «8926…»), поэтому обычный contains по строке номер не находит. Запрос параметризован
+ * (Prisma.sql), full-scan приемлем: задач единицы тысяч, вызов — только при ≥3 цифрах в поиске.
+ */
+async function findTaskIdsByPhoneDigits(digits: string): Promise<string[]> {
+  const variants = [digits];
+  if (digits.startsWith("8")) variants.push(`7${digits.slice(1)}`);
+  else if (digits.startsWith("7")) variants.push(`8${digits.slice(1)}`);
+  const conditions = variants.map(
+    (v) => Prisma.sql`regexp_replace(coalesce("contactPhone", ''), '\\D', '', 'g') LIKE ${`%${v}%`}`,
+  );
+  const rows = await prisma.$queryRaw<{ id: string }[]>(
+    Prisma.sql`SELECT id FROM "Task" WHERE ${Prisma.join(conditions, " OR ")}`,
+  );
+  return rows.map((r) => r.id);
 }
 
 /**
