@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import {
@@ -1342,13 +1341,32 @@ function AttentionItem({
   chip: React.ReactNode;
   query?: ParsedQuery | null;
 }) {
+  const router = useRouter();
+  // Перетаскиваемая карточка (доработка 24.07.2026): диспетчер тащит просроченную задачу прямо из
+  // «Требуют внимания» в колонку водителя → задача назначается и встаёт на сегодня (авто-дата в
+  // assignTask). id кладём в "text/plain" — колонки уже принимают этот drop (onDropTask → op:assign).
+  // Клик по карточке (не по drag) открывает заявку. Только для мыши (десктоп) — как весь DnD доски.
+  const openTask = () => router.push(`/tasks/${task.id}`);
   return (
-    <Link
-      href={`/tasks/${task.id}`}
-      className="flex flex-col gap-1 rounded-md border border-slate-200 bg-white p-2 hover:border-slate-300"
+    <div
+      draggable
+      data-testid="attention-card"
+      role="link"
+      tabIndex={0}
+      aria-label={`Заявка №${task.number}: ${task.title}`}
+      onDragStart={(e) => e.dataTransfer.setData("text/plain", task.id)}
+      onClick={openTask}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openTask();
+        }
+      }}
+      className="flex cursor-grab flex-col gap-1 rounded-md border border-slate-200 bg-white p-2 hover:border-slate-300 active:cursor-grabbing"
     >
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-sm font-semibold tabular-nums text-slate-900">
+          <GripVertical className="h-4 w-4 shrink-0 text-slate-300" />
           <TypeIcon name={task.type.icon} className="h-4 w-4 text-slate-500" />№
           <Highlighted text={String(task.number)} query={query} />
           {task.priority ? <span className="text-red-500">●</span> : null}
@@ -1362,7 +1380,7 @@ function AttentionItem({
         {task.assignee?.name ?? "Не назначено"} · <Highlighted text={task.address} query={query} />
       </span>
       <span>{chip}</span>
-    </Link>
+    </div>
   );
 }
 

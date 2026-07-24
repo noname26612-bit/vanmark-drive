@@ -264,35 +264,34 @@ export function CreateTaskModal({
           />
         </Field>
 
-        {/* Обязательные при создании (решение Артёма 02.07.2026): организация, контактное лицо,
-            телефон — вверху формы. При редактировании не блокируем (старые заявки могут быть без них). */}
-        <Field label="Организация" required={!isEdit}>
+        {/* Организация, контактное лицо, телефон — НЕобязательны (решение Артёма 24.07.2026: быстрая
+            постановка заявки). Обязательны только Тип, Название, Адрес. */}
+        <Field label="Организация">
           <Input
             data-testid="create-org"
             value={form.orgName}
             onChange={(e) => set("orgName", e.target.value)}
             placeholder="ООО «...»"
-            required={!isEdit}
           />
         </Field>
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Контактное лицо" required={!isEdit}>
+          <Field label="Контактное лицо">
             <Input
               data-testid="create-contact-name"
               value={form.contactName}
               onChange={(e) => set("contactName", e.target.value)}
               placeholder="Имя"
-              required={!isEdit}
             />
           </Field>
-          <Field label="Телефон" required={!isEdit}>
+          <Field label="Телефон">
             <Input
               data-testid="create-contact-phone"
+              type="tel"
+              inputMode="tel"
               value={form.contactPhone}
               onChange={(e) => set("contactPhone", e.target.value)}
               placeholder="+7 ..."
-              required={!isEdit}
             />
           </Field>
         </div>

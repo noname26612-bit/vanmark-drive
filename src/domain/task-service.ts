@@ -377,11 +377,9 @@ export async function createTask(
   if (!typeId) throw Errors.validation("Не выбран тип задачи");
   if (!title) throw Errors.validation("Не указано название");
   if (!address) throw Errors.validation("Не указан адрес");
-  // Обязательны при СОЗДАНИИ (решение Артёма 02.07.2026): организация, контакт, телефон.
-  // Редактирование (updateTaskFields) остаётся мягким — старые заявки могут быть без этих полей.
-  if (!orgName) throw Errors.validation("Не указана организация");
-  if (!contactName) throw Errors.validation("Не указано контактное лицо");
-  if (!contactPhone) throw Errors.validation("Не указан контактный телефон");
+  // Организация, контакт, телефон — НЕобязательны при создании (решение Артёма 24.07.2026: быстрая
+  // постановка заявки; раньше были обязательны — 02.07). Обязательны только Тип, Название, Адрес.
+  // Редактирование (updateTaskFields) тоже мягкое — поля можно очищать в null.
 
   // Тип задаёт дефолт требования акта; диспетчер может снять его галочкой «акт не нужен» (PRD §4).
   const type = await prisma.taskType.findUnique({
@@ -748,13 +746,19 @@ export async function assignTask(
       });
     }
     // Отдельная неизменяемая отметка в журнал об авто-простановке даты (CLAUDE.md правило 3).
+    // Просроченная задача (была дата в прошлом) при назначении переносится на сегодня — в истории это
+    // видно явно (доработка 24.07.2026, перетаскивание из «Требуют внимания»); задача без даты —
+    // просто датируется сегодняшним днём.
     if (autoDate) {
+      const wasOverdue = task.scheduledDate !== null && task.scheduledDate.getTime() < autoDate.getTime();
       await tx.taskEvent.create({
         data: {
           taskId,
           actorId: actor.id,
           kind: "auto_date",
-          comment: `Дата проставлена автоматически при назначении: ${autoDate.toISOString().slice(0, 10)}`,
+          comment: wasOverdue
+            ? `Была просрочена (${formatDayRu(task.scheduledDate)}) → перенесена на сегодня (${formatDayRu(autoDate)}) при назначении`
+            : `Дата проставлена автоматически при назначении: ${formatDayRu(autoDate)}`,
         },
       });
     }
@@ -977,6 +981,20 @@ export async function transitionTask(
   // простым select, Милена увидит в note кандидата.
   if (actReason) data.actMissedReason = actReason;
   if (task.status === "ON_HOLD" && toStatus === "ASSIGNED") data.holdReason = null;
+  // Свободная смена статуса диспетчером (24.07.2026, кейс №700): при выходе ИЗ терминального статуса
+  // снимаем «отпечатки» завершения/отмены — иначе откатанная задача останется в отчётах/KPI как
+  // выполненная (completedAt), с висящей отметкой оплаты, или с причиной отмены на вернувшейся в работу
+  // заявке. Плановую дату (scheduledDate был перенесён на день завершения) не восстанавливаем — она
+  // есть только в журнале; при нужде диспетчер перенесёт вручную кнопкой «Перенести».
+  if (task.status === "DONE" && toStatus !== "DONE") {
+    data.completedAt = null;
+    data.paymentReceived = null;
+    data.paymentMissedReason = null;
+    data.actMissedReason = null;
+  }
+  if (task.status === "CANCELLED" && toStatus !== "CANCELLED") {
+    data.cancelReason = null;
+  }
 
   const result = await prisma.$transaction(async (tx) => {
     const updated = await tx.task.update({ where: { id: taskId }, data, include: taskInclude });

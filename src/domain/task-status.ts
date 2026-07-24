@@ -57,14 +57,31 @@ export function isValidTransition(from: TaskStatus, to: TaskStatus): boolean {
 
 /** Статусы, для которых обязательна причина (пишется в задачу и в журнал).
  *  Пауза (ON_HOLD) — причина по желанию (решение Артёма 02.07.2026): водитель ставит паузу
- *  без обязательного комментария. Отмена (CANCELLED) — причина по-прежнему обязательна (история). */
-export function reasonRequiredFor(to: TaskStatus): boolean {
-  return to === "CANCELLED";
+ *  без обязательного комментария. Отмена (CANCELLED) — причина по-прежнему обязательна (история).
+ *  Откат/исправление из терминального статуса (from ∈ {DONE, CANCELLED}) диспетчером — тоже требует
+ *  причину для аудита (свободная смена статуса, решение Артёма 24.07.2026; кейс №700). */
+export function reasonRequiredFor(to: TaskStatus, from?: TaskStatus): boolean {
+  if (to === "CANCELLED") return true;
+  if (from === "DONE" || from === "CANCELLED") return true;
+  return false;
 }
 
 export function isDispatcherRole(role: Role): boolean {
   return role === "ADMIN" || role === "DISPATCHER";
 }
+
+// Актуальные статусы, которые диспетчер/директор может выставлять ВРУЧНУЮ (свободная смена статуса,
+// решение Артёма 24.07.2026: исправление ошибок исполнителя, откат ошибочного «Завершено» — кейс №700).
+// Legacy-статусы (ACCEPTED/EN_ROUTE/ON_SITE) и транзитный RESCHEDULED сюда не входят — их вручную не
+// ставят. Побочные эффекты отката (снятие completedAt/оплаты/причин) выполняет transitionTask.
+export const MANUAL_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  "NEW",
+  "ASSIGNED",
+  "IN_PROGRESS",
+  "ON_HOLD",
+  "DONE",
+  "CANCELLED",
+]);
 
 export function isTerminal(status: TaskStatus): boolean {
   const out = MATRIX[status];
@@ -84,15 +101,21 @@ export function checkTransition(
   to: TaskStatus,
 ): TransitionVerdict {
   const rule = transitionRule(from, to);
-  if (!rule) return { ok: false, code: "INVALID_TRANSITION" };
 
-  // Диспетчер/админ — любой валидный переход.
+  // Диспетчер/админ ведёт статусы вручную. Помимо «водительских» рёбер матрицы ему разрешена свободная
+  // установка любого актуального статуса — в т.ч. выход из DONE/CANCELLED (исправления, откат №700,
+  // решение Артёма 24.07.2026). Ограничение: оба статуса «ручные» (не legacy/RESCHEDULED) и переход
+  // непустой. Побочные эффекты отката снимает transitionTask; причина обязательна (reasonRequiredFor).
   if (isDispatcherRole(actor.role)) {
-    return { ok: true, reasonRequired: reasonRequiredFor(to) };
+    const manual = MANUAL_STATUSES.has(from) && MANUAL_STATUSES.has(to) && from !== to;
+    if (rule || manual) return { ok: true, reasonRequired: reasonRequiredFor(to, from) };
+    return { ok: false, code: "INVALID_TRANSITION" };
   }
-  // Водитель — только свои разрешённые рёбра и только по своей задаче.
+
+  // Водитель — только свои разрешённые рёбра матрицы и только по своей задаче.
+  if (!rule) return { ok: false, code: "INVALID_TRANSITION" };
   if (actor.role === "DRIVER" && actor.isAssignee && rule.driver) {
-    return { ok: true, reasonRequired: reasonRequiredFor(to) };
+    return { ok: true, reasonRequired: reasonRequiredFor(to, from) };
   }
   return { ok: false, code: "FORBIDDEN" };
 }

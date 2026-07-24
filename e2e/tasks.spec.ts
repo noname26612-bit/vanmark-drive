@@ -96,15 +96,22 @@ test("изоляция: водитель не видит список, чужу�
   await dctx.close();
 });
 
-// Доработка (02.07.2026): организация/контакт/телефон обязательны на сервере при создании.
-test("создание: без организации сервер отклоняет заявку", async ({ page }) => {
+// Доработка (24.07.2026): организация/контакт/телефон СНЯТЫ из обязательных при создании
+// (быстрая постановка заявки). Обязательны только Тип, Название, Адрес — заявку без контактов создаём.
+test("создание: без организации/контакта/телефона заявка создаётся", async ({ page }) => {
+  test.slow();
   await login(page, "milena");
-  // orgName проверяется в createTask ДО валидации типа — валидный typeId не нужен.
-  const res = await page.request.post("/api/tasks", {
-    data: { typeId: "any", title: "без контактов", address: "адрес" },
-  });
-  expect(res.ok()).toBeFalsy();
-  expect((await res.json()).error.message).toContain("организац");
+  await page.goto("/tasks");
+  await page.getByRole("button", { name: "Задача" }).click();
+  const title = `E2E без контактов ${Date.now()}`;
+  await page.getByPlaceholder("ЛБМ 200 + нож, 0,7 мм").fill(title);
+  await page.getByPlaceholder("Москва, ул. ..., д. ...").fill("Адрес без контактов e2e");
+  // Организацию/контакт/телефон намеренно НЕ заполняем — теперь это не блокирует создание.
+  await page.getByRole("button", { name: "Создать", exact: true }).click();
+
+  // Форма закрылась, задача появилась в списке — значит сервер принял заявку без контактов.
+  await page.getByTestId("task-search").fill(title);
+  await expect(page.getByRole("row").filter({ hasText: title })).toBeVisible();
 });
 
 // Доработка 2 (02.07.2026): в «Все задачи» провалиться в заявку можно кликом по любой части строки,

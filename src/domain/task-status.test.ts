@@ -61,6 +61,13 @@ describe("статусная матрица — водитель (назначе
     expect(checkTransition(driverOther, "IN_PROGRESS", "DONE").ok).toBe(false);
     expect(checkTransition(driverOther, "IN_PROGRESS", "ON_HOLD").ok).toBe(false);
   });
+
+  // Свободная смена статуса — только диспетчер/директор; водителю откат недоступен (24.07.2026).
+  it("водитель НЕ откатывает завершённую/отменённую (терминальные рёбер не имеют)", () => {
+    expect(checkTransition(driverOwn, "DONE", "IN_PROGRESS").ok).toBe(false);
+    expect(checkTransition(driverOwn, "DONE", "ASSIGNED").ok).toBe(false);
+    expect(checkTransition(driverOwn, "CANCELLED", "ASSIGNED").ok).toBe(false);
+  });
 });
 
 describe("статусная матрица — диспетчер/админ", () => {
@@ -84,11 +91,29 @@ describe("статусная матрица — диспетчер/админ", 
     expect(checkTransition(dispatcher, "ON_HOLD", "ASSIGNED").ok).toBe(true);
   });
 
-  it("не может в обход матрицы (нет такого ребра)", () => {
-    expect(checkTransition(dispatcher, "NEW", "DONE").ok).toBe(false);
-    expect(checkTransition(dispatcher, "IN_PROGRESS", "ASSIGNED").ok).toBe(false); // назад нельзя
-    expect(checkTransition(dispatcher, "DONE", "ASSIGNED").ok).toBe(false);
-    expect(checkTransition(admin, "CANCELLED", "NEW").ok).toBe(false);
+  // Свободная смена статуса (решение Артёма 24.07.2026, кейс №700): диспетчер/директор вручную
+  // выставляет любой актуальный статус — в т.ч. «назад» и откат из терминального.
+  it("свободно меняет статус вручную, включая откат из терминального", () => {
+    expect(checkTransition(dispatcher, "NEW", "DONE").ok).toBe(true);
+    expect(checkTransition(dispatcher, "IN_PROGRESS", "ASSIGNED").ok).toBe(true); // назад — можно
+    expect(checkTransition(dispatcher, "DONE", "ASSIGNED").ok).toBe(true);
+    expect(checkTransition(dispatcher, "DONE", "IN_PROGRESS").ok).toBe(true);
+    expect(checkTransition(dispatcher, "DONE", "CANCELLED").ok).toBe(true); // кейс №700
+    expect(checkTransition(admin, "CANCELLED", "NEW").ok).toBe(true);
+    expect(checkTransition(admin, "CANCELLED", "ASSIGNED").ok).toBe(true);
+  });
+
+  it("при откате из терминального требует причину (аудит)", () => {
+    expect(checkTransition(dispatcher, "DONE", "ASSIGNED")).toEqual({ ok: true, reasonRequired: true });
+    expect(checkTransition(dispatcher, "DONE", "IN_PROGRESS")).toEqual({ ok: true, reasonRequired: true });
+    expect(checkTransition(dispatcher, "CANCELLED", "NEW")).toEqual({ ok: true, reasonRequired: true });
+  });
+
+  it("вручную нельзя ставить legacy/транзитные статусы (не в MANUAL_STATUSES)", () => {
+    expect(checkTransition(dispatcher, "DONE", "ON_SITE").ok).toBe(false); // to legacy
+    expect(checkTransition(dispatcher, "ON_SITE", "DONE").ok).toBe(false); // from legacy
+    expect(checkTransition(dispatcher, "DONE", "RESCHEDULED").ok).toBe(false); // RESCHEDULED — транзитный
+    expect(checkTransition(dispatcher, "DONE", "DONE").ok).toBe(false); // пустой переход
   });
 });
 
@@ -103,11 +128,16 @@ describe("статусная матрица — legacy-статусы тупик
 });
 
 describe("статусная матрица — вспомогательное", () => {
-  it("reasonRequiredFor — обязательна только у отмены (пауза — по желанию)", () => {
+  it("reasonRequiredFor — обязательна у отмены и при откате из терминального (пауза — по желанию)", () => {
     expect(reasonRequiredFor("ON_HOLD")).toBe(false);
     expect(reasonRequiredFor("CANCELLED")).toBe(true);
     expect(reasonRequiredFor("IN_PROGRESS")).toBe(false);
     expect(reasonRequiredFor("RESCHEDULED")).toBe(false);
+    // Откат из завершённой/отменённой (from) — причина обязательна для аудита.
+    expect(reasonRequiredFor("ASSIGNED", "DONE")).toBe(true);
+    expect(reasonRequiredFor("IN_PROGRESS", "DONE")).toBe(true);
+    expect(reasonRequiredFor("NEW", "CANCELLED")).toBe(true);
+    expect(reasonRequiredFor("ASSIGNED", "IN_PROGRESS")).toBe(false); // обычная смена — без причины
   });
 
   it("isTerminal", () => {

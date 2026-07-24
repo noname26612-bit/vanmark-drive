@@ -9,6 +9,7 @@ import { Phone, Navigation, Camera, X, FileText, Banknote } from "lucide-react";
 import { fetcher, apiSend, apiUpload } from "@/lib/fetcher";
 import { compressImage } from "@/lib/image-compress";
 import { actState } from "@/domain/act";
+import { MANUAL_STATUSES } from "@/domain/task-status";
 import { formatMinutes } from "@/domain/capacity";
 import { PRICING_ENABLED } from "@/lib/features";
 import type { DriverDTO, TaskDetailDTO, TaskTypeDTO } from "@/lib/task-dto";
@@ -62,7 +63,7 @@ const KIND_LABEL: Record<string, string> = {
   worksheet_unsigned: "Акт",
 };
 
-type ActionKind = "hold" | "cancel" | "reschedule" | null;
+type ActionKind = "hold" | "cancel" | "reschedule" | "status" | null;
 
 export function TaskDetailClient({
   taskId,
@@ -78,6 +79,7 @@ export function TaskDetailClient({
 
   const [action, setAction] = useState<ActionKind>(null);
   const [reason, setReason] = useState("");
+  const [statusTarget, setStatusTarget] = useState<TaskStatus | "">(""); // цель «Изменить статус» (п.4)
   const [newDate, setNewDate] = useState("");
   const [comment, setComment] = useState("");
   const [editOpen, setEditOpen] = useState(false);
@@ -145,6 +147,23 @@ export function TaskDetailClient({
 
   const transition = (toStatus: TaskStatus, r?: string) =>
     run(() => apiSend(key + "/transition", "POST", { toStatus, reason: r }));
+  // Свободная смена статуса (п.4, решение Артёма 24.07.2026): диспетчер/директор выставляет любой
+  // актуальный статус, в т.ч. откат ошибочного «Завершено» (кейс №700). Причина обязательна при
+  // откате из завершённой/отменённой и при отмене — совпадает с серверным reasonRequiredFor.
+  const manualStatuses = [...MANUAL_STATUSES].filter((s) => s !== task.status);
+  const statusReasonRequired =
+    statusTarget !== "" &&
+    (task.status === "DONE" || task.status === "CANCELLED" || statusTarget === "CANCELLED");
+  const openStatusModal = () => {
+    setStatusTarget("");
+    setReason("");
+    setActionError(null);
+    setAction("status");
+  };
+  const applyStatusChange = () => {
+    if (statusTarget === "") return;
+    void transition(statusTarget, reason.trim() || undefined);
+  };
   const assign = (assigneeId: string) =>
     run(() => apiSend(key, "PATCH", { op: "assign", assigneeId: assigneeId || null }));
   // Напарник (20.07): правка пары идёт через op:edit (единая точка записи updateTaskFields).
@@ -393,6 +412,9 @@ export function TaskDetailClient({
           <Button variant="secondary" disabled={busy} onClick={() => setEditOpen(true)}>
             Редактировать
           </Button>
+          <Button variant="secondary" disabled={busy} onClick={openStatusModal}>
+            Изменить статус
+          </Button>
           <Button variant="danger" disabled={busy} onClick={() => setAction("cancel")}>
             Отменить
           </Button>
@@ -400,9 +422,13 @@ export function TaskDetailClient({
       ) : (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           {/* Редактирование закрытых заявок (решение Артёма 02.07.2026): диспетчер/руководитель/админ
-              правят поля завершённой/отменённой заявки. Смена исполнителя и даты недоступна. */}
+              правят поля завершённой/отменённой заявки. Смена исполнителя и даты недоступна.
+              «Изменить статус» (24.07.2026, кейс №700): откат ошибочного «Завершено»/«Отменено». */}
           <Button variant="secondary" disabled={busy} onClick={() => setEditOpen(true)}>
             Редактировать
+          </Button>
+          <Button variant="secondary" disabled={busy} onClick={openStatusModal}>
+            Изменить статус
           </Button>
           <span className="self-center text-sm text-neutral-400">
             {task.status === "CANCELLED" ? "Заявка отменена" : "Заявка завершена"} — доступно редактирование.
@@ -712,6 +738,49 @@ export function TaskDetailClient({
           {actionError ? <p className="text-sm text-red-600">{actionError}</p> : null}
           <Button disabled={busy || !newDate} onClick={reschedule} className="self-start">
             Перенести
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Изменить статус вручную (п.4, кейс №700): диспетчер/директор выставляет любой актуальный
+          статус, включая откат ошибочного «Завершено»/«Отменено». Причина обязательна при откате/отмене
+          (сервер: reasonRequiredFor); «отпечатки» завершения снимает transitionTask. */}
+      <Modal open={action === "status"} onClose={() => setAction(null)} title="Изменить статус">
+        <div className="flex flex-col gap-3">
+          <Field label="Новый статус" required>
+            <Select
+              data-testid="status-target"
+              autoFocus
+              value={statusTarget}
+              onChange={(e) => setStatusTarget(e.target.value as TaskStatus)}
+            >
+              <option value="">— выберите статус —</option>
+              {manualStatuses.map((s) => (
+                <option key={s} value={s}>
+                  {STATUS_LABEL[s]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field
+            label={statusReasonRequired ? "Причина" : "Причина (по желанию)"}
+            required={statusReasonRequired}
+          >
+            <Textarea
+              rows={3}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Напр.: водитель ошибочно завершил — по факту заявка отменилась"
+            />
+          </Field>
+          {actionError ? <p className="text-sm text-red-600">{actionError}</p> : null}
+          <Button
+            data-testid="status-apply"
+            disabled={busy || statusTarget === "" || (statusReasonRequired && !reason.trim())}
+            onClick={applyStatusChange}
+            className="self-start"
+          >
+            Применить
           </Button>
         </div>
       </Modal>
