@@ -118,7 +118,7 @@ test("доска: блок «Требуют внимания» показыва�
   await dialog.locator('[data-testid="create-contact-phone"]').fill("+70000000000");
   await dialog.locator('[data-testid="create-date"]').fill(localDate(1));
   await dialog.locator('[data-testid="create-date"]').press("Enter");
-  await dialog.getByRole("button", { name: "Показать все поля" }).click();
+  await dialog.getByRole("button", { name: /Дополнительно/ }).click();
   await dialog.locator('[data-testid="create-pass"]').selectOption({ label: "Нужен пропуск!" });
   await dialog.getByRole("button", { name: "Создать", exact: true }).click();
   await expect(dialog).toBeHidden();

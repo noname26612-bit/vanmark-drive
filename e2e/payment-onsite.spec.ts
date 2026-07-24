@@ -105,7 +105,7 @@ test("тумблер не теряет «через офис» при выклю
   await milena.goto("/tasks");
   await milena.getByRole("button", { name: "Задача" }).click();
   // Открываем доп.поля и выбираем «Через офис» селектом.
-  await milena.getByRole("button", { name: "Показать все поля" }).click();
+  await milena.getByRole("button", { name: /Дополнительно/ }).click();
   const paySelect = milena
     .locator("label", { hasText: "Оплата" })
     .locator("select")

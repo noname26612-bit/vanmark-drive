@@ -224,235 +224,242 @@ export function CreateTaskModal({
   return (
     <Modal open={open} onClose={handleMinimize} title={isEdit ? "Редактировать задачу" : "Новая задача"} wide>
       <form
-        className="flex flex-col gap-3"
+        className="flex flex-col gap-4"
         onSubmit={(e) => {
           e.preventDefault();
           void submit(false);
         }}
       >
-        <Field label="Тип" required>
-          <Select
-            data-testid="create-type"
-            value={form.typeId}
-            onChange={(e) => onTypeChange(e.target.value)}
-            required
-          >
-            {types.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
+        {/* Секции формы (дизайн 24.07.2026, вариант B): поля сгруппированы по смыслу —
+            суть → клиент → когда и кто → оплата и документы → дополнительно. */}
+        <FormSection title="Суть заявки">
+          <Field label="Тип" required>
+            <Select
+              data-testid="create-type"
+              value={form.typeId}
+              onChange={(e) => onTypeChange(e.target.value)}
+              required
+            >
+              {types.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
 
-        <Field label="Название / суть" required>
-          <Input
-            autoFocus
-            value={form.title}
-            onChange={(e) => set("title", e.target.value)}
-            placeholder="ЛБМ 200 + нож, 0,7 мм"
-            required
-          />
-        </Field>
+          <Field label="Название / суть" required>
+            <Input
+              autoFocus
+              value={form.title}
+              onChange={(e) => set("title", e.target.value)}
+              placeholder="ЛБМ 200 + нож, 0,7 мм"
+              required
+            />
+          </Field>
 
-        <Field label="Адрес" required>
-          <Input
-            value={form.address}
-            onChange={(e) => set("address", e.target.value)}
-            placeholder="Москва, ул. ..., д. ..."
-            required
-          />
-        </Field>
+          <Field label="Адрес" required>
+            <Input
+              value={form.address}
+              onChange={(e) => set("address", e.target.value)}
+              placeholder="Москва, ул. ..., д. ..."
+              required
+            />
+          </Field>
+        </FormSection>
 
         {/* Организация, контактное лицо, телефон — НЕобязательны (решение Артёма 24.07.2026: быстрая
             постановка заявки). Обязательны только Тип, Название, Адрес. */}
-        <Field label="Организация">
-          <Input
-            data-testid="create-org"
-            value={form.orgName}
-            onChange={(e) => set("orgName", e.target.value)}
-            placeholder="ООО «...»"
-          />
-        </Field>
-
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Контактное лицо">
+        <FormSection title="Клиент · по желанию">
+          <Field label="Организация">
             <Input
-              data-testid="create-contact-name"
-              value={form.contactName}
-              onChange={(e) => set("contactName", e.target.value)}
-              placeholder="Имя"
+              data-testid="create-org"
+              value={form.orgName}
+              onChange={(e) => set("orgName", e.target.value)}
+              placeholder="ООО «...»"
             />
           </Field>
-          <Field label="Телефон">
-            <Input
-              data-testid="create-contact-phone"
-              type="tel"
-              inputMode="tel"
-              value={form.contactPhone}
-              onChange={(e) => set("contactPhone", e.target.value)}
-              placeholder="+7 ..."
-            />
-          </Field>
-        </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Контактное лицо">
+              <Input
+                data-testid="create-contact-name"
+                value={form.contactName}
+                onChange={(e) => set("contactName", e.target.value)}
+                placeholder="Имя"
+              />
+            </Field>
+            <Field label="Телефон">
+              <Input
+                data-testid="create-contact-phone"
+                type="tel"
+                inputMode="tel"
+                value={form.contactPhone}
+                onChange={(e) => set("contactPhone", e.target.value)}
+                placeholder="+7 ..."
+              />
+            </Field>
+          </div>
+        </FormSection>
 
         {!isTerminalEdit ? (
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Дата">
-            <DateField
-              testId="create-date"
-              value={form.scheduledDate}
-              disabled={noDate}
-              onChange={(v) => set("scheduledDate", v)}
-            />
-            {!isEdit ? (
-              <label className="mt-1.5 flex items-center gap-2 text-sm text-neutral-600">
-                <input
-                  type="checkbox"
-                  data-testid="create-no-date"
-                  checked={noDate}
-                  onChange={(e) => {
-                    const on = e.target.checked;
-                    setNoDate(on);
-                    // Снимаем дату при включении; при выключении возвращаем дефолт (обычно — сегодня).
-                    set("scheduledDate", on ? "" : defaultDate);
-                  }}
-                  className="h-4 w-4"
+          <FormSection title="Когда и кто">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Дата">
+                <DateField
+                  testId="create-date"
+                  value={form.scheduledDate}
+                  disabled={noDate}
+                  onChange={(v) => set("scheduledDate", v)}
                 />
-                Не указывать дату (пул «Без даты»)
-              </label>
-            ) : null}
-          </Field>
-          {!isEdit ? (
-            <Field label="Исполнитель">
-              <Select
-                data-testid="create-assignee"
-                value={form.assigneeId}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  // Смена/снятие ответственного чинит пару: напарник не может совпасть или остаться без ведущего.
-                  setForm((f) => ({
-                    ...f,
-                    assigneeId: v,
-                    coDriverId: !v || f.coDriverId === v ? "" : f.coDriverId,
-                  }));
-                }}
-              >
-                <option value="">Не назначено</option>
-                {drivers.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          ) : null}
-          {form.assigneeId && (!isEdit || !isTerminalEdit) ? (
-            <Field label="Напарник (не обязательно)">
-              <Select
-                data-testid="create-co-driver"
-                value={form.coDriverId}
-                onChange={(e) => set("coDriverId", e.target.value)}
-              >
-                <option value="">— нет —</option>
-                {drivers
-                  .filter((d) => d.id !== form.assigneeId)
-                  .map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
-              </Select>
-            </Field>
-          ) : null}
-        </div>
-        ) : null}
-
-        {assigneeIsExternal ? (
-          <Field label="Стоимость поездки, ₽ (внешний перевозчик)">
-            <Input
-              data-testid="create-carrier-cost"
-              type="number"
-              inputMode="numeric"
-              min={0}
-              value={form.carrierCost}
-              onChange={(e) => set("carrierCost", e.target.value)}
-              placeholder="Сколько платим за эту поездку"
-            />
-            <p className="mt-1 text-xs text-neutral-500">Затраты компании — водителям не видна.</p>
-          </Field>
-        ) : null}
-
-        <div className="rounded-lg border border-neutral-200 p-3">
-          <label className="flex items-center gap-2 text-sm font-medium text-neutral-800">
-            <input
-              type="checkbox"
-              data-testid="create-requires-act"
-              checked={form.requiresAct}
-              onChange={(e) => set("requiresAct", e.target.checked)}
-              className="h-4 w-4"
-            />
-            Нужен подписанный акт
-          </label>
-          {typeNeedsAct && !form.requiresAct ? (
-            <div className="mt-2">
-              <Input
-                data-testid="create-act-waived-note"
-                value={form.actWaivedNote}
-                onChange={(e) => set("actWaivedNote", e.target.value)}
-                placeholder="Почему без акта (напр. «подпишут по ЭДО»)"
-              />
+                {!isEdit ? (
+                  <label className="mt-1.5 flex items-center gap-2 text-sm text-neutral-600">
+                    <input
+                      type="checkbox"
+                      data-testid="create-no-date"
+                      checked={noDate}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        setNoDate(on);
+                        // Снимаем дату при включении; при выключении возвращаем дефолт (обычно — сегодня).
+                        set("scheduledDate", on ? "" : defaultDate);
+                      }}
+                      className="h-4 w-4"
+                    />
+                    Не указывать дату (пул «Без даты»)
+                  </label>
+                ) : null}
+              </Field>
+              {!isEdit ? (
+                <Field label="Исполнитель">
+                  <Select
+                    data-testid="create-assignee"
+                    value={form.assigneeId}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      // Смена/снятие ответственного чинит пару: напарник не может совпасть или остаться без ведущего.
+                      setForm((f) => ({
+                        ...f,
+                        assigneeId: v,
+                        coDriverId: !v || f.coDriverId === v ? "" : f.coDriverId,
+                      }));
+                    }}
+                  >
+                    <option value="">Не назначено</option>
+                    {drivers.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              ) : null}
+              {form.assigneeId && (!isEdit || !isTerminalEdit) ? (
+                <Field label="Напарник (не обязательно)">
+                  <Select
+                    data-testid="create-co-driver"
+                    value={form.coDriverId}
+                    onChange={(e) => set("coDriverId", e.target.value)}
+                  >
+                    <option value="">— нет —</option>
+                    {drivers
+                      .filter((d) => d.id !== form.assigneeId)
+                      .map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}
+                        </option>
+                      ))}
+                  </Select>
+                </Field>
+              ) : null}
             </div>
-          ) : null}
-        </div>
+          </FormSection>
+        ) : null}
 
         {/* Деньги на точке — всегда на виду (решение Артёма 17.07 по заявке №657: раньше поля оплаты
             прятались под «Показать все поля», и водитель узнавал о деньгах только на словах). */}
-        <div className="rounded-lg border border-neutral-200 p-3">
-          <label className="flex items-center gap-2 text-sm font-medium text-neutral-800">
-            <input
-              type="checkbox"
-              data-testid="create-onsite-toggle"
-              checked={onSiteMoney}
-              onChange={(e) => toggleOnSite(e.target.checked)}
-              className="h-4 w-4"
-            />
-            Взять деньги на точке
-          </label>
-          {onSiteMoney ? (
-            <div className="mt-2 grid grid-cols-2 gap-3">
-              <Field label="Сумма, ₽">
-                <Input
-                  data-testid="create-onsite-amount"
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  value={form.paymentAmount}
-                  onChange={(e) => set("paymentAmount", e.target.value)}
-                />
-              </Field>
-              <Field label="Примечание">
-                <Input
-                  data-testid="create-onsite-note"
-                  value={form.paymentNote}
-                  onChange={(e) => set("paymentNote", e.target.value)}
-                  placeholder="наличными при выгрузке"
-                />
-              </Field>
-            </div>
+        <FormSection title="Оплата и документы">
+          {assigneeIsExternal ? (
+            <Field label="Стоимость поездки, ₽ (внешний перевозчик)">
+              <Input
+                data-testid="create-carrier-cost"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                value={form.carrierCost}
+                onChange={(e) => set("carrierCost", e.target.value)}
+                placeholder="Сколько платим за эту поездку"
+              />
+              <p className="mt-1 text-xs text-neutral-500">Затраты компании — водителям не видна.</p>
+            </Field>
           ) : null}
-        </div>
+          <div>
+            <label className="flex items-center gap-2 text-sm font-medium text-neutral-800">
+              <input
+                type="checkbox"
+                data-testid="create-requires-act"
+                checked={form.requiresAct}
+                onChange={(e) => set("requiresAct", e.target.checked)}
+                className="h-4 w-4"
+              />
+              Нужен подписанный акт
+            </label>
+            {typeNeedsAct && !form.requiresAct ? (
+              <div className="mt-2">
+                <Input
+                  data-testid="create-act-waived-note"
+                  value={form.actWaivedNote}
+                  onChange={(e) => set("actWaivedNote", e.target.value)}
+                  placeholder="Почему без акта (напр. «подпишут по ЭДО»)"
+                />
+              </div>
+            ) : null}
+          </div>
+          <div className="border-t border-neutral-100 pt-3">
+            <label className="flex items-center gap-2 text-sm font-medium text-neutral-800">
+              <input
+                type="checkbox"
+                data-testid="create-onsite-toggle"
+                checked={onSiteMoney}
+                onChange={(e) => toggleOnSite(e.target.checked)}
+                className="h-4 w-4"
+              />
+              Взять деньги на точке
+            </label>
+            {onSiteMoney ? (
+              <div className="mt-2 grid grid-cols-2 gap-3">
+                <Field label="Сумма, ₽">
+                  <Input
+                    data-testid="create-onsite-amount"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    value={form.paymentAmount}
+                    onChange={(e) => set("paymentAmount", e.target.value)}
+                  />
+                </Field>
+                <Field label="Примечание">
+                  <Input
+                    data-testid="create-onsite-note"
+                    value={form.paymentNote}
+                    onChange={(e) => set("paymentNote", e.target.value)}
+                    placeholder="наличными при выгрузке"
+                  />
+                </Field>
+              </div>
+            ) : null}
+          </div>
+        </FormSection>
 
         <button
           type="button"
           onClick={() => setShowAll((v) => !v)}
           className="self-start text-sm text-neutral-500 underline-offset-2 hover:underline"
         >
-          {showAll ? "Скрыть доп. поля" : "Показать все поля"}
+          {showAll ? "▾ Скрыть дополнительные поля" : "▸ Дополнительно (оборудование, окно времени, пропуск…)"}
         </button>
 
         {showAll ? (
-          <div className="flex flex-col gap-3 border-t border-neutral-100 pt-3">
+          <FormSection title="Дополнительно">
             <Field label="Оборудование">
               <Input value={form.equipment} onChange={(e) => set("equipment", e.target.value)} />
             </Field>
@@ -528,12 +535,12 @@ export function CreateTaskModal({
               />
               Срочная задача
             </label>
-          </div>
+          </FormSection>
         ) : null}
 
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
 
-        <div className="mt-2 flex flex-wrap gap-2">
+        <div className="mt-1 flex flex-wrap gap-2">
           <Button type="submit" disabled={busy}>
             {busy ? "Сохранение…" : isEdit ? "Сохранить" : "Создать"}
           </Button>
@@ -548,5 +555,15 @@ export function CreateTaskModal({
         </div>
       </form>
     </Modal>
+  );
+}
+
+// Секция формы (дизайн 24.07.2026, вариант B): рамка + подпись-эйрбрау. Единый вид всех групп полей.
+function FormSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-xl border border-neutral-200 p-3.5">
+      <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-slate-500">{title}</h3>
+      <div className="flex flex-col gap-3">{children}</div>
+    </section>
   );
 }

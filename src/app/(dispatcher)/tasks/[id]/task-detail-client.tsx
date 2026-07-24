@@ -16,6 +16,7 @@ import type { DriverDTO, TaskDetailDTO, TaskTypeDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
 import {
   STATUS_LABEL,
+  STATUS_BAR,
   PASS_BADGE,
   PASS_LABEL,
   PAYMENT_LABEL,
@@ -62,6 +63,18 @@ const KIND_LABEL: Record<string, string> = {
   worksheet_signed: "Акт",
   worksheet_unsigned: "Акт",
 };
+
+// Цвет маркера события в ленте истории (дизайн 24.07.2026, вариант B): по целевому статусу перехода,
+// прочие события (создание, назначение, перенос, комментарий) — нейтральный графит.
+const EVENT_DOT: Partial<Record<TaskStatus, string>> = {
+  DONE: "bg-green-600",
+  IN_PROGRESS: "bg-blue-600",
+  ON_HOLD: "bg-amber-500",
+  CANCELLED: "bg-red-600",
+};
+function eventDot(toStatus: TaskStatus | null): string {
+  return (toStatus && EVENT_DOT[toStatus]) || "bg-slate-300";
+}
 
 type ActionKind = "hold" | "cancel" | "reschedule" | "status" | null;
 
@@ -257,15 +270,27 @@ export function TaskDetailClient({
         ← К доске
       </Link>
 
-      <div className="mt-2 flex flex-wrap items-center gap-3">
-        <TypeIcon name={task.type.icon} className="h-6 w-6 text-neutral-500" />
-        <h1 className="text-xl font-semibold text-neutral-900">
-          №{task.number} · {task.title}
-        </h1>
-        <StatusBadge status={task.status} />
-        {task.priority ? <Badge className="bg-red-100 text-red-700">Срочно</Badge> : null}
+      {/* Шапка-герой (дизайн 24.07.2026, вариант B): полоса статуса слева, крупный заголовок,
+          тип/организация/адрес подзаголовком, статус-бейдж справа. */}
+      <div className="relative mt-2 overflow-hidden rounded-xl border border-neutral-200 bg-white p-4 pl-5">
+        <span className={`absolute inset-y-0 left-0 w-1 ${STATUS_BAR[task.status]}`} />
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-500">
+              <TypeIcon name={task.type.icon} className="h-4 w-4" />№{task.number} · {task.type.name}
+            </div>
+            <h1 className="mt-1 text-xl font-semibold text-neutral-900">{task.title}</h1>
+            <p className="mt-1 truncate text-sm text-neutral-500">
+              {task.orgName ? `${task.orgName} · ` : ""}
+              {task.address}
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-col items-end gap-1.5">
+            <StatusBadge status={task.status} />
+            {task.priority ? <Badge className="bg-red-100 text-red-700">Срочно</Badge> : null}
+          </div>
+        </div>
       </div>
-      <p className="mt-1 text-sm text-neutral-500">{task.type.name}</p>
 
       {/* Поля */}
       <div className="mt-4 grid grid-cols-1 gap-x-6 gap-y-2 rounded-xl border border-neutral-200 bg-white p-4 sm:grid-cols-2">
@@ -355,9 +380,11 @@ export function TaskDetailClient({
         />
       ) : null}
 
-      {/* Действия */}
+      {/* Действия — панель (дизайн 24.07.2026, вариант B) */}
       {!isTerminal ? (
-        <div className="mt-4 flex flex-wrap items-center gap-2">
+        <section className="mt-4 rounded-xl border border-neutral-200 bg-white p-3">
+          <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Действия</h2>
+          <div className="flex flex-wrap items-center gap-2">
           {forward ? (
             <Button disabled={busy} onClick={() => transition(forward.to)}>
               {forward.label} →
@@ -418,9 +445,12 @@ export function TaskDetailClient({
           <Button variant="danger" disabled={busy} onClick={() => setAction("cancel")}>
             Отменить
           </Button>
-        </div>
+          </div>
+        </section>
       ) : (
-        <div className="mt-4 flex flex-wrap items-center gap-2">
+        <section className="mt-4 rounded-xl border border-neutral-200 bg-white p-3">
+          <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Действия</h2>
+          <div className="flex flex-wrap items-center gap-2">
           {/* Редактирование закрытых заявок (решение Артёма 02.07.2026): диспетчер/руководитель/админ
               правят поля завершённой/отменённой заявки. Смена исполнителя и даты недоступна.
               «Изменить статус» (24.07.2026, кейс №700): откат ошибочного «Завершено»/«Отменено». */}
@@ -433,7 +463,8 @@ export function TaskDetailClient({
           <span className="self-center text-sm text-neutral-400">
             {task.status === "CANCELLED" ? "Заявка отменена" : "Заявка завершена"} — доступно редактирование.
           </span>
-        </div>
+          </div>
+        </section>
       )}
       {actionError ? <p className="mt-2 text-sm text-red-600">{actionError}</p> : null}
 
@@ -668,11 +699,14 @@ export function TaskDetailClient({
         />
       </section>
 
-      {/* История */}
+      {/* История — лента с маркерами по типу события (дизайн 24.07.2026, вариант B) */}
       <h2 className="mt-6 mb-2 text-sm font-semibold text-neutral-700">История</h2>
-      <ol className="space-y-2 border-l-2 border-neutral-200 pl-4">
+      <ol className="ml-1 space-y-2.5 border-l-2 border-neutral-200 pl-4">
         {task.events.map((ev) => (
-          <li key={ev.id} className="text-sm">
+          <li key={ev.id} className="relative text-sm">
+            <span
+              className={`absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full ring-2 ring-white ${eventDot(ev.toStatus)}`}
+            />
             <span className="text-neutral-400">{formatDateTime(ev.at)}</span>{" "}
             <span className="font-medium text-neutral-700">{ev.actor.name}</span>{" "}
             <span className="text-neutral-500">· {KIND_LABEL[ev.kind] ?? ev.kind}</span>

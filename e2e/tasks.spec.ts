@@ -35,7 +35,7 @@ test("диспетчер: создание → назначение → пере
   await expect(page.getByRole("link", { name: title })).toBeVisible();
   await page.getByRole("link", { name: title }).click();
   await page.waitForURL(/\/tasks\/[0-9a-f-]+$/);
-  await expect(page.getByRole("heading", { name: /№\d+/ })).toBeVisible();
+  await expect(page.getByText(/№\d+ ·/).first()).toBeVisible();
 
   // назначение исполнителя (плашку «Назначена» не показываем — проверяем сам факт выбора)
   await page.locator('[data-testid="card-assignee"]').selectOption({ label: "Алексей Писарев" });
@@ -136,5 +136,5 @@ test("«Все задачи»: клик по любой части строки 
   // Клик по ячейке адреса (обычный текст, не ссылка) — раньше не открывал; теперь строка кликабельна.
   await row.getByText("Адрес клика e2e").click();
   await page.waitForURL(/\/tasks\/[0-9a-f-]+$/);
-  await expect(page.getByRole("heading", { name: /№\d+/ })).toBeVisible();
+  await expect(page.getByText(/№\d+ ·/).first()).toBeVisible();
 });
