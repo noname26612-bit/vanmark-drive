@@ -280,6 +280,14 @@ const idbGetKey = (db, store, key) => idbTx(db, store, "readonly", (s) => s.get(
 const idbDelKey = (db, store, key) => idbTx(db, store, "readwrite", (s) => s.delete(key));
 const idbPutKey = (db, store, key, val) => idbTx(db, store, "readwrite", (s) => s.put(val, key));
 
+// Потолки ожидания сети при досылке (инцидент «мёртвая кнопка», 31.07): «висящий» fetch без таймаута
+// держал Web Lock "vanmark-queue" навсегда — и SW-, и вкладочная досылка вставали до перезагрузки.
+// Blob (фото/акт) щедрее вкладки: фон, UX-цены нет. Нет AbortSignal.timeout → без таймаута, как раньше.
+function actionTimeoutSignal(a) {
+  if (typeof AbortSignal === "undefined" || !("timeout" in AbortSignal)) return undefined;
+  return AbortSignal.timeout(a.blobId ? 120000 : 20000);
+}
+
 // Отправка одного действия: JSON-мутация или multipart (фото/акт из blob). Возвращает Response
 // (в т.ч. синтетический 422 при потерянном blob — чтобы пометилось конфликтом, как в send.ts).
 async function sendQueuedAction(db, a) {
@@ -295,12 +303,13 @@ async function sendQueuedAction(db, a) {
     const form = new FormData();
     form.append("file", rec.blob, rec.name);
     if (a.blobMeta && a.blobMeta.kind === "DOCUMENT") form.append("kind", "DOCUMENT");
-    return fetch(a.url, { method: "POST", body: form, headers });
+    return fetch(a.url, { method: "POST", body: form, headers, signal: actionTimeoutSignal(a) });
   }
   return fetch(a.url, {
     method: a.method,
     headers: Object.assign({ "Content-Type": "application/json" }, headers),
     body: a.bodyJson === undefined ? undefined : JSON.stringify(a.bodyJson),
+    signal: actionTimeoutSignal(a),
   });
 }
 

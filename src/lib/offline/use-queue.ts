@@ -45,6 +45,15 @@ export function useOfflineSync(): void {
     const onOnline = () => void tick();
     window.addEventListener("online", onOnline);
     const interval = setInterval(() => void tick(), 15_000);
+    // Новое действие в очереди при живой сети должно уехать сразу, а не ждать 15-секундный тик:
+    // с гейтом «непустая очередь → в хвост» (send.ts) даже онлайн-действия идут через очередь.
+    // Дебаунс гасит каскад событий одного прогона; повторный вход дополнительно гасится флагом
+    // running в processQueue. Прогон по пустой очереди дёшев (один запрос к IndexedDB).
+    let debounce: ReturnType<typeof setTimeout> | undefined;
+    const offQueueChanged = onQueueChanged(() => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => void tick(), 500);
+    });
     // Background Sync досылает очередь из SW при свёрнутом приложении (O11). Вернувшись на экран,
     // вкладка узнаёт об этом сообщением queue-replayed: SW менял IndexedDB вне этой вкладки, поэтому
     // сами перечитываем очередь (бейджи) и обновляем данные SWR.
@@ -59,6 +68,8 @@ export function useOfflineSync(): void {
       alive = false;
       window.removeEventListener("online", onOnline);
       clearInterval(interval);
+      clearTimeout(debounce);
+      offQueueChanged();
       navigator.serviceWorker?.removeEventListener("message", onSwMessage);
     };
   }, [mutate]);

@@ -3,11 +3,31 @@
 // Idempotency-Key на действие — сервер применит его ровно один раз даже при повторной досылке.
 import { apiSend, apiUpload, ApiError } from "@/lib/fetcher";
 import { idbGet, idbPut, STORE_BLOBS } from "./db";
-import { putQueued } from "./queue";
+import { listQueue, putQueued } from "./queue";
 import { newActionId } from "./id";
 import type { QueuedAction, QueuedActionKind } from "./types";
 
 type BlobRecord = { blob: Blob; name: string; type: string };
+
+/**
+ * В очереди есть неотправленные действия? Тогда новое действие обязано встать в ХВОСТ, а не лететь
+ * онлайн напрямую: прямая отправка обгоняла FIFO (застрявший «В работу» ещё в очереди, а «Завершить»
+ * уже на сервере при статусе ASSIGNED → 409 FORBIDDEN_TRANSITION). Конфликтные записи хвостом не
+ * считаются — они ждут разбора и не будут досланы.
+ */
+async function queueBusy(): Promise<boolean> {
+  return (await listQueue()).some((a) => a.status !== "conflict");
+}
+
+/**
+ * Стоит ли класть онлайн-неудачу в очередь. HTTP 500 — детерминированная ошибка приложения: тихая
+ * постановка в очередь рисовала оптимистичный DONE, который через ~75 с откатывался (SERVER_REJECTED)
+ * без объяснений. Решение Артёма 31.07: онлайн-500 показываем сразу, в очередь НЕ кладём. Обрыв
+ * сети/таймаут (status 0) и инфраструктурные 5xx (502/503/504 — деплой, прокси) — в очередь.
+ */
+function shouldQueueOnlineFailure(e: unknown): boolean {
+  return e instanceof ApiError && e.retryable && e.status !== 500;
+}
 
 // Монотонный порядковый номер постановки (O8): голый Date.now() при двух действиях в одну
 // миллисекунду давал равный seq, и FIFO-порядок досылки становился неопределённым. Гарантируем строгий
@@ -63,7 +83,8 @@ export async function enqueueOrSend(params: EnqueueParams): Promise<{ queued: bo
     ...params,
   };
 
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  const offline = typeof navigator !== "undefined" && !navigator.onLine;
+  if (offline || (await queueBusy())) {
     await putQueued(action);
     return { queued: true };
   }
@@ -71,11 +92,11 @@ export async function enqueueOrSend(params: EnqueueParams): Promise<{ queued: bo
     await sendAction(action);
     return { queued: false };
   } catch (e) {
-    if (e instanceof ApiError && e.retryable) {
+    if (shouldQueueOnlineFailure(e)) {
       await putQueued(action); // нет сети / сервер лёг — в очередь, досошлём позже
       return { queued: true };
     }
-    throw e; // доменная ошибка — наверх (откат оптимистики, показ причины)
+    throw e; // доменная ошибка или онлайн-500 — наверх (откат оптимистики, показ причины)
   }
 }
 
@@ -92,7 +113,7 @@ export async function enqueuePhoto(params: {
   kind: "PHOTO" | "DOCUMENT";
 }): Promise<{ queued: boolean }> {
   const occurredAt = new Date().toISOString();
-  if (typeof navigator === "undefined" || navigator.onLine) {
+  if ((typeof navigator === "undefined" || navigator.onLine) && !(await queueBusy())) {
     try {
       const form = new FormData();
       form.append("file", params.blob, params.fileName);
@@ -100,7 +121,7 @@ export async function enqueuePhoto(params: {
       await apiUpload(params.url, form, { "Idempotency-Key": newActionId(), "X-Occurred-At": occurredAt });
       return { queued: false };
     } catch (e) {
-      if (!(e instanceof ApiError && e.retryable)) throw e; // доменная ошибка — наверх
+      if (!shouldQueueOnlineFailure(e)) throw e; // доменная ошибка или онлайн-500 — наверх
       // нет сети / сервер лёг — уходим в офлайн-ветку (в очередь)
     }
   }

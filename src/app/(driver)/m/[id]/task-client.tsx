@@ -13,7 +13,6 @@ import { enqueueOrSend, enqueuePhoto } from "@/lib/offline/send";
 import { usePendingActions } from "@/lib/offline/use-queue";
 import { overlayStatus, overlayShift, currentShift } from "@/lib/offline/overlay";
 import { ConflictCenter } from "../../conflict-center";
-import { getPositionOnce } from "@/lib/geo";
 import { compressImage } from "@/lib/image-compress";
 import type { TaskDetailDTO, WorkCatalogItemDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
@@ -136,6 +135,16 @@ export function DriverTaskClient({
   // Полноэкранный просмотр фото (URL вложения) — закрытие крестиком/свайпом/«назад».
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Мгновенное подтверждение «действие ушло в очередь» — иначе постановка в очередь неотличима
+  // от «кнопка не сработала» (жалобы 31.07). Гаснет само; ref таймера — чтобы не мигало при серии.
+  const [queuedNotice, setQueuedNotice] = useState(false);
+  const queuedNoticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  function showQueuedNotice() {
+    clearTimeout(queuedNoticeTimer.current);
+    setQueuedNotice(true);
+    queuedNoticeTimer.current = setTimeout(() => setQueuedNotice(false), 4000);
+  }
+  useEffect(() => () => clearTimeout(queuedNoticeTimer.current), []);
   const [holdOpen, setHoldOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [comment, setComment] = useState("");
@@ -170,9 +179,13 @@ export function DriverTaskClient({
   const t = task;
   // Статус с учётом неотправленных переходов из очереди (оптимистично, пока действие не дошло).
   const displayStatus = overlayStatus(t.status, pending);
-  const pendingCount = pending.filter((a) => a.status === "pending" || a.status === "syncing").length;
-  const pendingPhotos = pending.filter((a) => a.kind === "attachment" && a.blobMeta?.kind === "PHOTO").length;
-  const pendingDocs = pending.filter((a) => a.kind === "attachment" && a.blobMeta?.kind === "DOCUMENT").length;
+  // Конфликтные записи (status === "conflict") — НЕ «в пути»: они ждут разбора и не будут досланы.
+  // Считать их «ожидающими» опасно: конфликтный акт скрывал блок «причина без акта», и сервер бил
+  // ACT_REASON_REQUIRED без видимого водителю выхода (инцидент «мёртвая кнопка», 31.07).
+  const inFlight = pending.filter((a) => a.status === "pending" || a.status === "syncing");
+  const pendingCount = inFlight.length;
+  const pendingPhotos = inFlight.filter((a) => a.kind === "attachment" && a.blobMeta?.kind === "PHOTO").length;
+  const pendingDocs = inFlight.filter((a) => a.kind === "attachment" && a.blobMeta?.kind === "DOCUMENT").length;
 
   // Роль в паре (20.07, PRD §4): напарник видит всё и шлёт фото/комментарии, но статусы,
   // паузу и ведомость ведёт только ответственный (сервер это тоже гарантирует).
@@ -203,7 +216,9 @@ export function DriverTaskClient({
     setActionError(null);
     setBusy(true);
     try {
-      const coords = await getPositionOnce(); // гео best-effort, не блокирует
+      // Гео-метка при смене статуса убрана (решение Артёма 31.07): координаты не нужны, а ожидание
+      // геолокации без потолка (промпт разрешения не покрыт W3C timeout) вечно держало busy —
+      // все кнопки замирали без ошибки («мёртвая кнопка»).
       // Онлайн — отправляем сразу; офлайн/нет сети — в очередь (оверлей сразу покажет новый статус).
       const { queued } = await enqueueOrSend({
         kind: "transition",
@@ -218,16 +233,15 @@ export function DriverTaskClient({
           paymentAmount: extra.paymentAmount,
           paymentMissedReason: extra.paymentMissedReason, // завершение без оплаты «на месте» (№8)
           actMissedReason: extra.actMissedReason, // завершение без акта: причина (02.07)
-          lat: coords?.lat,
-          lng: coords?.lng,
         },
       });
       setHoldOpen(false);
       setReason("");
       setCompletionOpen(false);
-      if (!queued) await mutate(); // онлайн-успех — подтянуть реальные данные
+      if (queued) showQueuedNotice(); // действие в очереди — скажем об этом явно, а не молча
+      else await mutate(); // онлайн-успех — подтянуть реальные данные
     } catch (e) {
-      // Доменная ошибка (недопустимый переход, нет смены и т.п.) — показываем причину.
+      // Доменная ошибка (недопустимый переход, нет смены, ошибка сервера) — показываем причину.
       setActionError(e instanceof ApiError ? e.message : "Не удалось сменить статус");
     } finally {
       setBusy(false);
@@ -833,6 +847,11 @@ export function DriverTaskClient({
       {/* Нижняя зона — большая кнопка следующего статуса (зона большого пальца) */}
       <div className="fixed inset-x-0 bottom-0 z-10 mx-auto max-w-md border-t border-neutral-200 bg-white/95 p-3 backdrop-blur">
         {actionError ? <p className="mb-2 text-center text-sm text-red-600">{actionError}</p> : null}
+        {queuedNotice ? (
+          <p className="mb-2 text-center text-sm font-medium text-green-700">
+            Сохранено — отправится само при связи
+          </p>
+        ) : null}
         {pendingCount > 0 ? (
           <p className="mb-2 text-center text-sm font-medium text-amber-700">
             Не отправлено: {pendingCount} — уйдёт при связи
@@ -846,9 +865,9 @@ export function DriverTaskClient({
               type="button"
               disabled={busy || blockedByActive || blockedNoShift}
               onClick={() => (next.to === "DONE" ? openCompletion() : void changeStatus(next.to))}
-              className={`flex h-14 w-full items-center justify-center rounded-xl text-lg font-semibold text-white transition-colors disabled:opacity-60 ${next.cls}`}
+              className={`flex h-14 w-full items-center justify-center gap-2 rounded-xl text-lg font-semibold text-white transition-colors disabled:opacity-60 ${next.cls}`}
             >
-              {next.label} →
+              {busy ? <Loader2 className="h-6 w-6 animate-spin" /> : <>{next.label} →</>}
             </button>
             {blockedNoShift ? (
               <p className="mt-1 text-center text-sm text-amber-700">Сначала откройте смену</p>
@@ -1082,10 +1101,21 @@ export function DriverTaskClient({
               type="button"
               disabled={busy || photoBusy || !canComplete}
               onClick={submitCompletion}
-              className="mt-4 flex h-14 w-full items-center justify-center rounded-xl bg-green-600 text-lg font-semibold text-white active:bg-green-700 disabled:opacity-50"
+              className="mt-4 flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-green-600 text-lg font-semibold text-white active:bg-green-700 disabled:opacity-50"
             >
-              Завершить
+              {busy ? <Loader2 className="h-6 w-6 animate-spin" /> : "Завершить"}
             </button>
+            {/* Причина недоступной кнопки — всегда словами (жалобы 31.07: полупрозрачная кнопка на
+                солнце неотличима от активной, «нажимаю — ничего не происходит»). */}
+            {!payReady ? (
+              <p data-testid="complete-hint-payment" className="mt-2 text-center text-sm font-medium text-amber-700">
+                Сначала отметьте оплату: деньги получены или нет
+              </p>
+            ) : actReasonNeeded && !actReasonChoice ? (
+              <p data-testid="complete-hint-act" className="mt-2 text-center text-sm font-medium text-amber-700">
+                Приложите акт или выберите причину — без этого не завершить
+              </p>
+            ) : null}
           </div>
         </div>
       ) : null}

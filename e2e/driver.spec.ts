@@ -39,7 +39,7 @@ async function createAssignedTask(
   return { id, title };
 }
 
-test("водитель проходит цепочку статусов с телефона (360×740), гео-метка пишется", async ({
+test("водитель проходит цепочку статусов с телефона (360×740)", async ({
   browser,
 }) => {
   test.slow();
@@ -49,12 +49,11 @@ test("водитель проходит цепочку статусов с те�
   // тип без обязательного фото — цепочку статусов проверяем без фото (фото-поток — в photos.spec)
   const { id, title } = await createAssignedTask(milena, "Алексей Каширский", "Сдача / забор из ТК");
 
-  // Водитель — мобильный вьюпорт + разрешённая геолокация (метка должна записаться)
+  // Водитель — мобильный вьюпорт. Геолокация при смене статуса убрана (решение Артёма 31.07):
+  // ожидание координат вечно вешало busy-кнопки («мёртвая кнопка»), а метки не были нужны.
   const dctx = await browser.newContext({
     viewport: { width: 360, height: 740 },
     hasTouch: true,
-    permissions: ["geolocation"],
-    geolocation: { latitude: 55.751244, longitude: 37.618423 },
   });
   const driver = await dctx.newPage();
   await login(driver, "kashirskiy");
@@ -76,10 +75,9 @@ test("водитель проходит цепочку статусов с те�
   await driver.getByRole("button", { name: "Завершить", exact: true }).click();
   await expect(driver.getByText("Задача выполнена ✓")).toBeVisible();
 
-  // Гео-метка: у задачи есть хотя бы одно событие с координатами (как видит диспетчер)
+  // Задача закрыта на сервере; событий с координатами больше не пишем (гео убрано 31.07).
   const detail = await milena.request.get(`/api/tasks/${id}`);
-  const events = (await detail.json()).data.events as Array<{ lat: number | null }>;
-  expect(events.some((e) => e.lat !== null)).toBe(true);
+  expect((await detail.json()).data.status).toBe("DONE");
 
   await mctx.close();
   await dctx.close();
