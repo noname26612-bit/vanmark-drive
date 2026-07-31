@@ -257,3 +257,61 @@ test("офлайн: отклонённое при досылке действи�
   await mctx.close();
   await dctx.close();
 });
+
+// 31.07: доменная 403 в очереди (отказ в правах при живой сессии) раньше останавливала досылку
+// НАВСЕГДА под ложным баннером «войдите заново» — застрявшее за ней действие не доезжало никогда.
+// Теперь 403 изолируется в конфликт, а очередь продолжает: следующее действие досылается.
+test("офлайн: 403 в голове очереди → конфликт (не «сессия истекла»), хвост досылается", async ({ browser }) => {
+  test.slow();
+  const mctx = await browser.newContext();
+  const milena = await mctx.newPage();
+  await login(milena, "milena");
+  const { title } = await createAssignedTask(milena, "Алексей Каширский", "Сдача / забор из ТК");
+
+  const dctx = await browser.newContext({ viewport: { width: 360, height: 740 }, hasTouch: true });
+  const driver = await dctx.newPage();
+  await login(driver, "kashirskiy");
+  await driver.goto("/m");
+  await driver.getByText(title).click();
+  await driver.waitForURL(/\/m\/[0-9a-f-]+$/);
+  await expect(driver.getByRole("button", { name: "В работу" })).toBeVisible();
+
+  // Первой досылке сервера подсовываем 403 (доменный отказ в правах), остальное идёт как обычно.
+  let forced = false;
+  await driver.route("**/transition", async (route) => {
+    if (!forced) {
+      forced = true;
+      await route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "FORBIDDEN", message: "Нет прав на это действие" } }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  // Офлайн: два действия встают в очередь друг за другом («В работу», затем комментарий).
+  await dctx.setOffline(true);
+  await driver.getByRole("button", { name: "В работу" }).click();
+  await expect(driver.getByText("В работе").first()).toBeVisible();
+  await driver.getByPlaceholder("Комментарий диспетчеру…").fill("e2e: хвост очереди за 403");
+  await driver.getByRole("button", { name: "Отправить комментарий" }).click();
+  await expect(driver.getByText(/Не отправлено: 2/)).toBeVisible();
+
+  // Связь вернулась: голова (transition) ловит 403 → конфликт; хвост (комментарий) ДОЕЗЖАЕТ.
+  await dctx.setOffline(false);
+  await expect(driver.getByTestId("conflict-banner")).toBeVisible({ timeout: 20_000 });
+  // Ложного «Сессия истекла» нет — сессия жива.
+  await expect(driver.getByTestId("auth-required-banner")).toHaveCount(0);
+  // Комментарий появился в карточке (хвост очереди дослан, значит очередь не встала).
+  await expect(driver.getByText("e2e: хвост очереди за 403")).toBeVisible({ timeout: 20_000 });
+
+  // Прибираемся: убираем конфликт.
+  await driver.getByTestId("conflict-banner").click();
+  await driver.getByTestId("conflict-discard").first().click();
+  await expect(driver.getByTestId("conflict-banner")).toBeHidden();
+
+  await mctx.close();
+  await dctx.close();
+});

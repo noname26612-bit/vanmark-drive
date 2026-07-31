@@ -38,7 +38,12 @@ export function useOfflineSync(): void {
   useEffect(() => {
     let alive = true;
     const tick = async () => {
-      const sent = await processQueue().catch(() => 0);
+      // Ошибку прогона не глотаем молча (инцидент 31.07: сломанная IndexedDB не оставляла ни одного
+      // следа) — хотя бы console.error, его подхватит client-log (наблюдаемость, PR-4).
+      const sent = await processQueue().catch((e: unknown) => {
+        console.error("offline queue tick failed:", e);
+        return 0;
+      });
       if (sent > 0 && alive) void mutate(() => true); // после досылки обновляем все ключи SWR
     };
     void tick();
