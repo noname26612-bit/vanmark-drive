@@ -19,6 +19,7 @@
 // Идемпотентность на сервере гарантирует, что уже применённое действие повтор не задвоит.
 // Vanilla-двойник для Background Sync — public/sw.js (replayQueue); держать логику в синхроне.
 import { ApiError } from "@/lib/fetcher";
+import { reportClientError } from "@/lib/report";
 import { idbDelete, STORE_BLOBS } from "./db";
 import { listQueue, dequeue, putQueued } from "./queue";
 import { sendAction } from "./send";
@@ -122,8 +123,14 @@ const DEPS = {
   send: sendAction,
   remove: dequeue,
   dropBlob: (blobId: string) => idbDelete(STORE_BLOBS, blobId),
-  markConflict: (a: QueuedAction, lastError: { code: string; message: string }, attempts: number) =>
-    putQueued({ ...a, status: "conflict", attempts, lastError }),
+  markConflict: (a: QueuedAction, lastError: { code: string; message: string }, attempts: number) => {
+    // Срабатывание предохранителя — всегда инцидентный сигнал (5×HTTP 500 на одном действии):
+    // репортим на сервер, чтобы разбирать без телефона водителя (наблюдаемость, 31.07).
+    if (lastError.code === "SERVER_REJECTED") {
+      reportClientError(`SERVER_REJECTED: ${a.kind} ${a.url} after ${attempts} attempts`, "offline-queue");
+    }
+    return putQueued({ ...a, status: "conflict", attempts, lastError });
+  },
   bumpAttempts: (a: QueuedAction, attempts: number) => putQueued({ ...a, attempts }),
   onAuthRequired: () => setAuthRequired(true),
   onAuthOk: () => setAuthRequired(false),

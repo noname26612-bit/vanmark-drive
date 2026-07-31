@@ -482,6 +482,7 @@ async function replayQueue() {
             }),
           );
           changed = true;
+          reportRejected(a, attempts); // fire-and-forget, наблюдаемость
           continue;
         }
         await idbPutKey(db, Q_STORE, a.id, Object.assign({}, a, { attempts })); // сохраняем счётчик между sync
@@ -501,6 +502,25 @@ async function replayQueue() {
     }
   } finally {
     await notifyClients(replayed, changed); // и при обрыве прогона (throw) вкладка узнаёт об изменениях
+  }
+}
+
+// Срабатывание предохранителя в фоне — инцидентный сигнал: best-effort репорт на сервер
+// (наблюдаемость, 31.07), чтобы разбирать без телефона водителя. Ошибки глушим.
+function reportRejected(a, attempts) {
+  try {
+    const canTimeout = typeof AbortSignal !== "undefined" && "timeout" in AbortSignal;
+    fetch("/api/client-log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        msg: "SERVER_REJECTED: " + a.kind + " " + a.url + " after " + attempts + " attempts",
+        context: "sw-replay",
+      }),
+      signal: canTimeout ? AbortSignal.timeout(5000) : undefined,
+    }).catch(() => {});
+  } catch (e) {
+    /* диагностика не роняет досылку */
   }
 }
 

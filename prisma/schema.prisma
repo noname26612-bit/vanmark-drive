@@ -566,11 +566,12 @@ model TrafficWindow {
 // (та же изоляция, что у задач). Кэшируются только успешные мутации; ошибки не сохраняются (повтор
 // может стать валидным). Это не журнал и не первичка — служебный реестр дедупликации, чистится по TTL.
 model ProcessedAction {
-  key        String   @id // Idempotency-Key с клиента (uuid v4)
+  key        String    @id // Idempotency-Key с клиента (uuid v4)
   userId     String // кто выполнил действие (из сессии) — изоляция результата
   kind       String // тип действия (диагностика): transition | comment | attachment | work-item | worksheet
   resultJson Json // сохранённый ответ первого успешного выполнения — возвращается при повторе
-  createdAt  DateTime @default(now())
+  occurredAt DateTime? // момент нажатия на телефоне (X-Occurred-At, наблюдаемость 31.07): occurredAt ≪ createdAt = досылка из офлайн-очереди
+  createdAt  DateTime  @default(now())
 
   @@index([userId, createdAt])
 }

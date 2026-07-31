@@ -32,18 +32,23 @@ export async function POST(req: Request, { params }: Ctx) {
     // DONE актовой задачи без акта: причина водителя (акты до 20:00, 02.07).
     const actMissedReason =
       typeof body.actMissedReason === "string" ? body.actMissedReason : undefined;
-    const task = await withIdempotency(idempotencyKey(req), user, "transition", () =>
-      transitionTask(id, toStatus, user, {
-        comment,
-        reason,
-        lat,
-        lng,
-        paymentConfirmed,
-        paymentAmount,
-        paymentMissedReason,
-        actMissedReason,
-        occurredAt: occurredAt(req),
-      }),
+    const task = await withIdempotency(
+      idempotencyKey(req),
+      user,
+      "transition",
+      () =>
+        transitionTask(id, toStatus, user, {
+          comment,
+          reason,
+          lat,
+          lng,
+          paymentConfirmed,
+          paymentAmount,
+          paymentMissedReason,
+          actMissedReason,
+          occurredAt: occurredAt(req),
+        }),
+      occurredAt(req),
     );
     return NextResponse.json(ok(task));
   } catch (e) {

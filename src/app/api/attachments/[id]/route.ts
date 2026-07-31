@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireApiUser, errorResponse, idempotencyKey } from "@/lib/api-route";
+import { requireApiUser, errorResponse, idempotencyKey, occurredAt } from "@/lib/api-route";
 import { getAttachmentForDownload, deleteAttachment } from "@/domain/attachment-service";
 import { withIdempotency } from "@/domain/idempotency";
 
@@ -41,7 +41,7 @@ export async function DELETE(req: Request, { params }: Ctx) {
     await withIdempotency(idempotencyKey(req), user, "attachment-delete", async () => {
       await deleteAttachment(id, user);
       return { ok: true };
-    });
+    }, occurredAt(req));
     return NextResponse.json(ok({ ok: true }));
   } catch (e) {
     return errorResponse(e);

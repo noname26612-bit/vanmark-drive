@@ -2,7 +2,11 @@
 // Аварийный экран последней инстанции (ошибка в корневом layout). До 31.07 boundaries не было вовсе:
 // любая ошибка рендера/гидратации (например, не загрузился чанк на плохой сети) давала белый экран
 // без кнопки — водитель «застревал на логотипе». global-error обязан сам рендерить <html>/<body>.
-export default function GlobalError({ reset }: { error: Error; reset: () => void }) {
+import { useEffect } from "react";
+import { reportClientError } from "@/lib/report";
+
+export default function GlobalError({ error, reset }: { error: Error; reset: () => void }) {
+  useEffect(() => reportClientError(error, "error-boundary:global"), [error]);
   return (
     <html lang="ru">
       <body style={{ fontFamily: "system-ui, sans-serif", margin: 0 }}>

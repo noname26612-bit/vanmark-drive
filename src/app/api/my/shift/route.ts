@@ -43,7 +43,7 @@ export async function POST(req: Request) {
         : op === "close"
           ? () => closeShift(user.id, at)
           : () => reopenShift(user.id, at);
-    const result = await withIdempotency(idempotencyKey(req), user, `shift-${op}`, run);
+    const result = await withIdempotency(idempotencyKey(req), user, `shift-${op}`, run, occurredAt(req));
     return NextResponse.json(ok(hideDispatcherIdle(result)));
   } catch (e) {
     return errorResponse(e);

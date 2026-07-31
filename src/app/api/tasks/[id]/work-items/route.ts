@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireApiUser, errorResponse, readJson, idempotencyKey } from "@/lib/api-route";
+import { requireApiUser, errorResponse, readJson, idempotencyKey, occurredAt } from "@/lib/api-route";
 import { addWorkItem } from "@/domain/work-service";
 import { withIdempotency } from "@/domain/idempotency";
 import { parseWorkItemInput } from "@/lib/work-input";
@@ -20,6 +20,7 @@ export async function POST(req: Request, { params }: Ctx) {
     const input = parseWorkItemInput(await readJson(req));
     const item = await withIdempotency(idempotencyKey(req), user, "work-item-add", () =>
       addWorkItem(id, input, user),
+      occurredAt(req),
     );
     return NextResponse.json(ok(item), { status: 201 });
   } catch (e) {

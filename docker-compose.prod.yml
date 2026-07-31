@@ -45,6 +45,13 @@ services:
     # укладываемся в 1.9 ГБ + своп; гарантирует, что одиночный всплеск (большая загрузка) убьёт app,
     # а не весь хост. Прод-СБОРКУ (next build тяжёлая) гонять отдельно/в tmux — это лимит рантайма.
     mem_limit: 1200m
+    # Ротация логов (наблюдаемость, 31.07): client-log и console.error пишут в stdout — без потолка
+    # json-file логи со временем съели бы диск (38 ГБ, уже забивался build-кэшем).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     healthcheck:
       test:
         ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -57,6 +64,12 @@ services:
     image: caddy:2-alpine
     container_name: vanmark-caddy
     restart: unless-stopped
+    # Access-лог (Caddyfile log{}) пишет каждую HTTP-строку в stdout — ограничиваем ротацией.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     environment:
       DOMAIN: ${DOMAIN}
     ports:
