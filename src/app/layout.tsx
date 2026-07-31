@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { SwRegister } from "@/components/sw-register";
+import { ClientErrorReporter } from "@/components/client-error-reporter";
 
 export const metadata: Metadata = {
   title: "VanMark Drive",
@@ -21,6 +22,7 @@ export default function RootLayout({
       <body className="min-h-screen bg-white text-neutral-900 antialiased">
         {children}
         <SwRegister />
+        <ClientErrorReporter />
       </body>
     </html>
   );

@@ -27,6 +27,9 @@ export async function withIdempotency<T>(
   actor: { id: string },
   kind: string,
   run: () => Promise<T>,
+  // Момент нажатия на телефоне (X-Occurred-At, наблюдаемость 31.07). Диагностика, не логика:
+  // occurredAt ≪ createdAt в реестре = действие доехало из офлайн-очереди, а не нажато сейчас.
+  occurredAtIso?: string | null,
 ): Promise<T> {
   const trimmed = key?.trim();
   if (!trimmed) return run();
@@ -49,9 +52,13 @@ export async function withIdempotency<T>(
   // игнорирует, а идемпотентность (run() больше не вызывается) сохраняется.
   const resultJson = result === undefined ? Prisma.JsonNull : (result as unknown as Prisma.InputJsonValue);
 
+  // Битую клиентскую дату не пишем (диагностическое поле не должно ронять барьер) — просто NULL.
+  const occurredTs = occurredAtIso ? new Date(occurredAtIso) : null;
+  const occurredAt = occurredTs && !Number.isNaN(occurredTs.getTime()) ? occurredTs : null;
+
   try {
     await prisma.processedAction.create({
-      data: { key: trimmed, userId: actor.id, kind, resultJson },
+      data: { key: trimmed, userId: actor.id, kind, resultJson, occurredAt },
     });
   } catch (e) {
     if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;

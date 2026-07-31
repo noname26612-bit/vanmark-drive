@@ -1,7 +1,11 @@
 "use client";
 // Ошибка рендера водительских экранов (/m…): крупная кнопка «Обновить» в зоне большого пальца —
 // водитель в поле должен выйти из сбоя сам, без звонка диспетчеру (жалобы 31.07 «висит и всё»).
-export default function DriverError({ reset }: { error: Error; reset: () => void }) {
+import { useEffect } from "react";
+import { reportClientError } from "@/lib/report";
+
+export default function DriverError({ error, reset }: { error: Error; reset: () => void }) {
+  useEffect(() => reportClientError(error, "error-boundary:driver"), [error]);
   return (
     <div className="mx-auto max-w-md px-6 py-12 text-center">
       <p className="text-lg font-semibold text-neutral-900">Что-то сломалось</p>

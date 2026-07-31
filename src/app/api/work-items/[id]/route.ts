@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireApiUser, errorResponse, readJson, idempotencyKey } from "@/lib/api-route";
+import { requireApiUser, errorResponse, readJson, idempotencyKey, occurredAt } from "@/lib/api-route";
 import { updateWorkItem, removeWorkItem } from "@/domain/work-service";
 import { withIdempotency } from "@/domain/idempotency";
 import { parseWorkItemInput } from "@/lib/work-input";
@@ -17,8 +17,12 @@ export async function PATCH(req: Request, { params }: Ctx) {
     const user = await requireApiUser();
     const { id } = await params;
     const input = parseWorkItemInput(await readJson(req));
-    const item = await withIdempotency(idempotencyKey(req), user, "work-item-update", () =>
-      updateWorkItem(id, input, user),
+    const item = await withIdempotency(
+      idempotencyKey(req),
+      user,
+      "work-item-update",
+      () => updateWorkItem(id, input, user),
+      occurredAt(req),
     );
     return NextResponse.json(ok(item));
   } catch (e) {
@@ -35,7 +39,7 @@ export async function DELETE(req: Request, { params }: Ctx) {
     await withIdempotency(idempotencyKey(req), user, "work-item-delete", async () => {
       await removeWorkItem(id, user);
       return { ok: true };
-    });
+    }, occurredAt(req));
     return NextResponse.json(ok({ ok: true }));
   } catch (e) {
     return errorResponse(e);

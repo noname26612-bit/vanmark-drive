@@ -1,7 +1,11 @@
 "use client";
 // Ошибка рендера страницы (внутри корневого layout). Даёт водителю/диспетчеру кнопку вместо белого
 // экрана: перезагрузка подтягивает свежие чанки и почти всегда лечит сбой гидратации на плохой сети.
-export default function PageError({ reset }: { error: Error; reset: () => void }) {
+import { useEffect } from "react";
+import { reportClientError } from "@/lib/report";
+
+export default function PageError({ error, reset }: { error: Error; reset: () => void }) {
+  useEffect(() => reportClientError(error, "error-boundary:page"), [error]);
   return (
     <div className="mx-auto max-w-md px-6 py-12 text-center">
       <p className="text-lg font-semibold text-neutral-900">Что-то сломалось</p>
