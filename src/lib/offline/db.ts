@@ -7,7 +7,6 @@
 // Всё рассчитано на один телефон одного водителя и десятки записей — не на масштаб.
 
 const DB_NAME = "vanmark-offline";
-const DB_VERSION = 1;
 
 export const STORE_RESPONSES = "responses";
 export const STORE_QUEUE = "queue";
@@ -15,22 +14,50 @@ export const STORE_BLOBS = "blobs";
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
-function openDb(): Promise<IDBDatabase> {
-  if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
+const ALL_STORES = [STORE_RESPONSES, STORE_QUEUE, STORE_BLOBS];
+
+function rawOpen(version?: number): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
     if (typeof indexedDB === "undefined") {
       reject(new Error("IndexedDB недоступен"));
       return;
     }
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    const req = version === undefined ? indexedDB.open(DB_NAME) : indexedDB.open(DB_NAME, version);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(STORE_RESPONSES)) db.createObjectStore(STORE_RESPONSES);
-      if (!db.objectStoreNames.contains(STORE_QUEUE)) db.createObjectStore(STORE_QUEUE);
-      if (!db.objectStoreNames.contains(STORE_BLOBS)) db.createObjectStore(STORE_BLOBS);
+      for (const s of ALL_STORES) {
+        if (!db.objectStoreNames.contains(s)) db.createObjectStore(s);
+      }
     };
+    // onblocked: апгрейд заблокирован другой открытой вкладкой/SW — раньше промис висел вечно
+    // (инцидент 31.07: «мёртвая» очередь без единого симптома). Отказ → ретрай при следующем вызове.
+    req.onblocked = () => reject(new Error("IndexedDB blocked"));
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
+  });
+}
+
+// Открытие с самолечением. Всегда открываем БЕЗ версии (берётся текущая; у свежей установки будет
+// v1 с созданием сторов) — жёсткая версия в коде дала бы VersionError после любого доращивания.
+// SW-sync мог успеть создать БД БЕЗ сторов (старый public/sw.js открывал её без версии; sync-событие
+// до первого запуска приложения «отравляло» БД — onupgradeneeded на той же версии больше не
+// срабатывал, и все операции молча падали). Недостающие сторы доращиваем версионным открытием —
+// данные существующих сторов не трогаются.
+async function openWithRepair(): Promise<IDBDatabase> {
+  const db = await rawOpen();
+  if (ALL_STORES.every((s) => db.objectStoreNames.contains(s))) return db;
+  const v = db.version + 1;
+  db.close();
+  return rawOpen(v);
+}
+
+function openDb(): Promise<IDBDatabase> {
+  if (dbPromise) return dbPromise;
+  dbPromise = openWithRepair();
+  // Отказ открытия (private mode, блокировка, повреждение) не кэшируем навсегда — раньше одна
+  // неудача убивала офлайн-слой на всю сессию; следующий вызов попробует открыть заново.
+  dbPromise.catch(() => {
+    dbPromise = null;
   });
   return dbPromise;
 }
