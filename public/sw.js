@@ -434,8 +434,10 @@ async function sendQueuedAction(db, a) {
 }
 
 // Прогон очереди FIFO. Нет сети / 5xx кроме 500 (инфраструктура, деплой) → throw (браузер повторит sync);
-// 401/403 → стоп; HTTP 500 (необработанная ошибка приложения) → счётчик attempts, после порога —
-// конфликт (SERVER_REJECTED) и идём дальше; доменная 4xx → конфликт. Двойник src/lib/offline/sync.ts.
+// 401 (сессия) → стоп; 403 (доменный отказ в правах, сессия жива) → конфликт и дальше — как доменная
+// 4xx (раньше 403 навсегда останавливал досылку); HTTP 500 (необработанная ошибка приложения) →
+// счётчик attempts, после порога — конфликт (SERVER_REJECTED) и идём дальше; доменная 4xx → конфликт.
+// Двойник src/lib/offline/sync.ts — держать логику в синхроне.
 async function replayQueue() {
   let db;
   try {
@@ -461,8 +463,9 @@ async function replayQueue() {
         await idbDelKey(db, Q_STORE, a.id);
         if (a.blobId) await idbDelKey(db, B_STORE, a.blobId).catch(() => {});
         replayed++;
-      } else if (res.status === 401 || res.status === 403) {
+      } else if (res.status === 401) {
         break; // сессия истекла — стоп (после входа очередь досошлёт открытая вкладка)
+        // 403 сюда НЕ попадает: доменный отказ в правах идёт ниже общей веткой 4xx → конфликт и дальше.
       } else if (res.status === 500) {
         // HTTP 500 (необработанная ошибка приложения): считаем последовательные 500-отказы одного действия (см. sync.ts).
         const attempts = (a.attempts || 0) + 1;
