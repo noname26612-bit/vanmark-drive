@@ -133,11 +133,20 @@ describe("runQueueOnce (O8)", () => {
     expect(d.removed).toEqual([]);
   });
 
-  it("403 → как 401 (права/сессия), НЕ конфликт", async () => {
-    const d = deps([action({ id: "a1" })], () => Promise.reject(new ApiError("нет прав", 403, "FORBIDDEN")));
-    await runQueueOnce(d);
-    expect(d.auth).toEqual(["required"]);
-    expect(d.conflicts).toEqual([]);
+  it("403 (доменный отказ в правах) → конфликт, очередь НЕ стоит, флаг сессии НЕ поднят", async () => {
+    // Инцидент 31.07: 403 (чужое фото, ведомость напарником) останавливал очередь НАВСЕГДА под
+    // ложным «войдите заново» — застрявшее за ним завершение задачи не досылалось никогда.
+    // Сессия при 403 жива (requireApiUser на отсутствие сессии бросает строго 401).
+    const send = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError("нет прав", 403, "FORBIDDEN"))
+      .mockResolvedValueOnce(undefined);
+    const d = deps([action({ id: "a1", seq: 1 }), action({ id: "a2", seq: 2 })], send);
+    const sent = await runQueueOnce(d);
+    expect(sent).toBe(1); // второе действие досослано — 403 не блокирует очередь
+    expect(d.conflicts).toEqual([{ id: "a1", code: "FORBIDDEN" }]);
+    expect(d.auth).toEqual(["ok"]); // authRequired НЕ поднимался (только onAuthOk от успеха a2)
+    expect(d.removed).toEqual(["a2"]);
   });
 
   it("доменная 4xx (409) → конфликт, прогон продолжается со следующим действием", async () => {

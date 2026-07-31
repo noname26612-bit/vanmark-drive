@@ -37,7 +37,12 @@ async function registerBackgroundSync(): Promise<void> {
 /** Все действия очереди в порядке постановки (FIFO). Тай-брейк по id (O8): при равном seq у легаси-
  *  записей (голый Date.now() до монотонного nextSeq) порядок иначе был бы неопределённым. */
 export async function listQueue(): Promise<QueuedAction[]> {
-  const all = await idbGetAll<QueuedAction>(STORE_QUEUE).catch(() => [] as QueuedAction[]);
+  // Ошибку чтения не глотаем молча (инцидент 31.07: мёртвая IndexedDB = «пустая» очередь без единого
+  // симптома — ни бейджей, ни конфликтов) — след в консоли подхватит client-log (PR-4).
+  const all = await idbGetAll<QueuedAction>(STORE_QUEUE).catch((e: unknown) => {
+    console.error("offline queue read failed:", e);
+    return [] as QueuedAction[];
+  });
   return all.sort((a, b) => a.seq - b.seq || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 

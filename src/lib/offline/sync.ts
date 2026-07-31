@@ -8,13 +8,18 @@
 //   действие «конфликт» (SERVER_REJECTED) и ПРОДОЛЖАЕМ прогон, чтобы одно застрявшее действие не блокировало
 //   очередь навсегда. К порогу считаем только 500, не обрывы связи и не деплой — иначе долгий офлайн или
 //   рестарт бэкенда ложно увели бы всю очередь в конфликт;
-// - 401/403 (сессия истекла / права отозваны) → стоп + флаг authRequired; действие НЕ конфликт
-//   (оно валидное, не хватает свежей сессии), после релогина досошлётся (O8);
+// - 401 (сессия истекла) → стоп + флаг authRequired; действие НЕ конфликт (оно валидное, не хватает
+//   свежей сессии), после релогина досошлётся (O8);
+// - 403 (доменный отказ в правах: чужое фото, ведомость напарником) → КОНФЛИКТ и едем дальше.
+//   Сессия при 403 жива — requireApiUser на отсутствие сессии бросает строго 401. Раньше 403
+//   останавливал очередь НАВСЕГДА под ложным баннером «войдите заново» (перелогин не помогал),
+//   и застрявшее за ним завершение задачи не досылалось никогда (инцидент 31.07);
 // - доменная ошибка 4xx → помечаем действие «конфликт» (диспетчер изменил задачу / переход уже
 //   невозможен / фото потеряно) — остаётся в очереди для разбора водителем, НЕ блокирует остальные.
 // Идемпотентность на сервере гарантирует, что уже применённое действие повтор не задвоит.
 // Vanilla-двойник для Background Sync — public/sw.js (replayQueue); держать логику в синхроне.
 import { ApiError } from "@/lib/fetcher";
+import { reportClientError } from "@/lib/report";
 import { idbDelete, STORE_BLOBS } from "./db";
 import { listQueue, dequeue, putQueued } from "./queue";
 import { sendAction } from "./send";
@@ -54,7 +59,8 @@ export type QueueDeps = {
 /**
  * Один проход очереди с инъекцией зависимостей. Возвращает число успешно досланных действий.
  * - нет сети / 5xx кроме 500 (инфраструктура, деплой) → стоп, остаток уйдёт на следующем тике (счётчик не растёт);
- * - 401/403 (сессия) → стоп + флаг authRequired;
+ * - 401 (сессия) → стоп + флаг authRequired;
+ * - 403 (доменный отказ в правах, сессия жива) → конфликт и идём дальше;
  * - HTTP 500 (необработанная ошибка приложения): наращиваем attempts и стоп; после SERVER_ERROR_LIMIT
  *   подряд — помечаем конфликтом (SERVER_REJECTED) и идём дальше (предохранитель от вечной блокировки);
  * - доменная 4xx → конфликт и идём дальше.
@@ -71,9 +77,15 @@ export async function runQueueOnce(deps: QueueDeps): Promise<number> {
       deps.onAuthOk(); // действие прошло → сессия жива, снимаем возможный флаг
       sent++;
     } catch (e) {
-      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-        deps.onAuthRequired(); // сессия истекла / права — стоп, НЕ конфликт (действие валидное)
+      if (e instanceof ApiError && e.status === 401) {
+        deps.onAuthRequired(); // сессия истекла — стоп, НЕ конфликт (действие валидное, доедет после входа)
         break;
+      }
+      if (e instanceof ApiError && e.status === 403) {
+        // Доменный отказ в правах (чужое фото, ведомость напарником) — сессия ЖИВА. Изолируем в
+        // конфликт и продолжаем: раньше это навсегда останавливало очередь под ложным «войдите заново».
+        await deps.markConflict(a, { code: e.code, message: e.message }, (a.attempts ?? 0) + 1);
+        continue;
       }
       if (e instanceof ApiError && e.retryable) {
         // Нет сети (status 0) или любой 5xx, кроме 500 (инфраструктура/прокси при деплое) — временный
@@ -111,8 +123,14 @@ const DEPS = {
   send: sendAction,
   remove: dequeue,
   dropBlob: (blobId: string) => idbDelete(STORE_BLOBS, blobId),
-  markConflict: (a: QueuedAction, lastError: { code: string; message: string }, attempts: number) =>
-    putQueued({ ...a, status: "conflict", attempts, lastError }),
+  markConflict: (a: QueuedAction, lastError: { code: string; message: string }, attempts: number) => {
+    // Срабатывание предохранителя — всегда инцидентный сигнал (5×HTTP 500 на одном действии):
+    // репортим на сервер, чтобы разбирать без телефона водителя (наблюдаемость, 31.07).
+    if (lastError.code === "SERVER_REJECTED") {
+      reportClientError(`SERVER_REJECTED: ${a.kind} ${a.url} after ${attempts} attempts`, "offline-queue");
+    }
+    return putQueued({ ...a, status: "conflict", attempts, lastError });
+  },
   bumpAttempts: (a: QueuedAction, attempts: number) => putQueued({ ...a, attempts }),
   onAuthRequired: () => setAuthRequired(true),
   onAuthOk: () => setAuthRequired(false),

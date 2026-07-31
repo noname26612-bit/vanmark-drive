@@ -60,6 +60,22 @@ describe("withIdempotency — exactly-once офлайн-досылки (prefligh
     expect(create.mock.calls[0][0].data).toMatchObject({ key: "key1", userId: "user-a", kind: "transition" });
   });
 
+  it("X-Occurred-At пишется в реестр (наблюдаемость 31.07: отличаем досылку очереди от live-нажатия)", async () => {
+    findUnique.mockResolvedValue(null);
+    create.mockResolvedValue({});
+    await withIdempotency("key-occ", ME, "transition", vi.fn().mockResolvedValue({}), "2026-07-31T08:00:00.000Z");
+    expect(create.mock.calls[0][0].data.occurredAt).toEqual(new Date("2026-07-31T08:00:00.000Z"));
+  });
+
+  it("битый или отсутствующий X-Occurred-At → occurredAt: null, барьер не падает", async () => {
+    findUnique.mockResolvedValue(null);
+    create.mockResolvedValue({});
+    await withIdempotency("key-bad", ME, "k", vi.fn().mockResolvedValue({}), "мусор");
+    expect(create.mock.calls[0][0].data.occurredAt).toBeNull();
+    await withIdempotency("key-none", ME, "k", vi.fn().mockResolvedValue({}));
+    expect(create.mock.calls[1][0].data.occurredAt).toBeNull();
+  });
+
   it("void-результат (undefined) → в реестр пишем JSON null, барьер НЕ падает (регресс инцидента 04.07: comment/delete роняли очередь)", async () => {
     findUnique.mockResolvedValue(null);
     create.mockResolvedValue({});

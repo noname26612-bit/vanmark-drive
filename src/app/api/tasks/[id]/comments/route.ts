@@ -19,8 +19,12 @@ export async function POST(req: Request, { params }: Ctx) {
     const text = typeof body.text === "string" ? body.text : "";
     const lat = typeof body.lat === "number" ? body.lat : undefined;
     const lng = typeof body.lng === "number" ? body.lng : undefined;
-    await withIdempotency(idempotencyKey(req), user, "comment", () =>
-      addComment(id, text, user, { lat, lng, occurredAt: occurredAt(req) }),
+    await withIdempotency(
+      idempotencyKey(req),
+      user,
+      "comment",
+      () => addComment(id, text, user, { lat, lng, occurredAt: occurredAt(req) }),
+      occurredAt(req),
     );
     return NextResponse.json(ok({ ok: true }), { status: 201 });
   } catch (e) {

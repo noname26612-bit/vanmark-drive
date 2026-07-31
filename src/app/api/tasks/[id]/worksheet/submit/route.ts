@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireApiUser, errorResponse, idempotencyKey } from "@/lib/api-route";
+import { requireApiUser, errorResponse, idempotencyKey, occurredAt } from "@/lib/api-route";
 import { submitWorksheet } from "@/domain/work-service";
 import { withIdempotency } from "@/domain/idempotency";
 
@@ -18,6 +18,7 @@ export async function POST(req: Request, { params }: Ctx) {
     const { id } = await params;
     const result = await withIdempotency(idempotencyKey(req), user, "worksheet-submit", () =>
       submitWorksheet(id, user),
+      occurredAt(req),
     );
     return NextResponse.json(ok(result));
   } catch (e) {

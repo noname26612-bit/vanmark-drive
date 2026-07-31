@@ -4,11 +4,14 @@
 // Раньше оно висело там вечно и молча искажало UI. Теперь водитель видит баннер «Не прошло: N —
 // разобрать», открывает список с причинами и убирает каждое (решение Артёма 02.07 — только «Убрать»:
 // нужное действие проще выполнить заново обычным способом). Отдельно — баннер «сессия истекла»
-// (401/403 при досылке): очередь цела, после входа досошлётся сама.
-import { useState } from "react";
+// (401 при досылке): очередь цела, после входа досошлётся сама. И баннер «очередь стоит» (31.07):
+// действия не отправляются дольше порога при живом интернете — водителю говорим, что делать.
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePendingActions, useAuthRequired } from "@/lib/offline/use-queue";
 import { discardAction } from "@/lib/offline/queue";
+import { useOnline } from "@/lib/offline/net";
+import { queueStalledMinutes } from "@/lib/offline/queue-health";
 import type { QueuedAction } from "@/lib/offline/types";
 
 // Человекочитаемое имя действия — по виду (kind) и полезной нагрузке.
@@ -61,9 +64,17 @@ function whenLabel(iso: string): string {
 export function ConflictCenter() {
   const actions = usePendingActions();
   const authRequired = useAuthRequired();
+  const online = useOnline();
   const conflicts = actions.filter((a) => a.status === "conflict");
   const [open, setOpen] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Минутный тик: возраст очереди растёт и без событий очереди — баннер «стоит» должен появиться сам.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  const stalledMin = online ? queueStalledMinutes(actions, now) : null;
 
   async function remove(id: string) {
     setBusyId(id);
@@ -74,10 +85,19 @@ export function ConflictCenter() {
     }
   }
 
-  if (conflicts.length === 0 && !authRequired) return null;
+  if (conflicts.length === 0 && !authRequired && stalledMin === null) return null;
 
   return (
     <div className="mb-3 flex flex-col gap-2">
+      {stalledMin !== null ? (
+        <div
+          data-testid="queue-stalled-banner"
+          className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-900"
+        >
+          Действия не отправляются уже {stalledMin} мин. Закройте и откройте приложение. Не помогло —
+          позвоните Милене.
+        </div>
+      ) : null}
       {authRequired ? (
         <div
           data-testid="auth-required-banner"

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireApiUser, errorResponse, idempotencyKey } from "@/lib/api-route";
+import { requireApiUser, errorResponse, idempotencyKey, occurredAt } from "@/lib/api-route";
 import { addAttachment } from "@/domain/attachment-service";
 import { withIdempotency } from "@/domain/idempotency";
 import { MAX_UPLOAD_BYTES } from "@/domain/attachments";
@@ -51,6 +51,7 @@ export async function POST(req: Request, { params }: Ctx) {
         lat: num(form.get("lat")),
         lng: num(form.get("lng")),
       }),
+      occurredAt(req),
     );
     return NextResponse.json(ok(att), { status: 201 });
   } catch (e) {
