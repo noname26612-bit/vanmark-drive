@@ -15,13 +15,32 @@ export class ApiError extends Error {
   }
 }
 
+// Потолки ожидания сети (инцидент «мёртвая кнопка», 31.07): «висящий» запрос (сигнал есть, данные не
+// идут — мобильный NAT, смена вышки) без таймаута держал busy-состояние кнопок и Web Lock очереди
+// НАВСЕГДА. status 0 остаётся retryable → зависшее действие уходит в офлайн-очередь, а не в вечное
+// ожидание. Загрузка фото щедрее: ~0.3–0.8 МБ на EDGE.
+const REQUEST_TIMEOUT_MS = 15_000;
+const UPLOAD_TIMEOUT_MS = 90_000;
+
+// AbortSignal.timeout есть во всех целевых браузерах (TWA — evergreen Chrome); нет API → без
+// таймаута, как раньше (деградация до старого поведения, не падение).
+function timeoutSignal(ms: number): AbortSignal | undefined {
+  return typeof AbortSignal !== "undefined" && "timeout" in AbortSignal ? AbortSignal.timeout(ms) : undefined;
+}
+
+// Обрыв и таймаут различаем в коде ошибки (диагностика), но оба — status 0 (retryable).
+function toNetworkError(e: unknown): ApiError {
+  const timedOut = e instanceof DOMException && e.name === "TimeoutError";
+  return new ApiError(timedOut ? "Сеть не отвечает" : "Нет соединения", 0, timedOut ? "TIMEOUT" : "NETWORK");
+}
+
 // Фетчер для SWR: возвращает data из конверта { data } | { error }.
 export async function fetcher<T>(url: string): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, { headers: { Accept: "application/json" } });
-  } catch {
-    throw new ApiError("Нет соединения", 0, "NETWORK");
+    res = await fetch(url, { headers: { Accept: "application/json" }, signal: timeoutSignal(REQUEST_TIMEOUT_MS) });
+  } catch (e) {
+    throw toNetworkError(e);
   }
   const body = await res.json().catch(() => null);
   if (!res.ok || !body || "error" in body) {
@@ -49,9 +68,10 @@ export async function apiSend<T = unknown>(
       method,
       headers: { "Content-Type": "application/json", ...extraHeaders },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: timeoutSignal(REQUEST_TIMEOUT_MS),
     });
-  } catch {
-    throw new ApiError("Нет соединения", 0, "NETWORK");
+  } catch (e) {
+    throw toNetworkError(e);
   }
   const json = await res.json().catch(() => null);
   if (!res.ok || !json || "error" in json) {
@@ -69,9 +89,9 @@ export async function apiUpload<T = unknown>(
 ): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, { method: "POST", body: form, headers: extraHeaders });
-  } catch {
-    throw new ApiError("Нет соединения", 0, "NETWORK");
+    res = await fetch(url, { method: "POST", body: form, headers: extraHeaders, signal: timeoutSignal(UPLOAD_TIMEOUT_MS) });
+  } catch (e) {
+    throw toNetworkError(e);
   }
   const json = await res.json().catch(() => null);
   if (!res.ok || !json || "error" in json) {

@@ -88,6 +88,101 @@ test("№8: ON_SITE с оплатой — paymentReceived=true, событие �
   await mctx.close();
 });
 
+test("лист завершения ON_SITE: без выбора оплаты кнопка недоступна И причина написана словами", async ({ browser }) => {
+  test.slow();
+  const mctx = await browser.newContext();
+  const milena = await mctx.newPage();
+  await login(milena, "milena");
+  const id = await createAssignedTask(milena, "Алексей Писарев", "Сдача / забор из ТК");
+  await milena.request.patch(`/api/tasks/${id}`, { data: { op: "edit", paymentType: "ON_SITE", paymentAmount: 3000 } });
+  expect((await milena.request.post(`/api/tasks/${id}/transition`, { data: { toStatus: "IN_PROGRESS" } })).status()).toBe(200);
+
+  const dctx = await browser.newContext({ viewport: { width: 360, height: 740 } });
+  const driver = await dctx.newPage();
+  await login(driver, "pisarev");
+  await driver.goto(`/m/${id}`);
+  await driver.getByRole("button", { name: "Завершить →" }).click();
+
+  // Кнопка задизейблена НЕ молча: рядом причина словами (жалобы 31.07 — «нажимаю, ничего не происходит»).
+  const doneBtn = driver.getByRole("button", { name: "Завершить", exact: true });
+  await expect(doneBtn).toBeDisabled();
+  await expect(driver.locator('[data-testid="complete-hint-payment"]')).toBeVisible();
+
+  // Выбор «Деньги получены» снимает блок: кнопка активна, подсказка исчезла.
+  await driver.getByRole("button", { name: /Деньги получены/ }).click();
+  await expect(doneBtn).toBeEnabled();
+  await expect(driver.locator('[data-testid="complete-hint-payment"]')).toHaveCount(0);
+
+  await mctx.close();
+  await dctx.close();
+});
+
+test("онлайн-ошибка сервера (500) на завершении показывается сразу, задача не «завершается» молча", async ({ browser }) => {
+  test.slow();
+  const mctx = await browser.newContext();
+  const milena = await mctx.newPage();
+  await login(milena, "milena");
+  const id = await createAssignedTask(milena, "Алексей Писарев", "Сдача / забор из ТК");
+  expect((await milena.request.post(`/api/tasks/${id}/transition`, { data: { toStatus: "IN_PROGRESS" } })).status()).toBe(200);
+
+  const dctx = await browser.newContext({ viewport: { width: 360, height: 740 } });
+  const driver = await dctx.newPage();
+  await login(driver, "pisarev");
+  await driver.goto(`/m/${id}`);
+
+  // Сервер отвечает 500 → водитель видит ошибку сразу; никакого тихого «Выполнено» с поздним откатом.
+  await driver.route("**/transition", (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "INTERNAL", message: "Внутренняя ошибка" } }),
+    }),
+  );
+  await driver.getByRole("button", { name: "Завершить →" }).click();
+  await driver.getByRole("button", { name: "Завершить", exact: true }).click();
+  await expect(driver.getByText("Внутренняя ошибка").first()).toBeVisible();
+  await expect(driver.getByText("Задача выполнена ✓")).toHaveCount(0);
+  await expect(driver.getByText(/Не отправлено:/)).toHaveCount(0); // 500 в очередь не кладём
+
+  // Сервер ожил → повторное нажатие завершает задачу штатно.
+  await driver.unroute("**/transition");
+  await driver.getByRole("button", { name: "Завершить", exact: true }).click();
+  await expect(driver.getByText("Задача выполнена ✓")).toBeVisible({ timeout: 15_000 });
+
+  await mctx.close();
+  await dctx.close();
+});
+
+test("обрыв сети на завершении: действие в очереди с явным подтверждением, после связи доезжает само", async ({ browser }) => {
+  test.slow();
+  const mctx = await browser.newContext();
+  const milena = await mctx.newPage();
+  await login(milena, "milena");
+  const id = await createAssignedTask(milena, "Алексей Писарев", "Сдача / забор из ТК");
+  expect((await milena.request.post(`/api/tasks/${id}/transition`, { data: { toStatus: "IN_PROGRESS" } })).status()).toBe(200);
+
+  const dctx = await browser.newContext({ viewport: { width: 360, height: 740 } });
+  const driver = await dctx.newPage();
+  await login(driver, "pisarev");
+  await driver.goto(`/m/${id}`);
+
+  // Обрыв связи именно на transition: действие уходит в очередь, водителю говорим об этом явно.
+  await driver.route("**/transition", (route) => route.abort("connectionfailed"));
+  await driver.getByRole("button", { name: "Завершить →" }).click();
+  await driver.getByRole("button", { name: "Завершить", exact: true }).click();
+  await expect(driver.getByText("Сохранено — отправится само при связи")).toBeVisible();
+  await expect(driver.getByText("Задача выполнена ✓")).toBeVisible(); // оптимистичный статус из очереди
+
+  // Связь вернулась → очередь досылает фоновым тиком (≤15 с) без действий водителя.
+  await driver.unroute("**/transition");
+  await expect
+    .poll(async () => (await (await milena.request.get(`/api/tasks/${id}`)).json()).data.status, { timeout: 25_000 })
+    .toBe("DONE");
+
+  await mctx.close();
+  await dctx.close();
+});
+
 test("№6: активная задача (в работе) — бейдж «Активна» у водителя", async ({ browser }) => {
   test.slow();
   const mctx = await browser.newContext();
