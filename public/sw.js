@@ -38,6 +38,31 @@ function isCacheableNav(res, url) {
   return res && res.ok && !res.redirected && !url.pathname.startsWith("/login");
 }
 
+// Потолки ожидания сети (инцидент «висит на логотипе», 31.07): TWA снимает сплэш только когда пришёл
+// ответ на навигационный запрос. fetch без таймаута на «висящей» сети (сигнал есть, данные не идут —
+// стройка, паркинг, залипший NAT) держал сплэш минутами при ГОТОВОМ кэше оболочки под рукой.
+// NAV_TIMEOUT_MS покрывает и всплески TTFB сервера (замерено до 5–7 с).
+const NAV_TIMEOUT_MS = 8000;
+const STATIC_TIMEOUT_MS = 15000;
+
+function fetchWithTimeout(req, ms) {
+  const canTimeout = typeof AbortSignal !== "undefined" && "timeout" in AbortSignal;
+  return fetch(req, canTimeout ? { signal: AbortSignal.timeout(ms) } : undefined);
+}
+
+// Поиск ТОЛЬКО по app-кэшам (текущий + предыдущий): caches.match() без имени сканировал бы и сотню
+// фото (лишние десятки мс на слабом телефоне). ignoreVary — Next шлёт Vary: RSC,Next-Router-…, и
+// точное совпадение заголовков между сохранённым и живым запросом — случайность, а не гарантия;
+// без ignoreVary фолбэк мог молча промахиваться при физически лежащей записи.
+async function matchAppCaches(req) {
+  const keys = (await caches.keys()).filter((k) => k.startsWith("vanmark-app-"));
+  for (const k of keys) {
+    const hit = await (await caches.open(k)).match(req, { ignoreVary: true });
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
 self.addEventListener("install", (event) => {
   if (!CACHE_ENABLED) {
     self.skipWaiting();
@@ -95,25 +120,32 @@ self.addEventListener("fetch", (event) => {
   if (req.mode === "navigate" && url.pathname.startsWith("/login")) return;
   // Навигация (открытие страниц) — network-first с откатом в кэш (холодный старт без сети).
   if (req.mode === "navigate") {
-    event.respondWith(networkFirst(req, url));
+    event.respondWith(networkFirst(event, req, url));
     return;
   }
 });
 
 async function cacheFirst(req) {
-  // Ищем во ВСЕХ кэшах (текущий + предыдущий app-кэш), а не только в текущем: при деплое старый
-  // клиент, ещё живущий в памяти вкладки, может запросить хэш-чанк прошлой сборки — отдаём его из
-  // предыдущего кэша, чтобы навигация не упала в 404 до перезагрузки (инцидент 07.07). Хэш в имени
-  // файла гарантирует, что контент не перепутается между версиями. Вызывается только для
-  // /_next/static/ и /icons/ — эти пути не пересекаются с фото-кэшем (/api/attachments/).
-  const hit = await caches.match(req);
+  // Ищем в app-кэшах (текущий + предыдущий), а не только в текущем: при деплое старый клиент, ещё
+  // живущий в памяти вкладки, может запросить хэш-чанк прошлой сборки — отдаём его из предыдущего
+  // кэша, чтобы навигация не упала в 404 до перезагрузки (инцидент 07.07). Хэш в имени файла
+  // гарантирует, что контент не перепутается между версиями. Вызывается только для /_next/static/
+  // и /icons/ — эти пути не пересекаются с фото-кэшем (/api/attachments/).
+  const hit = await matchAppCaches(req);
   if (hit) return hit;
-  const res = await fetch(req);
-  if (res.ok) {
-    const cache = await caches.open(CACHE);
-    cache.put(req, res.clone());
+  try {
+    const res = await fetchWithTimeout(req, STATIC_TIMEOUT_MS);
+    if (res.ok) {
+      const cache = await caches.open(CACHE);
+      await cache.put(req, res.clone()).catch(() => {}); // переполнение квоты — не роняем ответ
+    }
+    return res;
+  } catch (e) {
+    // Параллельная навигация/прогрев могли доложить чанк, пока мы ждали сеть — последний шанс.
+    const retry = await matchAppCaches(req);
+    if (retry) return retry;
+    throw e; // честный отказ: его поймает error boundary страницы, а не вечный белый экран
   }
-  return res;
 }
 
 // Фото/акт (O10): cache-first в отдельный кэш с LRU-обрезкой. Приватность не ослабляется — в кэш
@@ -138,30 +170,90 @@ async function trimPhotos(cache) {
   for (let i = 0; i < excess; i++) await cache.delete(keys[i]); // порядок keys() ≈ вставка → грубый FIFO
 }
 
-async function networkFirst(req, url) {
+async function networkFirst(event, req, url) {
   const cache = await caches.open(CACHE);
-  try {
+  const attempt = (async () => {
+    // Без аборта: если ответим из кэша по таймауту, сеть пусть доедет и доложится в кэш фоном.
     const res = await fetch(req);
-    if (isCacheableNav(res, new URL(res.url))) {
+    // Навигационные запросы идут с redirect:"manual" → 307 корня "/" приходит как opaqueredirect
+    // (status 0, res.url === "" — НЕ парсить new URL(res.url)!). Отдаём браузеру как есть — он сам
+    // продолжит на /m. Раньше пустой res.url ронял new URL() и КАЖДЫЙ старт с "/" при живой сети
+    // ложно уходил в catch-ветку и получал закэшированный HTML (хронический build-skew).
+    if (res.type === "opaqueredirect" || res.type === "opaque") return res;
+    if (isCacheableNav(res, url)) {
       cache.put(req, res.clone());
       trimNavigations(cache); // не ждём — фоновая обрезка
     }
+    // Окно деплоя/рестарта: Caddy отдаёт 502/503, пока контейнер поднимается. Показывать голую
+    // ошибку при полном кэше оболочки под рукой незачем — отдаём кэш.
+    if (res.status >= 500) {
+      const hit = await matchAppCaches(req);
+      if (hit) return hit;
+    }
     return res;
-  } catch (e) {
-    const hit = await cache.match(req);
+  })();
+
+  const TIMEOUT = Symbol("timeout");
+  const FAILED = Symbol("failed");
+  const winner = await Promise.race([
+    attempt.catch(() => FAILED),
+    new Promise((r) => setTimeout(() => r(TIMEOUT), NAV_TIMEOUT_MS)),
+  ]);
+
+  if (winner === TIMEOUT) {
+    // «Висящая» сеть: сплэш TWA снимается только по ответу — отдаём кэш сразу, сеть доложится фоном.
+    const hit = await matchAppCaches(req);
+    const home = hit ? undefined : await matchAppCaches(new Request(SHELL_URL));
+    if (hit || home) {
+      event.waitUntil(attempt.then(() => {}).catch(() => {}));
+      // Для "/" — редирект на оболочку её собственным URL (см. FAILED-ветку ниже), не подмена HTML.
+      if (!hit && url.pathname === "/") return Response.redirect(SHELL_URL, 302);
+      return hit || home;
+    }
+    return attempt; // кэша нет (первый визит) — ждём сеть сколько нужно: медленно лучше, чем ошибка
+  }
+  if (winner === FAILED) {
+    const hit = await matchAppCaches(req);
     if (hit) return hit;
-    const home = await cache.match(SHELL_URL); // запасной экран — список «Мои задачи»
-    if (home) return home;
-    throw e;
+    // Запасной экран — оболочка «Мои задачи». Холодный офлайн-старт с иконки — это "/" (start_url
+    // TWA), а корень — всегда редирект и в кэш не попадает: браузер отправляем на оболочку её
+    // СОБСТВЕННЫМ URL (подмена HTML под чужим path дала бы рассинхрон pathname при гидратации,
+    // а неавторизованный увидел бы чужую оболочку вместо логина).
+    const home = await matchAppCaches(new Request(SHELL_URL));
+    if (home) return url.pathname === "/" ? Response.redirect(SHELL_URL, 302) : home;
+    return attempt; // перебросит исходную сетевую ошибку
+  }
+  return winner;
+}
+
+// Прогрев JS-чанков из прогретого HTML (инцидент 31.07): раньше кэшировался только HTML, а его
+// чанки — нет; офлайн-старт отдавал HTML, чьи <script> не находились ни в сети, ни в кэше → белый
+// экран. Список чанков берём из самого HTML (другого источника у SW нет). Best-effort, до 80 URL.
+const CHUNK_RE = /\/_next\/static\/[^"'\s\\]+/g;
+async function warmChunks(cache, html) {
+  const urls = [...new Set(html.match(CHUNK_RE) || [])].slice(0, 80);
+  for (const u of urls) {
+    if (await cache.match(u, { ignoreVary: true })) continue;
+    try {
+      const r = await fetchWithTimeout(u, STATIC_TIMEOUT_MS);
+      if (r.ok) await cache.put(u, r);
+    } catch (e) {
+      /* best-effort: недокачанный чанк доложится при живой навигации */
+    }
   }
 }
 
 // Перекэшировать оболочку /m «настоящим» ответом (не логин-редиректом). Вызывается при install и по
 // сообщению warm-shell из приложения (после входа — тогда /m точно отдаёт оболочку, а не редирект).
+// Таймаут обязателен: install ждёт warmShell, а затянутый install откладывает skipWaiting — и
+// controllerchange-reload прилетал бы посреди работы водителя, а не на старте.
 async function warmShell(cache) {
   try {
-    const res = await fetch(SHELL_URL, { redirect: "follow" });
-    if (isCacheableNav(res, new URL(res.url))) await cache.put(SHELL_URL, res.clone());
+    const res = await fetchWithTimeout(SHELL_URL, NAV_TIMEOUT_MS);
+    if (isCacheableNav(res, new URL(res.url))) {
+      await cache.put(SHELL_URL, res.clone());
+      await warmChunks(cache, await res.clone().text());
+    }
   } catch (e) {
     /* нет сети при install — оболочка ляжет позже, из networkFirst или warm-shell */
   }
@@ -169,11 +261,13 @@ async function warmShell(cache) {
 
 // Навигационные записи (HTML) — не статика/иконки. Держим не больше MAX_NAV_ENTRIES: при переполнении
 // удаляем самые старые (порядок keys() ≈ порядок вставки — грубый FIFO, достаточно для масштаба).
+// Оболочку /m не вытесняем никогда: это единственный запасной экран холодного старта, а кладётся она
+// при install ПЕРВОЙ — без исключения FIFO выбрасывал бы именно её.
 async function trimNavigations(cache) {
   const keys = await cache.keys();
   const nav = keys.filter((r) => {
     const p = new URL(r.url).pathname;
-    return !p.startsWith("/_next/static/") && !p.startsWith("/icons/");
+    return !p.startsWith("/_next/static/") && !p.startsWith("/icons/") && p !== SHELL_URL;
   });
   const excess = nav.length - MAX_NAV_ENTRIES;
   for (let i = 0; i < excess; i++) await cache.delete(nav[i]);
@@ -194,15 +288,21 @@ self.addEventListener("message", (event) => {
 
 async function warmPages(urls) {
   const cache = await caches.open(CACHE);
+  let lastHtml = null;
   for (const u of urls.slice(0, MAX_NAV_ENTRIES)) {
     try {
-      const res = await fetch(u, { redirect: "follow" });
-      if (isCacheableNav(res, new URL(res.url))) await cache.put(u, res.clone());
+      const res = await fetchWithTimeout(u, NAV_TIMEOUT_MS);
+      if (isCacheableNav(res, new URL(res.url))) {
+        await cache.put(u, res.clone());
+        lastHtml = await res.clone().text();
+      }
     } catch (e) {
       /* нет сети — пропускаем, прогреется в следующий раз */
     }
   }
   await trimNavigations(cache);
+  // Чанки одной карточки покрывают остальные (общий бандл роута /m/[id]) — греем по последнему HTML.
+  if (lastHtml) await warmChunks(cache, lastHtml);
 }
 
 // Пришёл пуш — показываем уведомление. Payload собирает сервер (src/domain/notifications.ts).
@@ -259,12 +359,32 @@ const B_STORE = "blobs";
 // порогу не считаем.
 const SERVER_ERROR_LIMIT = 5;
 
-function openOfflineDb() {
+// Открытие offline-БД из SW. ВАЖНО: indexedDB.open(name) БЕЗ версии создаёт БД, если её нет — и
+// раньше создавал ПУСТУЮ (без сторов): sync-событие, пришедшее до первого запуска приложения (или
+// после очистки хранилища при уцелевшем sync-теге), «отравляло» БД навсегда — у приложения
+// onupgradeneeded на той же версии уже не срабатывал, и все idb-операции молча падали (очередь не
+// писалась, кэш не работал). Теперь схема создаётся здесь же, а у существующей БД недостающие сторы
+// доращиваются версионным открытием. Схема — двойник src/lib/offline/db.ts, держать в синхроне.
+const OFFLINE_STORES = ["responses", Q_STORE, B_STORE];
+function rawOpenOfflineDb(version) {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(OFFLINE_DB); // без версии — открыть существующую (её создало приложение)
+    const req = version ? indexedDB.open(OFFLINE_DB, version) : indexedDB.open(OFFLINE_DB);
+    req.onupgradeneeded = () => {
+      for (const s of OFFLINE_STORES) {
+        if (!req.result.objectStoreNames.contains(s)) req.result.createObjectStore(s);
+      }
+    };
+    req.onblocked = () => reject(new Error("offline db blocked"));
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+async function openOfflineDb() {
+  const db = await rawOpenOfflineDb();
+  if (OFFLINE_STORES.every((s) => db.objectStoreNames.contains(s))) return db;
+  const v = db.version + 1; // БД «отравлена» (создана без сторов) — доращиваем версионным открытием
+  db.close();
+  return rawOpenOfflineDb(v);
 }
 
 function idbTx(db, store, mode, fn) {
@@ -327,53 +447,70 @@ async function replayQueue() {
     (a, b) => a.seq - b.seq || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   );
   let replayed = 0;
-  for (const a of actions) {
-    if (a.status === "conflict") continue;
-    let res;
-    try {
-      res = await sendQueuedAction(db, a);
-    } catch (e) {
-      throw e; // нет сети — пробрасываем, браузер перезапустит sync позже
-    }
-    if (res.ok) {
-      await idbDelKey(db, Q_STORE, a.id);
-      if (a.blobId) await idbDelKey(db, B_STORE, a.blobId).catch(() => {});
-      replayed++;
-    } else if (res.status === 401 || res.status === 403) {
-      break; // сессия истекла — стоп (после входа очередь досошлёт открытая вкладка)
-    } else if (res.status === 500) {
-      // HTTP 500 (необработанная ошибка приложения): считаем последовательные 500-отказы одного действия (см. sync.ts).
-      const attempts = (a.attempts || 0) + 1;
-      if (attempts >= SERVER_ERROR_LIMIT) {
-        // Порог — изолируем застрявшее действие, прогон продолжаем (не throw), очередь досылает остальные.
-        await idbPutKey(
-          db,
-          Q_STORE,
-          a.id,
-          Object.assign({}, a, {
-            status: "conflict",
-            attempts,
-            lastError: { code: "SERVER_REJECTED", message: "Сервер не принимает действие — обратитесь к диспетчеру" },
-          }),
-        );
-        continue;
+  let changed = false; // любая запись в IndexedDB (conflict/attempts) — вкладка должна перечитать очередь
+  try {
+    for (const a of actions) {
+      if (a.status === "conflict") continue;
+      let res;
+      try {
+        res = await sendQueuedAction(db, a);
+      } catch (e) {
+        throw e; // нет сети — пробрасываем, браузер перезапустит sync позже
       }
-      await idbPutKey(db, Q_STORE, a.id, Object.assign({}, a, { attempts })); // сохраняем счётчик между sync
-      throw new Error("server 500"); // ещё не порог — пусть браузер повторит sync
-    } else if (res.status >= 500) {
-      throw new Error("gateway " + res.status); // прочие 5xx (502/503/504/501/505…) — инфраструктура/деплой, к порогу не считаем; повтор sync
-    } else {
-      const body = await res.json().catch(() => null);
-      const lastError = {
-        code: (body && body.error && body.error.code) || "HTTP_" + res.status,
-        message: (body && body.error && body.error.message) || "Ошибка",
-      };
-      await idbPutKey(db, Q_STORE, a.id, Object.assign({}, a, { status: "conflict", attempts: (a.attempts || 0) + 1, lastError }));
+      if (res.ok) {
+        await idbDelKey(db, Q_STORE, a.id);
+        if (a.blobId) await idbDelKey(db, B_STORE, a.blobId).catch(() => {});
+        replayed++;
+      } else if (res.status === 401 || res.status === 403) {
+        break; // сессия истекла — стоп (после входа очередь досошлёт открытая вкладка)
+      } else if (res.status === 500) {
+        // HTTP 500 (необработанная ошибка приложения): считаем последовательные 500-отказы одного действия (см. sync.ts).
+        const attempts = (a.attempts || 0) + 1;
+        if (attempts >= SERVER_ERROR_LIMIT) {
+          // Порог — изолируем застрявшее действие, прогон продолжаем (не throw), очередь досылает остальные.
+          await idbPutKey(
+            db,
+            Q_STORE,
+            a.id,
+            Object.assign({}, a, {
+              status: "conflict",
+              attempts,
+              lastError: { code: "SERVER_REJECTED", message: "Сервер не принимает действие — обратитесь к диспетчеру" },
+            }),
+          );
+          changed = true;
+          continue;
+        }
+        await idbPutKey(db, Q_STORE, a.id, Object.assign({}, a, { attempts })); // сохраняем счётчик между sync
+        changed = true;
+        throw new Error("server 500"); // ещё не порог — пусть браузер повторит sync (notifyClients — в finally)
+      } else if (res.status >= 500) {
+        throw new Error("gateway " + res.status); // прочие 5xx (502/503/504/501/505…) — инфраструктура/деплой, к порогу не считаем; повтор sync
+      } else {
+        const body = await res.json().catch(() => null);
+        const lastError = {
+          code: (body && body.error && body.error.code) || "HTTP_" + res.status,
+          message: (body && body.error && body.error.message) || "Ошибка",
+        };
+        await idbPutKey(db, Q_STORE, a.id, Object.assign({}, a, { status: "conflict", attempts: (a.attempts || 0) + 1, lastError }));
+        changed = true;
+      }
     }
+  } finally {
+    await notifyClients(replayed, changed); // и при обрыве прогона (throw) вкладка узнаёт об изменениях
   }
-  if (replayed > 0) {
+}
+
+// Сообщить вкладкам о результате прогона. Шлём и при changed без replayed (все действия ушли в
+// conflict): раньше вкладка не узнавала о конфликте, продолжала рисовать оптимистичный статус
+// поверх фактически «застрявшего» действия, и водитель считал задачу завершённой.
+async function notifyClients(replayed, changed) {
+  if (!replayed && !changed) return;
+  try {
     const cs = await self.clients.matchAll({ includeUncontrolled: true });
     for (const c of cs) c.postMessage({ type: "queue-replayed" });
+  } catch (e) {
+    /* нет клиентов — не страшно, вкладка перечитает очередь при открытии */
   }
 }
 
