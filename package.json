@@ -23,6 +23,7 @@
     "db:seed:capacity": "tsx prisma/seed-capacity.ts",
     "db:seed:roster": "tsx prisma/seed-roster.ts",
     "db:seed:pilot": "tsx prisma/seed-pilot.ts",
+    "db:clean:dev": "tsx prisma/clean-dev.ts",
     "db:studio": "prisma studio",
     "prisma": "prisma",
     "postinstall": "prisma generate"
