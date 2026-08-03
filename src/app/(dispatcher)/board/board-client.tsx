@@ -42,6 +42,7 @@ import { CreateTaskModal } from "../_components/create-task-modal";
 import { TaskSearchInput } from "../_components/task-search-input";
 import { Highlighted } from "../_components/highlight";
 import { useTaskDrafts } from "../_components/task-drafts";
+import { StaleShiftsBlock } from "./stale-shifts-block";
 import type { FormState } from "@/lib/task-draft";
 
 type DropTarget = { kind: "driver"; driverId: string } | { kind: "undated" };
@@ -311,6 +312,10 @@ export function BoardClient({
         />
         <Stat label="Не назначено сегодня" value={unassignedTodayCount} tone="muted" />
       </div>
+
+      {/* Незакрытые смены прошлых дней (03.08): доска показывает только сегодняшний день, поэтому
+          забытая смена иначе остаётся невидимой — и день выпадает из сводки и расчёта. */}
+      <StaleShiftsBlock onChanged={refresh} />
 
       {/* Смены водителей (№5): по каждому — статус смены, время открытия и полоса «в работе/простой». */}
       <ShiftWorkloadBlock drivers={drivers} shifts={shifts ?? []} today={today} onChange={refresh} />

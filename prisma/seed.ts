@@ -158,6 +158,17 @@ async function main(defaultPassword: string): Promise<void> {
   await seedCapacity(prisma);
 }
 
+// Защита прода (03.08): этот сид ПЕРЕЗАПИСЫВАЕТ пароли всем учёткам и возвращает флаги из констант
+// (внешнему перевозчику — canLogin=false), то есть отменяет настройки, сделанные в админке. На проде
+// пользуйтесь безопасным `pnpm db:seed:roster`. Осознанный запуск — с SEED_ALLOW_OVERWRITE=1.
+if (process.env.NODE_ENV === "production" && process.env.SEED_ALLOW_OVERWRITE !== "1") {
+  console.error(
+    "Отказ: полный сид перезапишет пароли и доступы всех учёток.\n" +
+      "На проде используйте `pnpm db:seed:roster`. Если это осознанно — SEED_ALLOW_OVERWRITE=1.",
+  );
+  process.exit(1);
+}
+
 main(seedPassword)
   .then(() => console.log("Сид пользователей готов."))
   .catch((error) => {

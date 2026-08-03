@@ -5,7 +5,8 @@
 // PATCH /api/shifts/:id. С 06.07 живёт в «KPI / Зарплата» (перенесена из «Сводки»).
 import { useState } from "react";
 import useSWR from "swr";
-import { Pencil } from "lucide-react";
+import { Pencil, Lock } from "lucide-react";
+import { ShiftClosePanel } from "./shift-close-panel";
 import { fetcher, apiSend } from "@/lib/fetcher";
 import { Button } from "@/components/ui/button";
 import type { ShiftHistoryRow } from "@/lib/summary-dto";
@@ -89,6 +90,9 @@ export function ShiftHistorySection({
 function ShiftHistoryItem({ row, onChanged }: { row: ShiftHistoryRow; onChanged: () => void }) {
   // Инлайн-правка: 'open' | 'close' | null. Время и обязательная причина; сохранение — PATCH /api/shifts/:id.
   const [edit, setEdit] = useState<"open" | "close" | null>(null);
+  // Закрытие незакрытой смены прямо из журнала (03.08): раньше здесь была только правка времени,
+  // и до забытой смены нельзя было добраться вообще.
+  const [closing, setClosing] = useState(false);
   const [time, setTime] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -136,7 +140,14 @@ function ShiftHistoryItem({ row, onChanged }: { row: ShiftHistoryRow; onChanged:
           </span>
           <span className="text-neutral-300">·</span>
           <span>
-            {row.closedAt ? `Закрыта ${shiftTimeHHMM(row.closedAt)}` : "не закрыта"}
+            {row.closedAt ? (
+              `Закрыта ${shiftTimeHHMM(row.closedAt)}`
+            ) : (
+              // Янтарь = требует действия сейчас (ui-guidelines): смена висит открытой.
+              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700">
+                не закрыта
+              </span>
+            )}
             {row.closedAtAdjustNote ? <span className="ml-1 text-xs text-amber-600">(правлено)</span> : null}
           </span>
         </div>
@@ -159,11 +170,38 @@ function ShiftHistoryItem({ row, onChanged }: { row: ShiftHistoryRow; onChanged:
           >
             <Pencil className="h-3.5 w-3.5" /> Править закрытие
           </button>
-        ) : null}
+        ) : (
+          <button
+            type="button"
+            data-testid="shift-history-close"
+            onClick={() => {
+              setEdit(null);
+              setClosing((v) => !v);
+            }}
+            className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 font-medium text-amber-800 transition-colors hover:border-amber-400 hover:bg-amber-100"
+          >
+            <Lock className="h-3.5 w-3.5" /> Закрыть смену
+          </button>
+        )}
         {row.shiftMinutes != null ? (
           <span className="text-neutral-400">Длительность {formatDuration(row.shiftMinutes)}</span>
         ) : null}
       </div>
+      {closing ? (
+        <ShiftClosePanel
+          shiftId={row.id}
+          driverName={row.driverName}
+          shiftDate={row.dateKey}
+          openedAt={row.openedAt}
+          mode="close"
+          allowCloseNow={false}
+          onDone={() => {
+            setClosing(false);
+            onChanged();
+          }}
+          onCancel={() => setClosing(false)}
+        />
+      ) : null}
       {edit ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 p-2">
           <span className="text-xs font-medium text-neutral-600">

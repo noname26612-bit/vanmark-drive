@@ -7,6 +7,7 @@ import {
   validateSubscriptionInput,
   buildMorningPayload,
   buildPassWarningPayload,
+  buildCloseShiftPayload,
 } from "./notifications";
 
 // --- Подписки -------------------------------------------------------------
@@ -69,6 +70,19 @@ export async function runMorningReminders(): Promise<void> {
       if (count > 0) await sendPushToUser(d.id, buildMorningPayload(count));
     }),
   );
+}
+
+/**
+ * 21:00 — водителям, у кого смена за сегодня всё ещё открыта: «закройте смену» (решение Артёма 03.08).
+ * Внешний перевозчик смен не ведёт, поэтому в выборку не попадает по определению (смены у него нет).
+ */
+export async function runCloseShiftReminders(): Promise<void> {
+  const today = moscowDateAt(0);
+  const shifts = await prisma.shift.findMany({
+    where: { date: today, status: { in: ["REQUESTED", "OPEN"] }, driver: { isActive: true, canLogin: true } },
+    select: { driverId: true },
+  });
+  await Promise.all(shifts.map((s) => sendPushToUser(s.driverId, buildCloseShiftPayload())));
 }
 
 /** 16:00 — диспетчерам: на завтра есть N задач с пропуском «нужен, не заказан». */
