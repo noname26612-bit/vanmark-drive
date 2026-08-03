@@ -74,10 +74,13 @@ test("изоляция: водитель не видит список, чужу�
   await mpage.locator('[data-testid="create-contact-name"]').fill("Иван Тест");
   await mpage.locator('[data-testid="create-contact-phone"]').fill("+70000000000");
   await mpage.getByRole("button", { name: "Создать", exact: true }).click();
-  await expect(mpage.getByRole("link", { name: title })).toBeVisible();
+  // Ждём закрытия формы, а не появления строки в таблице: в общей dev-БД задач тысячи и свежая
+  // заявка не попадает на первую страницу списка. Id берём поиском по уникальному заголовку.
+  await expect(mpage.getByRole("dialog")).toBeHidden();
 
   const listRes = await mpage.request.get(`/api/tasks?q=${encodeURIComponent(title)}`);
-  const list = await listRes.json();
+  const list = (await listRes.json()) as { data: { id: string }[] };
+  expect(list.data.length).toBeGreaterThan(0);
   const taskId: string = list.data[0].id;
 
   // Водитель в отдельном контексте

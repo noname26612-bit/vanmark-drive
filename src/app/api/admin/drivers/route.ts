@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
 import { requireAdmin, errorResponse, readJson } from "@/lib/api-route";
-import { listDriverAccess, setDriverLoginAccess } from "@/domain/users";
+import { listDriverAccess, setDriverLoginAccess, setDriverExternal } from "@/domain/users";
 import { Errors } from "@/domain/errors";
 
 export const runtime = "nodejs";
@@ -17,16 +17,25 @@ export async function GET() {
   }
 }
 
-// PATCH /api/admin/drivers { driverId, canLogin } — включить/выключить вход водителю (02.07:
-// внешнему перевозчику вход включается здесь осознанно). Только админ.
+// PATCH /api/admin/drivers — одно действие за раз, только админ:
+//  • { driverId, canLogin } — включить/выключить вход (02.07: внешнему перевозчику вход включается
+//    здесь осознанно);
+//  • { driverId, isExternal } — пометить внешним перевозчиком / вернуть в штат (03.08).
+// Роль проверяется в домене: менять можно только пользователя с ролью DRIVER.
 export async function PATCH(req: Request) {
   try {
     await requireAdmin();
     const body = await readJson(req);
     const driverId = typeof body.driverId === "string" ? body.driverId : "";
     if (!driverId) throw Errors.validation("Не указан водитель");
-    if (typeof body.canLogin !== "boolean") throw Errors.validation("canLogin должен быть true/false");
-    return NextResponse.json(ok(await setDriverLoginAccess(driverId, body.canLogin)));
+    const hasLogin = typeof body.canLogin === "boolean";
+    const hasExternal = typeof body.isExternal === "boolean";
+    if (hasLogin && hasExternal) throw Errors.validation("Укажите одно действие");
+    if (hasExternal) {
+      return NextResponse.json(ok(await setDriverExternal(driverId, body.isExternal as boolean)));
+    }
+    if (!hasLogin) throw Errors.validation("canLogin должен быть true/false");
+    return NextResponse.json(ok(await setDriverLoginAccess(driverId, body.canLogin as boolean)));
   } catch (e) {
     return errorResponse(e);
   }
