@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { Phone, Navigation, Users } from "lucide-react";
+import { Navigation, Users } from "lucide-react";
+import { CallButton } from "@/components/phone-call";
 import { ApiError } from "@/lib/fetcher";
 import { cachedFetcher, readCachedMeta } from "@/lib/offline/cached-fetcher";
 import { enqueueOrSend } from "@/lib/offline/send";
@@ -500,8 +501,9 @@ function TaskCard({
         ) : null}
       </CardLink>
 
-      {/* Быстрые действия — вне ссылки, чтобы тап не открывал карточку */}
-      <div className="flex gap-2 border-t border-neutral-100 px-3 py-2">
+      {/* Быстрые действия — вне ссылки, чтобы тап не открывал карточку.
+          flex-wrap: список номеров (если их несколько) переносится строкой ниже кнопок. */}
+      <div className="flex flex-wrap gap-2 border-t border-neutral-100 px-3 py-2">
         <a
           href={navUrl(task.addressLink, task.address)}
           target="_blank"
@@ -510,14 +512,7 @@ function TaskCard({
         >
           <Navigation className="h-4 w-4" /> Навигатор
         </a>
-        {task.contactPhone ? (
-          <a
-            href={`tel:${task.contactPhone}`}
-            className="inline-flex h-12 flex-1 items-center justify-center gap-1.5 rounded-lg bg-green-50 text-sm font-medium text-green-700"
-          >
-            <Phone className="h-4 w-4" /> Позвонить
-          </a>
-        ) : null}
+        <CallButton phone={task.contactPhone} variant="compact" />
       </div>
     </div>
   );

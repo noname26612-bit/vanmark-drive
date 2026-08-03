@@ -4,7 +4,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
-import { Phone, Navigation, Loader2, Camera, X, FileText, Banknote, Users } from "lucide-react";
+import { Navigation, Loader2, Camera, X, FileText, Banknote, Users } from "lucide-react";
+import { CallButton } from "@/components/phone-call";
 import { ApiError } from "@/lib/fetcher";
 import { cachedFetcher } from "@/lib/offline/cached-fetcher";
 import { useOnline } from "@/lib/offline/net";
@@ -504,14 +505,8 @@ export function DriverTaskClient({
           <section className="rounded-xl border border-neutral-200 p-3">
             <p className="text-xs uppercase tracking-wide text-neutral-400">Контакт</p>
             {t.contactName ? <p className="mt-1 text-base text-neutral-900">{t.contactName}</p> : null}
-            {t.contactPhone ? (
-              <a
-                href={`tel:${t.contactPhone}`}
-                className="mt-2 inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-green-600 text-base font-medium text-white"
-              >
-                <Phone className="h-5 w-5" /> Позвонить · {t.contactPhone}
-              </a>
-            ) : null}
+            {/* Несколько номеров — каждый отдельной строкой и своей ссылкой (03.08). */}
+            <CallButton phone={t.contactPhone} variant="full" />
           </section>
         ) : null}
 

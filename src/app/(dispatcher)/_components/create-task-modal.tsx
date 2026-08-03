@@ -6,6 +6,7 @@ import type { DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
 import type { PassStatus, PaymentType } from "@/generated/prisma/enums";
 import { emptyForm, isDirtyForm, type FormState } from "@/lib/task-draft";
 import { PASS_LABEL, PAYMENT_LABEL } from "@/lib/task-ui";
+import { parsePhones } from "@/lib/phone";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -95,6 +96,8 @@ export function CreateTaskModal({
   // Стоимость поездки — только при внешнем исполнителе (этап 3, 02.07). В режиме редактирования
   // селекта исполнителя нет, но form.assigneeId заполнен из задачи — признак работает и там.
   const assigneeIsExternal = drivers.some((d) => d.id === form.assigneeId && d.isExternal);
+  // Сколько номеров распознано в поле «Телефон» — подсказка Милене (03.08).
+  const phoneCount = parsePhones(form.contactPhone).length;
   const typeNeedsAct = selectedType?.requiresSignedDoc ?? false;
   function onTypeChange(id: string) {
     const tt = types.find((x) => x.id === id);
@@ -295,8 +298,15 @@ export function CreateTaskModal({
                 inputMode="tel"
                 value={form.contactPhone}
                 onChange={(e) => set("contactPhone", e.target.value)}
-                placeholder="+7 ..."
+                placeholder="+7 ... (несколько — через запятую)"
               />
+              {/* Живой счётчик: Милена сразу видит, что система распознала все номера — у водителя
+                  каждый из них будет отдельной кнопкой звонка (03.08). */}
+              {phoneCount > 1 ? (
+                <p data-testid="create-phone-count" className="mt-1 text-xs text-neutral-500">
+                  Распознано номеров: {phoneCount} — водитель увидит их отдельными строками
+                </p>
+              ) : null}
             </Field>
           </div>
         </FormSection>

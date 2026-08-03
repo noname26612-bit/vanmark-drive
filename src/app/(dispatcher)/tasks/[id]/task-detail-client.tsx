@@ -5,7 +5,8 @@
 import { useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { Phone, Navigation, Camera, X, FileText, Banknote } from "lucide-react";
+import { Navigation, Camera, X, FileText, Banknote } from "lucide-react";
+import { PhoneLinks } from "@/components/phone-call";
 import { fetcher, apiSend, apiUpload } from "@/lib/fetcher";
 import { compressImage } from "@/lib/image-compress";
 import { actState } from "@/domain/act";
@@ -305,12 +306,7 @@ export function TaskDetailClient({
         {task.orgName ? <Row label="Организация">{task.orgName}</Row> : null}
         {task.contactName || task.contactPhone ? (
           <Row label="Контакт">
-            {task.contactName ?? ""}{" "}
-            {task.contactPhone ? (
-              <a href={`tel:${task.contactPhone}`} className="inline-flex items-center gap-1 text-blue-600">
-                <Phone className="h-3.5 w-3.5" /> {task.contactPhone}
-              </a>
-            ) : null}
+            {task.contactName ?? ""} <PhoneLinks phone={task.contactPhone} />
           </Row>
         ) : null}
         {task.equipment ? <Row label="Оборудование">{task.equipment}</Row> : null}
