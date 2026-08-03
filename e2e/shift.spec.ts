@@ -1,8 +1,14 @@
 import { test, expect, type Page } from "@playwright/test";
-import { resetShifts } from "./reset";
+import { resetShifts, resetActiveTasks } from "./reset";
 
 // Смены теста изолированы: перед каждым тестом чистим (общая dev-БД, @@unique(driverId, date)).
-test.beforeEach(resetShifts);
+// Плюс гасим зависшие IN_PROGRESS: правило «одна активная задача» глобально по водителю, и задача,
+// оставленная соседним спеком в общей БД, иначе даёт 409 при взятии в работу (падало через раз).
+// resetActiveTasks заодно открывает смены — поэтому порядок важен: сначала он, потом чистка смен.
+test.beforeEach(async () => {
+  await resetActiveTasks();
+  await resetShifts();
+});
 
 const PASSWORD = process.env.SEED_PASSWORD ?? "vanmark123";
 // МСК-день: сервер считает день смены в МСК; UTC-дата около полуночи «уедет» на день.

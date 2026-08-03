@@ -10,6 +10,7 @@ import { useState } from "react";
 import { apiSend } from "@/lib/fetcher";
 import { Button } from "@/components/ui/button";
 import { DateField } from "@/components/ui/date-field";
+import { TimeField } from "@/components/ui/time-field";
 
 /** «HH:MM» из ISO в МСК — учётное время смены. */
 export function shiftHHMM(iso: string): string {
@@ -111,34 +112,37 @@ export function ShiftClosePanel({
           </Button>
         </div>
       ) : null}
-      <div className="flex flex-wrap items-center gap-2">
-        <DateField value={date} onChange={setDate} testId="shift-close-date" className="w-40" />
-        <input
-          type="time"
-          data-testid="shift-close-time"
-          value={time}
-          onChange={(e) => setTime(e.target.value)}
-          className="h-8 rounded-md border border-slate-300 px-2"
-        />
+      {/* shrink-0 и своя ширина у даты и времени обязательны: без них поле причины (flex-1)
+          сжимает соседей, и нативный ввод времени в Safari («12:30 PM» + иконка часов) обрезается —
+          по часам и минутам невозможно попасть курсором. step=60 убирает секунды. */}
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="flex shrink-0 flex-col gap-1">
+          <span className="text-xs font-medium text-slate-600">Дата закрытия</span>
+          <DateField value={date} onChange={setDate} testId="shift-close-date" className="w-40" />
+        </label>
+        <label className="flex shrink-0 flex-col gap-1">
+          <span className="text-xs font-medium text-slate-600">Время</span>
+          <TimeField value={time} onChange={setTime} testId="shift-close-time" />
+        </label>
         <input
           type="text"
           data-testid="shift-close-reason"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           placeholder="Причина (напр. «водитель забыл закрыть»)"
-          className="h-8 min-w-0 flex-1 rounded-md border border-slate-300 px-2"
+          className="h-10 min-w-[220px] flex-1 rounded-lg border border-slate-300 px-2 text-sm"
         />
         <Button
           data-testid="shift-close-save"
           variant="secondary"
-          className="h-8 px-3 text-xs"
+          className="h-10 shrink-0 px-3 text-xs"
           onClick={() => void send(true)}
           disabled={busy || !time.trim()}
         >
           {mode === "adjust" ? "Сохранить" : "Закрыть указанным"}
         </Button>
         {!allowCloseNow ? (
-          <Button variant="ghost" className="h-8 px-3 text-xs" onClick={onCancel} disabled={busy}>
+          <Button variant="ghost" className="h-10 shrink-0 px-3 text-xs" onClick={onCancel} disabled={busy}>
             Отмена
           </Button>
         ) : null}

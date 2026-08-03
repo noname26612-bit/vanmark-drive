@@ -43,6 +43,8 @@ import { TaskSearchInput } from "../_components/task-search-input";
 import { Highlighted } from "../_components/highlight";
 import { useTaskDrafts } from "../_components/task-drafts";
 import { StaleShiftsBlock } from "./stale-shifts-block";
+import { ShiftClosePanel } from "../_components/shift-close-panel";
+import { TimeField } from "@/components/ui/time-field";
 import type { FormState } from "@/lib/task-draft";
 
 type DropTarget = { kind: "driver"; driverId: string } | { kind: "undated" };
@@ -449,6 +451,7 @@ type ShiftDTO = {
   driverId: string;
   driverName: string | null;
   status: "REQUESTED" | "OPEN" | "CLOSED";
+  date: string; // YYYY-MM-DD — день смены (нужен форме закрытия: дата закрытия может отличаться)
   openedAt: string;
   closedAt: string | null;
   openedAtAdjustNote: string | null; // если время открытия правили — причина (№3)
@@ -548,13 +551,7 @@ function ShiftConfirmRow({ shift, onChange }: { shift: ShiftDTO; onChange: () =>
             Если связи не было или сел телефон — укажите фактическое время открытия и причину.
           </p>
           <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="time"
-              value={time}
-              onChange={(e) => setTime(e.target.value)}
-              className="h-8 rounded border border-slate-200 px-2 text-sm tabular-nums"
-              aria-label="Фактическое время открытия"
-            />
+            <TimeField value={time} onChange={setTime} className="h-9" />
             <input
               type="text"
               value={reason}
@@ -680,37 +677,9 @@ function ShiftWorkloadRow({
     }
   }
 
-  // Закрытие смены диспетчером/директором/админом (№2): «Закрыть сейчас» или с ручным временем и причиной.
+  // Закрытие смены диспетчером/директором/админом (№2): «Закрыть сейчас» или с ручной датой,
+  // временем и причиной. Форма — общая с блоком зависших смен (ShiftClosePanel, 03.08).
   const [closing, setClosing] = useState(false);
-  const [closeBusy, setCloseBusy] = useState(false);
-  const [closeTime, setCloseTime] = useState("");
-  const [closeReason, setCloseReason] = useState("");
-  const [closeError, setCloseError] = useState<string | null>(null);
-  function openClose() {
-    setCloseTime(shiftHHMM(new Date().toISOString())); // префилл текущим временем
-    setCloseReason("");
-    setCloseError(null);
-    setClosing(true);
-  }
-  async function doClose(withTime: boolean) {
-    if (!shift) return;
-    setCloseBusy(true);
-    setCloseError(null);
-    try {
-      const body: Record<string, unknown> = { op: "close" };
-      if (withTime) {
-        body.closedAtTime = closeTime;
-        body.reason = closeReason;
-      }
-      await apiSend(`/api/shifts/${shift.id}`, "PATCH", body);
-      await onChange();
-      setClosing(false);
-    } catch (e) {
-      setCloseError((e as Error).message);
-    } finally {
-      setCloseBusy(false);
-    }
-  }
 
   // Правка времени смены прямо с доски (№1, 04.07): открытие или закрытие (для закрытой смены), с
   // обязательной причиной — тот же PATCH, что и в «Истории смен» Сводки.
@@ -848,8 +817,7 @@ function ShiftWorkloadRow({
             <Button
               variant="ghost"
               className="h-7 px-2 text-xs text-slate-600"
-              onClick={openClose}
-              disabled={closeBusy}
+              onClick={() => setClosing((v) => !v)}
             >
               Закрыть
             </Button>
@@ -898,57 +866,20 @@ function ShiftWorkloadRow({
           Простой задан вручную{shift.idleOverrideNote ? ` · ${shift.idleOverrideNote}` : ""}
         </div>
       ) : null}
-      {closing ? (
-        <div
-          data-testid="shift-close-panel"
-          className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs"
-        >
-          <p className="mb-2 font-medium text-slate-700">Закрыть смену — {name}</p>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              data-testid="shift-close-now"
-              className="h-8 px-3 text-xs"
-              onClick={() => void doClose(false)}
-              disabled={closeBusy}
-            >
-              Закрыть сейчас
-            </Button>
-            <Button
-              variant="ghost"
-              className="h-8 px-3 text-xs"
-              onClick={() => setClosing(false)}
-              disabled={closeBusy}
-            >
-              Отмена
-            </Button>
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <input
-              type="time"
-              data-testid="shift-close-time"
-              value={closeTime}
-              onChange={(e) => setCloseTime(e.target.value)}
-              className="h-8 rounded-md border border-slate-300 px-2"
-            />
-            <input
-              type="text"
-              data-testid="shift-close-reason"
-              value={closeReason}
-              onChange={(e) => setCloseReason(e.target.value)}
-              placeholder="Причина (напр. «водитель забыл закрыть»)"
-              className="h-8 min-w-0 flex-1 rounded-md border border-slate-300 px-2"
-            />
-            <Button
-              variant="secondary"
-              className="h-8 px-3 text-xs"
-              onClick={() => void doClose(true)}
-              disabled={closeBusy || !closeTime.trim()}
-            >
-              Закрыть указанным
-            </Button>
-          </div>
-          {closeError ? <p className="mt-1 text-red-600">{closeError}</p> : null}
-        </div>
+      {closing && shift ? (
+        <ShiftClosePanel
+          shiftId={shift.id}
+          driverName={name}
+          shiftDate={shift.date}
+          openedAt={shift.openedAt}
+          mode="close"
+          allowCloseNow
+          onDone={async () => {
+            setClosing(false);
+            await onChange();
+          }}
+          onCancel={() => setClosing(false)}
+        />
       ) : null}
       {editing ? (
         <div
@@ -979,13 +910,7 @@ function ShiftWorkloadRow({
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="time"
-              data-testid="shift-edit-time"
-              value={editTime}
-              onChange={(e) => setEditTime(e.target.value)}
-              className="h-8 rounded-md border border-slate-300 px-2"
-            />
+            <TimeField value={editTime} onChange={setEditTime} testId="shift-edit-time" className="h-9" />
             <input
               type="text"
               data-testid="shift-edit-reason"
