@@ -7,6 +7,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { Pencil, Lock } from "lucide-react";
 import { ShiftClosePanel } from "./shift-close-panel";
+import { TimeField } from "@/components/ui/time-field";
 import { fetcher, apiSend } from "@/lib/fetcher";
 import { Button } from "@/components/ui/button";
 import type { ShiftHistoryRow } from "@/lib/summary-dto";
@@ -207,13 +208,7 @@ function ShiftHistoryItem({ row, onChanged }: { row: ShiftHistoryRow; onChanged:
           <span className="text-xs font-medium text-neutral-600">
             {edit === "open" ? "Новое время открытия" : "Новое время закрытия"}
           </span>
-          <input
-            type="time"
-            data-testid="shift-edit-time"
-            value={time}
-            onChange={(e) => setTime(e.target.value)}
-            className="h-8 rounded-md border border-neutral-300 px-2 text-sm"
-          />
+          <TimeField value={time} onChange={setTime} testId="shift-edit-time" className="h-9" />
           <input
             type="text"
             data-testid="shift-edit-reason"
