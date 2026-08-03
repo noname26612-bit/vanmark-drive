@@ -5,7 +5,8 @@
 import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
 import { unionDurationMs, type IntervalMs } from "./intervals";
-import { detectShiftLate, periodOf, parseHHMM, dateKeyInTz, KPI_TZ } from "./kpi";
+import { detectShiftLate, periodOf, dateKeyInTz, KPI_TZ } from "./kpi";
+import { moscowMoment, utcDateKey, assertClosedAtValid } from "./shift-time";
 import { resolveOccurredAt } from "./occurred-at";
 import type { ShiftStatus } from "@/generated/prisma/enums";
 
@@ -229,6 +230,17 @@ async function isPeriodClosed(period: string): Promise<boolean> {
  * Решённые вручную (CONFIRMED/DISMISSED) НЕ трогаем — это решение диспетчера. Только в открытом месяце.
  */
 async function syncShiftLate(shift: { id: string; driverId: string; openedAt: Date; status: ShiftStatus }): Promise<void> {
+  // В KPI участвуют только водители с активным денежным профилем (ARCHITECTURE §6). Подменному
+  // (Николай) и внешнему перевозчику отметки не нужны: на выдаче они всё равно отфильтровываются,
+  // а в БД копились бы мусором. Заодно убираем уже накопленных кандидатов (03.08).
+  const payProfile = await prisma.driverPayProfile.findUnique({
+    where: { driverId: shift.driverId },
+    select: { isActive: true },
+  });
+  if (!payProfile?.isActive) {
+    await prisma.kpiMark.deleteMany({ where: { shiftId: shift.id, kind: "SHIFT_LATE", status: "CANDIDATE" } });
+    return;
+  }
   const settings = await prisma.capacitySettings.findUnique({
     where: { id: "singleton" },
     select: { shiftStartMinutes: true, shiftLateGraceMinutes: true },
@@ -267,23 +279,18 @@ async function syncShiftLate(shift: { id: string; driverId: string; openedAt: Da
   }
 }
 
+// Локальное ЧЧ:ММ → корректный UTC-момент. По умолчанию время относится ко дню смены; явная дата
+// (dateISO) нужна для смен через полночь — закрытие приходится на следующий день (03.08).
+function shiftMoment(shiftDate: Date, timeHHMM: string, dateISO?: string | null): Date {
+  return moscowMoment(dateISO?.trim() || utcDateKey(shiftDate), timeHHMM);
+}
+
 /**
  * Применить корректировку времени открытия (№3): обновить openedAt на актуальное (исправленное),
  * сохранить исходное и аудит правки, пересчитать SHIFT_LATE. Время приходит как ЧЧ:ММ (локальное МСК)
  * и привязывается к дате смены → корректный UTC-момент (иначе штраф/время «уедут» на 3 часа).
  * Причина обязательна. Запрещено в закрытом месяце. Время — любое (решение Артёма: раньше/позже факта).
  */
-// Локальное ЧЧ:ММ дня смены → корректный UTC-момент. МСК = UTC+3 (как весь модуль KPI): иначе время
-// открытия/закрытия «уедет» на 3 часа. Валидирует формат.
-function shiftMomentFromHHMM(date: Date, timeHHMM: string): Date {
-  const minutes = parseHHMM(timeHHMM);
-  if (minutes === null) throw Errors.validation("Некорректное время — нужен формат ЧЧ:ММ");
-  const dateKey = date.toISOString().slice(0, 10);
-  const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
-  const mm = String(minutes % 60).padStart(2, "0");
-  return new Date(`${dateKey}T${hh}:${mm}:00.000+03:00`);
-}
-
 async function applyOpenAdjustment(
   shift: ShiftRow,
   timeHHMM: string,
@@ -292,7 +299,7 @@ async function applyOpenAdjustment(
 ): Promise<ShiftRow> {
   const note = (reason ?? "").trim();
   if (!note) throw Errors.validation("Укажите причину правки времени открытия");
-  const newOpenedAt = shiftMomentFromHHMM(shift.date, timeHHMM);
+  const newOpenedAt = shiftMoment(shift.date, timeHHMM);
   const period = periodOf(newOpenedAt);
   if (await isPeriodClosed(period)) throw Errors.periodClosed();
   const updated = await prisma.shift.update({
@@ -351,14 +358,18 @@ export async function adjustShiftOpenedAt(
  * Закрыть смену водителя диспетчером/директором/админом (№2, 03.07). Гейт роли (Д/А) — в route handler;
  * работаем по shiftId, личность водителя берётся из самой смены (изоляция цела). closedById фиксирует,
  * кто закрыл. Идемпотентно: уже закрытая смена возвращается как есть. По умолчанию closedAt = «сейчас»;
- * можно задать время вручную (ЧЧ:ММ дня смены) с опциональной причиной — тогда пишем пометку в аудит
+ * можно задать время вручную (ЧЧ:ММ) с опциональной причиной — тогда пишем пометку в аудит
  * (reported не нужен: это первое закрытие, прежнего времени не было). Ручное время в закрытом месяце
  * запрещено (влияет на «простой» и деньги в Сводке).
+ *
+ * С 03.08 можно задать и ДАТУ закрытия: смена через полночь и забытая смена прошлого дня закрываются
+ * корректно (раньше время жёстко привязывалось ко дню смены). Дата, отличная от дня смены, требует
+ * причину; длительность ограничена MAX_SHIFT_HOURS — защита от опечатки в дате.
  */
 export async function closeShiftById(
   shiftId: string,
   actor: Actor,
-  adjust?: { closedAtTime?: string | null; reason?: string | null },
+  adjust?: { closedAtDate?: string | null; closedAtTime?: string | null; reason?: string | null },
 ): Promise<ShiftView> {
   const shift = await prisma.shift.findUnique({
     where: { id: shiftId },
@@ -367,9 +378,23 @@ export async function closeShiftById(
   if (!shift) throw Errors.notFound();
   if (shift.status === "CLOSED") return toView(shift); // идемпотентно
   const timeHHMM = (adjust?.closedAtTime ?? "").trim();
+  const dateISO = (adjust?.closedAtDate ?? "").trim();
   const reason = (adjust?.reason ?? "").trim();
-  const closedAt = timeHHMM ? shiftMomentFromHHMM(shift.date, timeHHMM) : new Date();
+  if (dateISO && !timeHHMM) throw Errors.validation("Укажите время закрытия");
+  // Дата закрытия, отличная от дня смены (смена через полночь, забытая смена) — осознанное действие:
+  // требуем причину, чтобы в журнале осталось, почему смену закрыли задним числом.
+  if (dateISO && dateISO !== utcDateKey(shift.date) && !reason) {
+    throw Errors.validation("Укажите причину — дата закрытия отличается от даты смены");
+  }
+  const closedAt = timeHHMM ? shiftMoment(shift.date, timeHHMM, dateISO) : new Date();
+  if (timeHHMM) assertClosedAtValid(shift.openedAt, closedAt);
+  // Закрытый месяц проверяем по ОБОИМ месяцам: и по дате закрытия, и по дню смены. Иначе смену
+  // от 31-го числа можно было бы закрыть 1-м числом следующего месяца и молча изменить простой
+  // (он считается по дню смены) уже закрытого периода.
   if (timeHHMM && (await isPeriodClosed(periodOf(closedAt)))) throw Errors.periodClosed();
+  if (timeHHMM && (await isPeriodClosed(utcDateKey(shift.date).slice(0, 7)))) {
+    throw Errors.periodClosed();
+  }
   const auditManualTime =
     timeHHMM && reason
       ? { closedAtAdjustNote: reason, closedAtAdjustedById: actor.id, closedAtAdjustedAt: new Date() }
@@ -392,11 +417,15 @@ async function applyCloseAdjustment(
   timeHHMM: string,
   reason: string,
   actor: Actor,
+  dateISO?: string | null,
 ): Promise<ShiftRow> {
   const note = (reason ?? "").trim();
   if (!note) throw Errors.validation("Укажите причину правки времени закрытия");
-  const newClosedAt = shiftMomentFromHHMM(shift.date, timeHHMM);
+  const newClosedAt = shiftMoment(shift.date, timeHHMM, dateISO);
+  assertClosedAtValid(shift.openedAt, newClosedAt);
+  // Закрытый месяц — по обоим месяцам (см. closeShiftById): дата закрытия и день смены.
   if (await isPeriodClosed(periodOf(newClosedAt))) throw Errors.periodClosed();
+  if (await isPeriodClosed(utcDateKey(shift.date).slice(0, 7))) throw Errors.periodClosed();
   return prisma.shift.update({
     where: { id: shift.id },
     data: {
@@ -412,17 +441,18 @@ async function applyCloseAdjustment(
 
 /**
  * Правка времени закрытия задним числом (диспетчер/админ, №3): только для уже закрытой смены, пока
- * месяц не закрыт. Сохраняет исходное время и аудит.
+ * месяц не закрыт. Сохраняет исходное время и аудит. Дата (03.08) необязательна — без неё время
+ * относится ко дню смены, как раньше.
  */
 export async function adjustShiftClosedAt(
   shiftId: string,
-  input: { timeHHMM: string; reason: string },
+  input: { date?: string | null; timeHHMM: string; reason: string },
   actor: Actor,
 ): Promise<ShiftView> {
   const shift = await prisma.shift.findUnique({ where: { id: shiftId } });
   if (!shift) throw Errors.notFound();
   if (!shift.closedAt) throw Errors.validation("Смена ещё не закрыта — время закрытия править нельзя");
-  return toView(await applyCloseAdjustment(shift, input.timeHHMM, input.reason, actor));
+  return toView(await applyCloseAdjustment(shift, input.timeHHMM, input.reason, actor, input.date));
 }
 
 const MAX_IDLE_OVERRIDE_MINUTES = 720; // 12 часов — дольше смены не бывает (как в idle-note-service)
@@ -544,4 +574,24 @@ export async function listShiftsForDate(today: string): Promise<ShiftView[]> {
     date,
   );
   return shifts.map((s) => ({ ...toView(s), workedMinutes: worked.get(s.driverId) ?? 0 }));
+}
+
+// Больше полусотни зависших смен не бывает; ограничение — страховка от тяжёлого ответа.
+const STALE_SHIFTS_LIMIT = 50;
+
+/**
+ * «Зависшие» смены: открыты (REQUESTED/OPEN) за дни СТРОГО раньше указанного (обычно — сегодня).
+ * Водитель забыл нажать «Закрыть смену», день прошёл — такая смена выпадает из Сводки и зарплаты,
+ * и до 03.08 до неё нельзя было добраться из интерфейса (доска показывает только сегодняшний день).
+ * Показываем диспетчеру отдельным блоком, чтобы он закрыл смену вручную. Только Д/А (гейт в роуте).
+ */
+export async function listStaleShifts(beforeDateISO: string): Promise<ShiftView[]> {
+  const before = parseDate(beforeDateISO);
+  const shifts = await prisma.shift.findMany({
+    where: { date: { lt: before }, status: { in: ["REQUESTED", "OPEN"] } },
+    include: { driver: { select: { name: true } } },
+    orderBy: [{ date: "asc" }],
+    take: STALE_SHIFTS_LIMIT,
+  });
+  return shifts.map(toView);
 }

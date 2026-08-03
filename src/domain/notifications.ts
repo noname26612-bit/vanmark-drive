@@ -89,6 +89,18 @@ export function buildMorningPayload(taskCount: number): PushPayload {
   };
 }
 
+// Вечернее напоминание водителю (21:00, решение Артёма 03.08): смена всё ещё открыта. Пока водитель
+// не закрыл смену, его день не попадает в сводку и расчёт, а забытая смена «висит» до вмешательства
+// диспетчера — напоминание убирает саму причину, а не последствия.
+export function buildCloseShiftPayload(): PushPayload {
+  return {
+    title: "Смена ещё открыта",
+    body: "Закончили работу? Закройте смену в приложении",
+    url: "/m",
+    tag: "close-shift-reminder",
+  };
+}
+
 // Вечерний обход актов (20:05, решение Артёма 02.07): диспетчеру — по скольким задачам акт
 // не приложен к дедлайну 20:00. Тап ведёт на экран KPI, где кандидаты разбираются.
 export function buildActViolationsPayload(taskCount: number): PushPayload {

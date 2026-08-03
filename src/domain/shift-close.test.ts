@@ -96,6 +96,84 @@ describe("closeShiftById — закрытие смены Д/А (№2)", () => {
     findUnique.mockResolvedValue(null);
     await expect(closeShiftById("nope", ACTOR)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
+
+  // Зависшая смена и смена через полночь (03.08): дата закрытия задаётся явно.
+  it("дата закрытия следующего дня: смена через полночь закрывается корректно", async () => {
+    findUnique.mockResolvedValue(shiftRow({ status: "OPEN" }));
+    await closeShiftById("shift-1", ACTOR, {
+      closedAtDate: "2026-07-03",
+      closedAtTime: "02:15",
+      reason: "смена через полночь",
+    });
+    const data = update.mock.calls[0][0].data;
+    expect(data.closedAt.toISOString()).toBe("2026-07-02T23:15:00.000Z"); // 02:15 МСК 3 июля
+    expect(data.closedAtAdjustNote).toBe("смена через полночь");
+    expect(data.closedAtAdjustedById).toBe("disp-1");
+  });
+
+  it("дата, отличная от дня смены, без причины → validation", async () => {
+    findUnique.mockResolvedValue(shiftRow({ status: "OPEN" }));
+    await expect(
+      closeShiftById("shift-1", ACTOR, { closedAtDate: "2026-07-03", closedAtTime: "02:15" }),
+    ).rejects.toMatchObject({ code: "VALIDATION" });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("дата без времени → validation", async () => {
+    findUnique.mockResolvedValue(shiftRow({ status: "OPEN" }));
+    await expect(
+      closeShiftById("shift-1", ACTOR, { closedAtDate: "2026-07-03", reason: "закрыть" }),
+    ).rejects.toMatchObject({ code: "VALIDATION" });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("закрытие раньше открытия → validation", async () => {
+    findUnique.mockResolvedValue(shiftRow({ status: "OPEN" }));
+    await expect(
+      closeShiftById("shift-1", ACTOR, {
+        closedAtDate: "2026-07-01",
+        closedAtTime: "18:00",
+        reason: "ошибка",
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION" });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("опечатка в дате (смена длиннее суток) → validation", async () => {
+    findUnique.mockResolvedValue(shiftRow({ status: "OPEN" }));
+    await expect(
+      closeShiftById("shift-1", ACTOR, {
+        closedAtDate: "2026-07-05",
+        closedAtTime: "18:00",
+        reason: "опечатка",
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION" });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("закрытие смены прошлого месяца новым месяцем: закрытый месяц смены тоже блокирует", async () => {
+    // Смена 31.07, закрываем 01.08. Июль закрыт (расчёт проведён) → отказ: длина смены влияет
+    // на «простой» уже закрытого месяца.
+    findUnique.mockResolvedValue(
+      shiftRow({
+        status: "OPEN",
+        date: new Date("2026-07-31T00:00:00.000Z"),
+        openedAt: new Date("2026-07-31T19:00:00.000Z"), // 22:00 МСК
+      }),
+    );
+    // Август открыт, июль закрыт.
+    payrollCount.mockImplementation(({ where }: { where: { period: string } }) =>
+      Promise.resolve(where.period === "2026-07" ? 1 : 0),
+    );
+    await expect(
+      closeShiftById("shift-1", ACTOR, {
+        closedAtDate: "2026-08-01",
+        closedAtTime: "02:00",
+        reason: "смена через полночь",
+      }),
+    ).rejects.toMatchObject({ code: "PERIOD_CLOSED" });
+    expect(update).not.toHaveBeenCalled();
+  });
 });
 
 describe("adjustShiftClosedAt — правка времени закрытия (№3)", () => {

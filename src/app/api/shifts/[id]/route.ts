@@ -15,14 +15,27 @@ export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
 
+// Дата из тела запроса: пусто → undefined (время относится ко дню смены, как раньше),
+// иначе строгий формат ГГГГ-ММ-ДД с человеческой ошибкой (домен проверит ещё раз).
+function readDate(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const date = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw Errors.validation("Некорректная дата — нужен формат ГГГГ-ММ-ДД");
+  }
+  return date;
+}
+
 // PATCH /api/shifts/:id — действия над сменой водителя (диспетчер/директор/админ). Работаем по shiftId,
 // личность водителя берётся из самой смены (изоляция цела):
 //  • {op:"reopen"} — переоткрыть закрытую смену (случайно закрыл);
-//  • {op:"close", closedAtTime?, reason?} — закрыть смену за водителя (№2): по умолчанию «сейчас»,
-//    можно задать время (ЧЧ:ММ) и причину;
+//  • {op:"close", closedAtDate?, closedAtTime?, reason?} — закрыть смену за водителя (№2): по умолчанию
+//    «сейчас», можно задать время (ЧЧ:ММ) и дату (ГГГГ-ММ-ДД, 03.08 — забытая смена и смена через
+//    полночь) с причиной;
 //  • {op:"idle", idleMinutes, reason} — коррекция авто-простоя смены (07.07): idleMinutes = фактический
 //    простой (мин) с обязательной причиной, либо null — сброс к авто-расчёту;
-//  • {closedAtTime:"ЧЧ:ММ", reason} — правка времени закрытия задним числом (№3): причина обязательна;
+//  • {closedAtDate?, closedAtTime:"ЧЧ:ММ", reason} — правка времени закрытия задним числом (№3):
+//    причина обязательна;
 //  • {openedAtTime:"ЧЧ:ММ", reason} — правка времени открытия задним числом (№3).
 // Только Д/А (requireDispatcher). Личность действующего — из сессии; правки в закрытом месяце — отказ.
 export async function PATCH(req: Request, { params }: Ctx) {
@@ -38,7 +51,10 @@ export async function PATCH(req: Request, { params }: Ctx) {
     }
     if (body.op === "close") {
       const closedAtTime = typeof body.closedAtTime === "string" ? body.closedAtTime : undefined;
-      return NextResponse.json(ok(await closeShiftById(id, actor, { closedAtTime, reason })));
+      const closedAtDate = readDate(body.closedAtDate);
+      return NextResponse.json(
+        ok(await closeShiftById(id, actor, { closedAtDate, closedAtTime, reason })),
+      );
     }
     if (body.op === "idle") {
       // null → сброс к авто-расчёту; число → фактический простой (мин). Причину проверяет домен.
@@ -56,7 +72,10 @@ export async function PATCH(req: Request, { params }: Ctx) {
 
     const closedAtTime = typeof body.closedAtTime === "string" ? body.closedAtTime : "";
     if (closedAtTime.trim()) {
-      return NextResponse.json(ok(await adjustShiftClosedAt(id, { timeHHMM: closedAtTime, reason }, actor)));
+      const date = readDate(body.closedAtDate);
+      return NextResponse.json(
+        ok(await adjustShiftClosedAt(id, { date, timeHHMM: closedAtTime, reason }, actor)),
+      );
     }
     const openedAtTime = typeof body.openedAtTime === "string" ? body.openedAtTime : "";
     if (!openedAtTime.trim()) throw Errors.validation("Укажите время открытия или закрытия (ЧЧ:ММ)");

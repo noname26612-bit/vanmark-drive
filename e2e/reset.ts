@@ -29,6 +29,28 @@ export async function resetActiveTasks(): Promise<void> {
   );
 }
 
+/**
+ * Завести «зависшую» смену: открыта N дней назад и не закрыта (водитель забыл нажать «Закрыть смену»).
+ * Обычным путём такую смену не создать — водитель может открыть смену только за сегодня. Возвращает id.
+ * Время открытия — 09:00 МСК того дня.
+ */
+export async function insertStaleShift(driverLogin: string, daysAgo: number): Promise<string> {
+  const day = `((now() AT TIME ZONE 'Europe/Moscow')::date - ${daysAgo})`;
+  const sql =
+    `INSERT INTO \\"Shift\\" (id,\\"driverId\\",date,status,\\"openedAt\\",\\"createdAt\\") ` +
+    `SELECT gen_random_uuid(),u.id,${day},'OPEN',` +
+    `(${day} + time '09:00') AT TIME ZONE 'Europe/Moscow',now() ` +
+    `FROM \\"User\\" u WHERE u.login='${driverLogin}' ` +
+    `ON CONFLICT (\\"driverId\\",date) DO UPDATE SET status='OPEN', \\"closedAt\\"=NULL, \\"closedById\\"=NULL ` +
+    `RETURNING id`;
+  const out = execSync(`docker exec ${CONTAINER} psql -U vanmark -d vanmark -t -A -c "${sql}"`, {
+    encoding: "utf8",
+  });
+  const id = out.trim().split("\n")[0].trim();
+  if (!id) throw new Error(`insertStaleShift: не удалось создать смену для ${driverLogin}`);
+  return id;
+}
+
 // Сброс смен (этап C): @@unique(driverId, date) — повторный прогон в тот же день иначе натыкается на
 // смену прошлого теста. Удаляем все смены (в dev-БД они только тестовые).
 export async function resetShifts(): Promise<void> {
