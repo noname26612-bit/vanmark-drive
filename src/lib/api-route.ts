@@ -5,6 +5,7 @@ import { auth } from "@/lib/auth";
 import { fail } from "@/lib/api";
 import { DomainError, Errors } from "@/domain/errors";
 import { isDispatcherRole } from "@/domain/task-status";
+import { assertMachineAccess } from "@/domain/machine-access";
 import type { Role } from "@/domain/roles";
 
 export type ApiUser = { id: string; login: string; role: Role; name?: string | null };
@@ -32,6 +33,17 @@ export async function requireAdmin(): Promise<ApiUser> {
 export async function requireDriver(): Promise<ApiUser> {
   const user = await requireApiUser();
   if (user.role !== "DRIVER") throw Errors.forbidden();
+  return user;
+}
+
+/**
+ * Модуль «Станки» (ARCHITECTURE §4г): менеджер-сервисник, диспетчер, админ. Белый список ролей —
+ * см. domain/machine-access. Водителю отдаём 404 (как чужую задачу), а не 403: существование
+ * модуля не раскрываем. Обязателен в КАЖДОМ handler'е /api/machines/*, включая раздачу фото.
+ */
+export async function requireMachineUser(): Promise<ApiUser> {
+  const user = await requireApiUser();
+  assertMachineAccess(user);
   return user;
 }
 

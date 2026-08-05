@@ -1,11 +1,13 @@
 "use client";
 
 import type { ReactNode } from "react";
+// Общий компонент подсветки: используется поиском задач (доска/планирование/все задачи) и
+// поиском станков (05.08.2026). Берёт примитивы из движка поиска, а не из предметного модуля.
 import {
   highlightRanges,
   phoneHighlightRanges,
   type ParsedQuery,
-} from "@/lib/task-search";
+} from "@/lib/search-core";
 
 /**
  * Текст с подсветкой совпадений поиска (<mark>). query=null / неактивный — просто текст.

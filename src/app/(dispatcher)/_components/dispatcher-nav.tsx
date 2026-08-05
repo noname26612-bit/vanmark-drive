@@ -15,6 +15,8 @@ const LINKS = [
   ...(PRICING_ENABLED ? [{ href: "/pricing", label: "Расценка" }] : []),
   { href: "/summary", label: "Сводка" },
   { href: "/kpi", label: "KPI / Зарплата" },
+  // Картотека станков (05.08.2026, PRD §16): у Милены те же права, что у менеджера-сервисника.
+  { href: "/machines", label: "Станки" },
 ];
 
 export function DispatcherNav({ showAdmin }: { showAdmin: boolean }) {

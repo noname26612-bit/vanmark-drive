@@ -1,0 +1,560 @@
+"use client";
+/* eslint-disable @next/next/no-img-element -- фото отдаются через /api/machines/photos/:id по сессионной
+   куке; next/image ходит через свой прокси без куки и получил бы 404. */
+
+import { useRef, useState } from "react";
+import useSWR from "swr";
+import { Camera, MapPin, Stethoscope, Trash2 } from "lucide-react";
+import { fetcher, apiSend, ApiError } from "@/lib/fetcher";
+import { cn } from "@/lib/cn";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Field } from "@/components/ui/field";
+import { DateField } from "@/components/ui/date-field";
+import { PhotoLightbox } from "@/components/photo-lightbox";
+import { BackLink } from "@/components/back-link";
+import {
+  MACHINE_CATEGORIES,
+  isArchivedStatus,
+  isOurCategory,
+  reasonRequiredFor,
+  statusesForCategory,
+} from "@/domain/machine-status";
+import {
+  EVENT_LABEL,
+  MACHINE_CATEGORY_LABEL,
+  MACHINE_STATUS_LABEL,
+  formatDay,
+  formatMoment,
+  machineTitle,
+} from "@/lib/machine-ui";
+import type { MachineDetail } from "@/lib/machine-dto";
+import type { MachineCategory, MachineStatus } from "@/generated/prisma/enums";
+import { MachineCategoryBadge, MachineStatusBadge } from "../_components/machine-badges";
+import { uploadMachinePhotos } from "@/lib/machine-photo-upload";
+
+export function MachineCardClient({ id, initial }: { id: string; initial: MachineDetail }) {
+  const { data: machine = initial, mutate } = useSWR<MachineDetail>(
+    `/api/machines/${id}`,
+    fetcher,
+    { fallbackData: initial, revalidateOnFocus: true },
+  );
+
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [comment, setComment] = useState("");
+  const [uploading, setUploading] = useState<{ done: number; total: number } | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  async function send(body: Record<string, unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await apiSend<MachineDetail>(`/api/machines/${id}`, "PATCH", body);
+      await mutate(updated, { revalidate: false });
+      return true;
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Не удалось сохранить");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Перевод в архив — с переспросом (решение совета): «Выдан»/«Продан»/«Аннулирован» убирают
+  // станок из основного списка, и случайный тап по выпадашке не должен этого делать молча.
+  async function changeStatus(next: MachineStatus) {
+    if (next === machine.status) return;
+    let reason: string | null = null;
+    if (reasonRequiredFor(next)) {
+      reason = window.prompt(
+        "Аннулировать карточку? Укажите причину (например: «дубль станка №212»)",
+      );
+      if (!reason?.trim()) return; // отказались или не указали причину — не трогаем станок
+    } else if (isArchivedStatus(next)) {
+      const ok = window.confirm(
+        `Перевести станок в состояние «${MACHINE_STATUS_LABEL[next]}»? Он уйдёт в архив (вернуть можно).`,
+      );
+      if (!ok) return;
+    }
+    await send({ op: "status", status: next, reason });
+  }
+
+  async function changeCategory(next: MachineCategory) {
+    if (next === machine.category) return;
+    await send({ op: "category", category: next });
+  }
+
+  async function addPhotos(list: FileList | null) {
+    if (!list || list.length === 0) return;
+    const files = Array.from(list);
+    setUploading({ done: 0, total: files.length });
+    setError(null);
+    const failed = await uploadMachinePhotos(machine.id, files, (p) =>
+      setUploading({ done: p.done, total: p.total }),
+    );
+    setUploading(null);
+    if (failed.length > 0) setError(`Не загрузилось фото: ${failed.length}. Попробуйте ещё раз.`);
+    await mutate();
+  }
+
+  async function removePhoto(photoId: string) {
+    if (!window.confirm("Удалить фото?")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiSend(`/api/machines/photos/${photoId}`, "DELETE");
+      await mutate();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Не удалось удалить фото");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendComment() {
+    const text = comment.trim();
+    if (!text) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await apiSend<MachineDetail>(`/api/machines/${id}/comments`, "POST", {
+        comment: text,
+      });
+      setComment("");
+      await mutate(updated, { revalidate: false });
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Не удалось добавить комментарий");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const archived = isArchivedStatus(machine.status);
+
+  return (
+    <div className="mx-auto flex max-w-3xl flex-col gap-4 p-4">
+      <BackLink href="/machines" className="self-start !text-base !py-2">
+        Станки
+      </BackLink>
+
+      <header className="flex flex-col gap-2 rounded-lg border border-neutral-200 bg-white p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="text-lg font-semibold text-neutral-900" data-testid="machine-title">
+            {machineTitle(machine)}
+          </h1>
+          <MachineStatusBadge status={machine.status} size="md" />
+          <MachineCategoryBadge category={machine.category} />
+          {machine.isUrgent ? (
+            <span className="rounded border border-amber-500 px-2 py-0.5 text-xs font-medium text-amber-700">
+              Срочный
+            </span>
+          ) : null}
+        </div>
+        <p className="text-base text-neutral-800">
+          {machine.model}
+          {machine.metalThickness ? (
+            <span className="text-neutral-500"> · {machine.metalThickness}</span>
+          ) : null}
+        </p>
+        {archived && machine.voidReason ? (
+          <p className="text-sm text-red-700">Аннулирован: {machine.voidReason}</p>
+        ) : null}
+      </header>
+
+      {error ? (
+        <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {error}
+        </p>
+      ) : null}
+
+      {/* ── Состояние и категория ── */}
+      <section className="flex flex-col gap-3 rounded-lg border border-neutral-200 bg-white p-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Состояние">
+            <Select
+              value={machine.status}
+              disabled={busy}
+              onChange={(e) => changeStatus(e.target.value as MachineStatus)}
+              data-testid="machine-status-select"
+            >
+              {statusesForCategory(machine.category).map((s) => (
+                <option key={s} value={s}>
+                  {MACHINE_STATUS_LABEL[s]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Категория">
+            <Select
+              value={machine.category}
+              disabled={busy}
+              onChange={(e) => changeCategory(e.target.value as MachineCategory)}
+              data-testid="machine-category-select"
+            >
+              {MACHINE_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {MACHINE_CATEGORY_LABEL[c]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() => send({ op: "diagnosed" })}
+            data-testid="machine-diagnosed"
+          >
+            <Stethoscope className="h-4 w-4" />
+            Диагностика проведена
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() => send({ op: "verified" })}
+            data-testid="machine-verified"
+          >
+            <MapPin className="h-4 w-4" />
+            Подтверждён на месте
+          </Button>
+        </div>
+        <p className="text-xs text-neutral-500">
+          Диагностика:{" "}
+          {machine.diagnosedAt ? (
+            <span className="text-neutral-700">{formatMoment(machine.diagnosedAt)}</span>
+          ) : (
+            "не отмечена"
+          )}{" "}
+          · Сверка:{" "}
+          {machine.lastVerifiedAt ? (
+            <span className="text-neutral-700">{formatMoment(machine.lastVerifiedAt)}</span>
+          ) : (
+            "не отмечена"
+          )}
+        </p>
+      </section>
+
+      {/* ── Фото ── */}
+      <section className="rounded-lg border border-neutral-200 bg-white p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-medium text-neutral-700">Фото</h2>
+          {/* Подпись «Добавить фото», а не просто «Добавить»: ниже есть кнопка добавления
+              комментария, и две одинаковые подписи на одном экране путают. */}
+          <Button
+            variant="secondary"
+            onClick={() => fileRef.current?.click()}
+            disabled={busy}
+            data-testid="machine-add-photo"
+          >
+            <Camera className="h-4 w-4" /> Добавить фото
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            multiple
+            hidden
+            onChange={(e) => {
+              addPhotos(e.target.files);
+              e.target.value = "";
+            }}
+            data-testid="machine-card-photo-input"
+          />
+        </div>
+        {uploading ? (
+          <p className="mb-2 text-xs text-neutral-500">
+            Загружаю фото {uploading.done}/{uploading.total}…
+          </p>
+        ) : null}
+        {machine.attachments.length === 0 ? (
+          <p className="text-sm text-neutral-400">Фото пока нет.</p>
+        ) : (
+          <ul className="flex flex-wrap gap-2">
+            {machine.attachments.map((a) => (
+              <li key={a.id} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setLightbox(`/api/machines/photos/${a.id}`)}
+                  className="block"
+                >
+                  <img
+                    src={`/api/machines/photos/${a.id}`}
+                    alt=""
+                    loading="lazy"
+                    className="h-24 w-24 rounded-lg border border-neutral-200 object-cover"
+                  />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => removePhoto(a.id)}
+                  aria-label="Удалить фото"
+                  className="absolute -right-1.5 -top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-white text-neutral-500 shadow ring-1 ring-neutral-200 active:bg-neutral-100"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* ── Поля карточки ── */}
+      <section className="rounded-lg border border-neutral-200 bg-white p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-medium text-neutral-700">Карточка</h2>
+          <Button variant="ghost" onClick={() => setEditing((v) => !v)} data-testid="machine-edit">
+            {editing ? "Свернуть" : "Изменить"}
+          </Button>
+        </div>
+        {editing ? (
+          <MachineEditForm
+            machine={machine}
+            busy={busy}
+            onSave={async (patch) => {
+              const ok = await send({ op: "edit", ...patch });
+              if (ok) setEditing(false);
+            }}
+          />
+        ) : (
+          <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+            <Row label="Комплектация" value={machine.configuration} />
+            <Row label="Серийный номер" value={machine.serialNumber} />
+            <Row label="Место на площадке" value={machine.location} />
+            <Row label="Дата поступления" value={machine.arrivedAt ? formatDay(machine.arrivedAt) : null} />
+            <Row label="Заказчик" value={machine.orgName} />
+            <Row label="Контакт" value={machine.contactName} />
+            <Row
+              label="Телефон"
+              value={machine.contactPhone}
+              href={machine.contactPhone ? `tel:${machine.contactPhone}` : undefined}
+            />
+            <Row label="№ заказа 1С" value={machine.invoice1C} accent={machine.category === "CLIENT" && !machine.invoice1C} />
+            <Row label="Ответственный" value={machine.responsibleName} />
+            <Row label="Кто привёз" value={machine.deliveredBy} />
+            <div className="sm:col-span-2">
+              <Row label="Дефектовка" value={machine.defectNotes} block />
+            </div>
+            <div className="sm:col-span-2">
+              <Row label="Заметки" value={machine.notes} block />
+            </div>
+          </dl>
+        )}
+      </section>
+
+      {/* ── Журнал ── */}
+      <section className="rounded-lg border border-neutral-200 bg-white p-4">
+        <h2 className="mb-2 text-sm font-medium text-neutral-700">История</h2>
+        <div className="mb-3 flex gap-2">
+          <Input
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="Комментарий к станку"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") sendComment();
+            }}
+            data-testid="machine-comment"
+          />
+          <Button
+            onClick={sendComment}
+            disabled={busy || !comment.trim()}
+            className="shrink-0"
+            data-testid="machine-comment-send"
+          >
+            Добавить
+          </Button>
+        </div>
+        <ul className="flex flex-col gap-2" data-testid="machine-events">
+          {machine.events.map((e) => (
+            <li key={e.id} className="border-b border-neutral-100 pb-2 last:border-0">
+              <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-neutral-500">
+                <span className="font-medium text-neutral-700">
+                  {EVENT_LABEL[e.kind] ?? e.kind}
+                </span>
+                <span>{formatMoment(e.at)}</span>
+                <span>· {e.actorName}</span>
+              </div>
+              {e.kind === "status_change" && e.toStatus ? (
+                <p className="text-sm text-neutral-800">
+                  {e.fromStatus ? `${MACHINE_STATUS_LABEL[e.fromStatus]} → ` : ""}
+                  {MACHINE_STATUS_LABEL[e.toStatus]}
+                </p>
+              ) : null}
+              {e.changes.length > 0 ? (
+                <ul className="text-sm text-neutral-800">
+                  {e.changes.map((c) => (
+                    <li key={c.field}>
+                      <span className="text-neutral-500">{c.label}:</span> {c.from ?? "—"} →{" "}
+                      <span className="font-medium">{c.to ?? "—"}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {e.comment ? <p className="text-sm text-neutral-800">{e.comment}</p> : null}
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      {lightbox ? <PhotoLightbox url={lightbox} onClose={() => setLightbox(null)} /> : null}
+    </div>
+  );
+}
+
+function Row({
+  label,
+  value,
+  href,
+  block,
+  accent,
+}: {
+  label: string;
+  value: string | null;
+  href?: string;
+  block?: boolean;
+  accent?: boolean;
+}) {
+  return (
+    <div className={cn(block ? "flex flex-col gap-0.5" : "flex items-baseline gap-2")}>
+      <dt className="shrink-0 text-neutral-500">{label}</dt>
+      <dd className={cn("text-neutral-900", accent && !value ? "text-amber-700" : "")}>
+        {value ? (
+          href ? (
+            <a href={href} className="underline underline-offset-2">
+              {value}
+            </a>
+          ) : (
+            value
+          )
+        ) : accent ? (
+          "не указан"
+        ) : (
+          "—"
+        )}
+      </dd>
+    </div>
+  );
+}
+
+// Правка полей: отдельная форма, чтобы просмотр карточки оставался спокойным (Максим чаще смотрит,
+// чем правит). Сохраняем одним PATCH — журнал сам посчитает «было→стало».
+function MachineEditForm({
+  machine,
+  busy,
+  onSave,
+}: {
+  machine: MachineDetail;
+  busy: boolean;
+  onSave: (patch: Record<string, unknown>) => void;
+}) {
+  const [f, setF] = useState({
+    model: machine.model,
+    ourNumber: machine.ourNumber === null ? "" : String(machine.ourNumber),
+    configuration: machine.configuration ?? "",
+    metalThickness: machine.metalThickness ?? "",
+    serialNumber: machine.serialNumber ?? "",
+    orgName: machine.orgName ?? "",
+    contactName: machine.contactName ?? "",
+    contactPhone: machine.contactPhone ?? "",
+    invoice1C: machine.invoice1C ?? "",
+    deliveredBy: machine.deliveredBy ?? "",
+    location: machine.location ?? "",
+    arrivedAt: machine.arrivedAt ?? "",
+    defectNotes: machine.defectNotes ?? "",
+    notes: machine.notes ?? "",
+    isUrgent: machine.isUrgent,
+  });
+  const set = (patch: Partial<typeof f>) => setF((prev) => ({ ...prev, ...patch }));
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <Field label="Модель" required>
+        <Input value={f.model} onChange={(e) => set({ model: e.target.value })} />
+      </Field>
+      {isOurCategory(machine.category) ? (
+        <Field label="Наш номер (77-N)">
+          <Input
+            type="number"
+            inputMode="numeric"
+            value={f.ourNumber}
+            onChange={(e) => set({ ourNumber: e.target.value })}
+          />
+        </Field>
+      ) : null}
+      <Field label="Комплектация">
+        <Input value={f.configuration} onChange={(e) => set({ configuration: e.target.value })} />
+      </Field>
+      <Field label="Толщина металла">
+        <Input value={f.metalThickness} onChange={(e) => set({ metalThickness: e.target.value })} />
+      </Field>
+      <Field label="Серийный номер">
+        <Input value={f.serialNumber} onChange={(e) => set({ serialNumber: e.target.value })} />
+      </Field>
+      <Field label="Место на площадке">
+        <Input
+          value={f.location}
+          onChange={(e) => set({ location: e.target.value })}
+          data-testid="machine-location"
+        />
+      </Field>
+      <Field label="Заказчик">
+        <Input value={f.orgName} onChange={(e) => set({ orgName: e.target.value })} />
+      </Field>
+      <Field label="Контакт">
+        <Input value={f.contactName} onChange={(e) => set({ contactName: e.target.value })} />
+      </Field>
+      <Field label="Телефон">
+        <Input type="tel" value={f.contactPhone} onChange={(e) => set({ contactPhone: e.target.value })} />
+      </Field>
+      <Field label="№ заказа 1С">
+        <Input value={f.invoice1C} onChange={(e) => set({ invoice1C: e.target.value })} />
+      </Field>
+      <Field label="Кто привёз">
+        <Input value={f.deliveredBy} onChange={(e) => set({ deliveredBy: e.target.value })} />
+      </Field>
+      <Field label="Дата поступления">
+        <DateField value={f.arrivedAt} onChange={(v) => set({ arrivedAt: v })} />
+      </Field>
+      <div className="sm:col-span-2">
+        <Field label="Дефектовка">
+          <Textarea rows={2} value={f.defectNotes} onChange={(e) => set({ defectNotes: e.target.value })} />
+        </Field>
+      </div>
+      <div className="sm:col-span-2">
+        <Field label="Заметки">
+          <Textarea rows={2} value={f.notes} onChange={(e) => set({ notes: e.target.value })} />
+        </Field>
+      </div>
+      <label className="flex items-center gap-2 text-sm text-neutral-700">
+        <input
+          type="checkbox"
+          checked={f.isUrgent}
+          onChange={(e) => set({ isUrgent: e.target.checked })}
+          className="h-4 w-4"
+        />
+        Срочный
+      </label>
+      <div className="flex justify-end sm:col-span-2">
+        <Button
+          disabled={busy}
+          data-testid="machine-save-edit"
+          onClick={() =>
+            onSave({
+              ...f,
+              ourNumber: isOurCategory(machine.category) && f.ourNumber ? Number(f.ourNumber) : null,
+            })
+          }
+        >
+          Сохранить
+        </Button>
+      </div>
+    </div>
+  );
+}

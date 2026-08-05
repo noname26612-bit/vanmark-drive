@@ -15,7 +15,7 @@ import { formatMinutes } from "@/domain/capacity";
 import { TypeIcon } from "@/components/type-icon";
 import { Button } from "@/components/ui/button";
 import { TaskSearchInput } from "../_components/task-search-input";
-import { Highlighted } from "../_components/highlight";
+import { Highlighted } from "@/components/highlight";
 
 const LIVE = { refreshInterval: 10_000, keepPreviousData: true, revalidateOnFocus: true } as const;
 const HORIZON_DAYS = 7; // окно планирования — неделя (решение Артёма 17.06)

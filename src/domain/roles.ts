@@ -15,6 +15,9 @@ export function homeForRole(role: Role): string {
       return "/board";
     case "DRIVER":
       return "/m";
+    case "SERVICE_MANAGER":
+      // Менеджер-сервисник (Максим, 05.08.2026): весь его сервис — картотека станков (PRD §16).
+      return "/machines";
     default: {
       // Если в enum добавят роль и забудут маршрут — упадёт типизация здесь.
       const exhaustive: never = role;
@@ -32,6 +35,8 @@ export function roleLabel(role: Role): string {
       return "Диспетчер";
     case "DRIVER":
       return "Водитель";
+    case "SERVICE_MANAGER":
+      return "Менеджер-сервисник";
     default: {
       const exhaustive: never = role;
       return exhaustive;

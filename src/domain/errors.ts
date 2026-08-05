@@ -46,4 +46,8 @@ export const Errors = {
     new DomainError("PERIOD_CLOSED", "Месяц закрыт — расчёт зафиксирован и не меняется", 409),
   worksheetLocked: () =>
     new DomainError("WORKSHEET_LOCKED", "Ведомость уже отправлена на расценку", 409),
+  // Станки (PRD §16.3): состояние не подходит категории («в аренде» у станка на продажу).
+  // Единственный инвариант состояний станка — жёсткой матрицы переходов у них нет.
+  machineStatusCategory: (message: string) =>
+    new DomainError("MACHINE_STATUS_CATEGORY", message, 422),
 };

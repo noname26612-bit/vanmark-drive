@@ -40,7 +40,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CreateTaskModal } from "../_components/create-task-modal";
 import { TaskSearchInput } from "../_components/task-search-input";
-import { Highlighted } from "../_components/highlight";
+import { Highlighted } from "@/components/highlight";
 import { useTaskDrafts } from "../_components/task-drafts";
 import { StaleShiftsBlock } from "./stale-shifts-block";
 import { ShiftClosePanel } from "../_components/shift-close-panel";

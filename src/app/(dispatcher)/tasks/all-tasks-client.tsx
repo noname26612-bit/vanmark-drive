@@ -19,7 +19,7 @@ import { DateField } from "@/components/ui/date-field";
 import { Select } from "@/components/ui/select";
 import { CreateTaskModal } from "../_components/create-task-modal";
 import { TaskSearchInput } from "../_components/task-search-input";
-import { Highlighted } from "../_components/highlight";
+import { Highlighted } from "@/components/highlight";
 import { useTaskDrafts } from "../_components/task-drafts";
 import type { FormState } from "@/lib/task-draft";
 
