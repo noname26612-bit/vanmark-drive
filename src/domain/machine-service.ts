@@ -8,7 +8,7 @@
 // добавляют событие с «было→стало». Optimistic-lock сознательно не делаем (пользователей три).
 import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
-import { assertMachineAccess } from "./machine-access";
+import { assertMachineAccess, isMachineRole } from "./machine-access";
 import {
   isArchivedStatus,
   isStatusAllowedForCategory,
@@ -165,11 +165,18 @@ function toListItem(m: ListRow): MachineListItem {
 
 // ───────────────────────────────── валидация ─────────────────────────────────
 
-function trimTo(v: string | null | undefined, max: number): string | null {
+/**
+ * Текстовое поле: пустая строка = «очистить» (null). Слишком длинное значение НЕ обрезаем молча —
+ * человек не должен обнаружить потерю хвоста дефектовки постфактум; говорим об этом сразу.
+ */
+function trimTo(v: string | null | undefined, max: number, label = "Поле"): string | null {
   if (typeof v !== "string") return null;
   const s = v.trim();
   if (!s) return null;
-  return s.length > max ? s.slice(0, max) : s;
+  if (s.length > max) {
+    throw Errors.validation(`${label}: слишком длинный текст (максимум ${max} символов)`);
+  }
+  return s;
 }
 
 function parseDay(s: string): Date {
@@ -179,18 +186,40 @@ function parseDay(s: string): Date {
   return d;
 }
 
-/** Ответственный менеджер — существующий активный сотрудник (не водитель: станки ведёт офис). */
+/**
+ * Ответственный менеджер — активный сотрудник офиса. Проверка БЕЛЫМ списком ролей (isMachineRole),
+ * тем же, что фильтрует выпадашку в listResponsibles: «все кроме водителя» разъехалось бы с формой,
+ * как только в enum добавят следующую роль (ровно так и появился SERVICE_MANAGER).
+ */
 async function assertResponsible(responsibleId: string): Promise<void> {
   const user = await prisma.user.findUnique({
     where: { id: responsibleId },
     select: { role: true, isActive: true },
   });
-  if (!user || !user.isActive || user.role === "DRIVER") {
+  if (!user || !user.isActive || !isMachineRole(user.role)) {
     throw Errors.validation("Ответственным можно назначить только сотрудника офиса");
   }
 }
 
 type FieldPatch = Record<string, unknown>;
+
+// Поля с подписями: подпись нужна, чтобы ошибка длины называла конкретное поле, а не «слишком длинно».
+const SHORT_FIELDS = [
+  ["configuration", "Комплектация"],
+  ["metalThickness", "Толщина металла"],
+  ["serialNumber", "Серийный номер"],
+  ["orgName", "Заказчик"],
+  ["contactName", "Контакт"],
+  ["contactPhone", "Телефон"],
+  ["invoice1C", "№ заказа 1С"],
+  ["deliveredBy", "Кто привёз"],
+  ["location", "Место на площадке"],
+] as const;
+
+const LONG_FIELDS = [
+  ["defectNotes", "Дефектовка"],
+  ["notes", "Заметки"],
+] as const;
 
 /**
  * Разбор полей карточки в данные Prisma. Пустая строка = «очистить поле» (null): менеджер стёр
@@ -200,15 +229,15 @@ async function buildFields(input: EditMachineInput, category: MachineCategory): 
   const patch: FieldPatch = {};
 
   if ("model" in input) {
-    const model = trimTo(input.model, MAX_SHORT);
+    const model = trimTo(input.model, MAX_SHORT, "Модель");
     if (!model) throw Errors.validation("Укажите модель станка");
     patch.model = model;
   }
-  for (const key of ["configuration", "metalThickness", "serialNumber", "orgName", "contactName", "contactPhone", "invoice1C", "deliveredBy", "location"] as const) {
-    if (key in input) patch[key] = trimTo(input[key], MAX_SHORT);
+  for (const [key, label] of SHORT_FIELDS) {
+    if (key in input) patch[key] = trimTo(input[key], MAX_SHORT, label);
   }
-  for (const key of ["defectNotes", "notes"] as const) {
-    if (key in input) patch[key] = trimTo(input[key], MAX_TEXT);
+  for (const [key, label] of LONG_FIELDS) {
+    if (key in input) patch[key] = trimTo(input[key], MAX_TEXT, label);
   }
   if ("isUrgent" in input) patch.isUrgent = input.isUrgent === true;
 
@@ -334,7 +363,7 @@ export async function createMachine(input: CreateMachineInput, actor: Actor): Pr
   if (!input.category || !MACHINE_CATEGORY_LABEL[input.category]) {
     throw Errors.validation("Выберите категорию станка");
   }
-  const model = trimTo(input.model, MAX_SHORT);
+  const model = trimTo(input.model, MAX_SHORT, "Модель");
   if (!model) throw Errors.validation("Укажите модель станка");
 
   const patch = await buildFields({ ...input, model }, input.category);
@@ -383,12 +412,17 @@ export async function listMachines(params: ListParams, actor: Actor): Promise<Ma
   const scope = params.scope === "archive" ? "archive" : "active";
   const archivedStatuses: MachineStatus[] = ["RELEASED", "SOLD", "VOIDED"];
 
+  // Граница «на площадке / архив» и фильтр по состоянию складываются через AND, а НЕ перезаписывают
+  // друг друга: раньше оба клали ключ `status` в один объект, и выбор состояния молча отменял
+  // границу — «На площадке» + «Выдан клиенту» показывал архивные станки как активные.
+  const scopeFilter =
+    scope === "archive" ? { status: { in: archivedStatuses } } : { status: { notIn: archivedStatuses } };
   const where = {
-    ...(scope === "archive"
-      ? { status: { in: archivedStatuses } }
-      : { status: { notIn: archivedStatuses } }),
-    ...(params.category ? { category: params.category } : {}),
-    ...(params.status ? { status: params.status } : {}),
+    AND: [
+      scopeFilter,
+      ...(params.status ? [{ status: params.status }] : []),
+      ...(params.category ? [{ category: params.category }] : []),
+    ],
   };
 
   const [rows, flagRows, locationRows] = await Promise.all([
@@ -425,7 +459,10 @@ export async function listMachines(params: ListParams, actor: Actor): Promise<Ma
   if (q.active) items = items.filter((m) => machineMatches(m, q));
 
   const total = items.length;
-  const take = Math.min(Math.max(params.take ?? (scope === "archive" ? ARCHIVE_PAGE : total), 1), 500);
+  // Потолка на take нет: «Показать ещё» в архиве наращивает окно, и жёсткий предел (500) молча
+  // обрубал бы список на большом архиве — кнопка есть, а новые записи не приходят. Объём держит
+  // сам архив: страница режется уже после фильтрации, в памяти, из выборки без тяжёлых полей.
+  const take = Math.max(params.take ?? (scope === "archive" ? ARCHIVE_PAGE : total), 1);
   const skip = Math.max(params.skip ?? 0, 0);
   const page = scope === "archive" ? items.slice(skip, skip + take) : items;
 
@@ -552,7 +589,7 @@ export async function changeStatus(
       `«${MACHINE_STATUS_LABEL[input.status]}» не подходит категории «${MACHINE_CATEGORY_LABEL[before.category]}»`,
     );
   }
-  const reason = trimTo(input.reason, MAX_SHORT);
+  const reason = trimTo(input.reason, MAX_SHORT, "Причина");
   if (reasonRequiredFor(input.status) && !reason) {
     throw Errors.reasonRequired();
   }
@@ -600,20 +637,26 @@ export async function changeCategory(
       `Сначала смените состояние: «${MACHINE_STATUS_LABEL[before.status]}» не бывает у категории «${MACHINE_CATEGORY_LABEL[input.category]}»`,
     );
   }
-  // Номер «77-N» есть только у наших станков: при переводе в клиентские он снимается.
-  const dropOurNumber = !isOurCategory(input.category) && before.ourNumber !== null;
+  // Номер «77-N» бывает только у наших станков. Молча стирать его при переводе в клиентские нельзя:
+  // номер написан маркером на железе, а освободившись, он тут же уйдёт другому станку — и на площадке
+  // окажутся два «77-5». Поэтому требуем снять номер осознанно, отдельным действием.
+  if (!isOurCategory(input.category) && before.ourNumber !== null) {
+    throw Errors.validation(
+      `Сначала снимите номер 77-${before.ourNumber}: у клиентских станков его не бывает`,
+    );
+  }
 
   const names = new Map<string, string>();
   const changes = buildChanges(
-    { category: before.category, ourNumber: before.ourNumber },
-    { category: input.category, ...(dropOurNumber ? { ourNumber: null } : {}) },
+    { category: before.category },
+    { category: input.category },
     names,
   );
 
   await prisma.$transaction(async (tx) => {
     await tx.machine.update({
       where: { id },
-      data: { category: input.category, ...(dropOurNumber ? { ourNumber: null } : {}) },
+      data: { category: input.category },
     });
     await tx.machineEvent.create({
       data: { machineId: id, actorId: actor.id, kind: "edit", changes },
@@ -649,7 +692,7 @@ export async function markChecked(
 /** Комментарий в журнал станка. */
 export async function addComment(id: string, text: string, actor: Actor): Promise<MachineDetail> {
   assertMachineAccess(actor);
-  const comment = trimTo(text, MAX_TEXT);
+  const comment = trimTo(text, MAX_TEXT, "Комментарий");
   if (!comment) throw Errors.validation("Пустой комментарий");
   const exists = await prisma.machine.findUnique({ where: { id }, select: { id: true } });
   if (!exists) throw Errors.notFound();

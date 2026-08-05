@@ -81,9 +81,14 @@ export function machineFlags(m: FlaggableMachine, now: Date, tz: string = KPI_TZ
 
   // Точка отсчёта ожидания — дата поступления; если её не заполнили, берём день заведения карточки.
   const arrivedKey = m.arrivedAt ? utcDateKey(m.arrivedAt) : dateKeyInTz(m.createdAt, tz);
+  // Диагностика засчитывается только если она относится к ТЕКУЩЕМУ заезду. Иначе повторно
+  // привезённый станок (карточка живёт та же, PRD §16.3) навсегда оставался бы «продиагностированным»
+  // отметкой с прошлого раза, и индикатор больше никогда бы не загорелся.
+  const diagnosedThisVisit =
+    m.diagnosedAt !== null && dateKeyInTz(m.diagnosedAt, tz) >= arrivedKey;
   const awaitingDiagnosis =
     m.status === "ACCEPTED" &&
-    m.diagnosedAt === null &&
+    !diagnosedThisVisit &&
     workdaysBetween(arrivedKey, todayKey) > DIAGNOSIS_WORKDAYS;
 
   // Ни разу не сверяли — считаем от дня заведения карточки (иначе новые станки сразу «протухшие»).

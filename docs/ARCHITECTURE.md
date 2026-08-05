@@ -49,12 +49,16 @@ src/
     capacity-service.ts         # Ёмкость: агрегация загрузки по водителям×дням для календаря (изоляция Д/А)
     machine-access.ts           # Станки (§4г): кто имеет доступ к модулю (белый список ролей)
     machine-status.ts           # Станки: совместимость категория×состояние, архивные состояния (чистые функции)
-    machine-service.ts          # Станки: картотека, журнал «было→стало», фото, счётчики сводки
-    machine-search.ts           # Станки: умный поиск (по образцу task-search.ts, zero deps)
+    machine-flags.ts            # Станки: индикаторы сводки — рабочие дни диагностики, давность сверки (чистые функции)
+    machine-service.ts          # Станки: картотека, журнал «было→стало», счётчики сводки
+    machine-attachment-service.ts # Станки: фото (тот же том и та же раздача через handler, что у задач)
   lib/                          # prisma client, auth, утилиты
     push.ts                     # транспорт web-push (server-only): отправка + чистка протухших подписок
     cron.ts                     # планировщик node-cron (08:00 / 16:00 / 20:05 / 21:00 / 23:30 / 04:00)
     geocode.ts                  # геокодер адреса (server-only, внешний сервис, кэш по адресу) — Фаза 2, §4б
+    search-core.ts              # движок умного поиска: разбор запроса, матчинг, подсветка (общий для задач и станков)
+    task-search.ts              # предметный поиск по задачам поверх search-core
+    machine-search.ts           # предметный поиск по станкам поверх search-core
   components/                   # ui-компоненты (+ sw-register, pwa-controls — этап 5)
   hooks/                        # use-push-subscription, use-install-prompt (этап 5)
   instrumentation.ts            # register(): старт node-cron в Node-рантайме
@@ -443,7 +447,7 @@ model Machine {
   updatedAt      DateTime        @updatedAt
   events         MachineEvent[]
   attachments    MachineAttachment[]
-  @@index([status]) @@index([category, status]) @@index([location])
+  @@index([category, status]) @@index([status]) @@index([updatedAt])
 }
 
 // Журнал станка — ТОЛЬКО НА ЗАПИСЬ (CLAUDE.md правило 3), как TaskEvent.
@@ -452,7 +456,7 @@ model MachineEvent {
   id        String        @id @default(uuid())
   machineId String
   actorId   String
-  kind      String                                    // created | status_change | edit | comment | photo_added
+  kind      String                                    // created | status_change | edit | comment | photo_added | photo_removed
   fromStatus MachineStatus?
   toStatus   MachineStatus?
   comment   String?
@@ -567,7 +571,7 @@ model MachineAttachment {
 
 | Метод и путь | Кто | Что |
 |---|---|---|
-| GET /api/machines?category&status&archive&q&take&skip | С, Д, А | список станков + счётчики сводки. Активные отдаются целиком (десятки), архив — постранично с серверным поиском `q` (номер, «77-N», модель, заказчик, телефон по цифрам, № заказа 1С) |
+| GET /api/machines?scope=active\|archive&category&status&flag&q&take&skip | С, Д, А | список станков + счётчики сводки. `scope` — область просмотра (площадка/архив), `flag` — фильтр по плитке сводки (`urgent`, `awaitingDiagnosis`, `noInvoice1C`, `staleVerification`). Активные отдаются целиком (десятки), архив — постранично с серверным поиском `q` (номер, «77-N», модель, заказчик, телефон по цифрам, № заказа 1С) |
 | POST /api/machines | С, Д, А | завести станок. Обязательны только `category` и `model`; `number` выдаёт сервер (sequence), `ourNumber` — подсказка следующего или ручной ввод |
 | GET /api/machines/meta | С, Д, А | справочные данные формы одним запросом: подсказка следующего свободного «77-N» + сотрудники офиса для поля «ответственный» |
 | GET /api/machines/:id | С, Д, А | карточка + журнал + фото |
@@ -593,7 +597,7 @@ model MachineAttachment {
 - Бэкапы (cron на VPS): `pg_dump` ежедневно + tar uploads, хранение 14 дней локально + копия наружу (рекомендация: S3-совместимый бакет или хотя бы rsync на второй сервер/диск). Восстановление отрепетировать до пилота.
 - Релиз: см. skill deploy-release (миграции → бэкап → up → healthcheck → smoke).
 - Env: `DATABASE_URL`, `AUTH_SECRET`, `AUTH_TRUST_HOST`, `SEED_PASSWORD`, `UPLOADS_DIR`, `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY` (тот же публичный ключ — уезжает в браузер для подписки), `CRON_TZ`, `GEOCODER_PROVIDER`/`GEOCODER_USER_AGENT`/`DADATA_API_KEY`/`DADATA_SECRET` (геокодер ёмкости, Фаза 2 §4б; на проде — `dadata` + ключ). Секреты — только в `.env` на сервере, в репозитории — `.env.example`.
-- Прод-сид менеджера-сервисника (§4г): `pnpm db:seed:service-manager` — заводит ОДНОГО пользователя с ролью `SERVICE_MANAGER` (логин/имя/пароль из env `SM_LOGIN`/`SM_NAME`/`SM_PASSWORD`), существующего только обновляет и **никогда не трогает чужие пароли**. Полный `pnpm db:seed` на проде запрещён — он перезатирает пароли всей команды (урок этапов 11–15).
+- Прод-сид менеджера-сервисника (§4г): `pnpm db:seed:service-manager` — заводит ОДНОГО пользователя с ролью `SERVICE_MANAGER` (логин `SM_LOGIN`, имя `SM_NAME` — по умолчанию `maxim`/«Максим»; пароль `SEED_PASSWORD_MAXIM`, иначе общий `SEED_PASSWORD`). Пароль ставится ТОЛЬКО при создании: существующему пользователю сид меняет разве что роль и **никогда не трогает пароли**. Полный `pnpm db:seed` на проде запрещён — он перезатирает пароли всей команды (урок этапов 11–15).
 - Прод-сид параметров ёмкости (Фаза 2): `pnpm db:seed:capacity` — безопасный (не трогает пользователей/пароли), ставит нормы типов, окна пробок, специализацию и настройки базы. Запускать после миграции `capacity_calendar`.
 - Логи: pino в stdout, `docker logs`; событийный журнал доступа — TaskEvent + auth-лог.
 

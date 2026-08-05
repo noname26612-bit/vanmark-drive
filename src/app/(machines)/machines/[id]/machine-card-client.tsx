@@ -41,6 +41,11 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
     fetcher,
     { fallbackData: initial, revalidateOnFocus: true },
   );
+  // Список сотрудников офиса для поля «Ответственный» (правится и после заведения карточки).
+  const { data: meta } = useSWR<{ responsibles: { id: string; name: string }[] }>(
+    "/api/machines/meta",
+    fetcher,
+  );
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,7 +95,7 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
   }
 
   async function addPhotos(list: FileList | null) {
-    if (!list || list.length === 0) return;
+    if (!list || list.length === 0 || uploading) return;
     const files = Array.from(list);
     setUploading({ done: 0, total: files.length });
     setError(null);
@@ -118,7 +123,9 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
 
   async function sendComment() {
     const text = comment.trim();
-    if (!text) return;
+    // busy проверяем и здесь: Enter в поле не смотрит на disabled кнопки, а журнал — только на запись,
+    // задвоенный комментарий из него уже не убрать.
+    if (!text || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -250,10 +257,10 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
           <Button
             variant="secondary"
             onClick={() => fileRef.current?.click()}
-            disabled={busy}
+            disabled={busy || uploading !== null}
             data-testid="machine-add-photo"
           >
-            <Camera className="h-4 w-4" /> Добавить фото
+            <Camera className="h-4 w-4" /> {uploading ? "Загружаю…" : "Добавить фото"}
           </Button>
           <input
             ref={fileRef}
@@ -283,6 +290,7 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
                 <button
                   type="button"
                   onClick={() => setLightbox(`/api/machines/photos/${a.id}`)}
+                  aria-label="Открыть фото во весь экран"
                   className="block"
                 >
                   <img
@@ -316,8 +324,12 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
         </div>
         {editing ? (
           <MachineEditForm
+            // Ключ по updatedAt: если карточку правил кто-то другой, форма пересоздаётся со свежими
+            // значениями и не отправляет обратно устаревшие поля, затирая чужую правку.
+            key={machine.updatedAt}
             machine={machine}
             busy={busy}
+            responsibles={meta?.responsibles ?? []}
             onSave={async (patch) => {
               const ok = await send({ op: "edit", ...patch });
               if (ok) setEditing(false);
@@ -448,14 +460,17 @@ function Row({
 function MachineEditForm({
   machine,
   busy,
+  responsibles,
   onSave,
 }: {
   machine: MachineDetail;
   busy: boolean;
+  responsibles: { id: string; name: string }[];
   onSave: (patch: Record<string, unknown>) => void;
 }) {
   const [f, setF] = useState({
     model: machine.model,
+    responsibleId: machine.responsibleId ?? "",
     ourNumber: machine.ourNumber === null ? "" : String(machine.ourNumber),
     configuration: machine.configuration ?? "",
     metalThickness: machine.metalThickness ?? "",
@@ -519,6 +534,20 @@ function MachineEditForm({
       <Field label="Кто привёз">
         <Input value={f.deliveredBy} onChange={(e) => set({ deliveredBy: e.target.value })} />
       </Field>
+      <Field label="Ответственный">
+        <Select
+          value={f.responsibleId}
+          onChange={(e) => set({ responsibleId: e.target.value })}
+          data-testid="machine-responsible"
+        >
+          <option value="">Не выбран</option>
+          {responsibles.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
       <Field label="Дата поступления">
         <DateField value={f.arrivedAt} onChange={(v) => set({ arrivedAt: v })} />
       </Field>
@@ -548,6 +577,7 @@ function MachineEditForm({
           onClick={() =>
             onSave({
               ...f,
+              responsibleId: f.responsibleId || null,
               ourNumber: isOurCategory(machine.category) && f.ourNumber ? Number(f.ourNumber) : null,
             })
           }

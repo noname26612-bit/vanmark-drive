@@ -14,7 +14,12 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Highlighted } from "@/components/highlight";
 import { firstHiddenMachineMatch, machineMatches, parseQuery } from "@/lib/machine-search";
-import { MACHINE_CATEGORIES, MACHINE_STATUSES, statusesForCategory } from "@/domain/machine-status";
+import {
+  MACHINE_CATEGORIES,
+  MACHINE_STATUSES,
+  isArchivedStatus,
+  statusesForCategory,
+} from "@/domain/machine-status";
 import {
   MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_BAR,
@@ -101,6 +106,16 @@ export function MachinesClient() {
   };
   const filtersOn = Boolean(category || status || flag || q.trim());
 
+  // Переключение области просмотра: фильтры, несовместимые с новой областью, снимаем сразу.
+  // Иначе комбинации молча дают пустой список — «Архив» + состояние «Принят» (его в архиве не бывает)
+  // или «Архив» + плитка-индикатор (индикаторы считаются только по станкам на площадке).
+  function switchScope(next: "active" | "archive") {
+    setScope(next);
+    setArchivePages(1);
+    setFlag("");
+    if (status && (next === "archive") !== isArchivedStatus(status)) setStatus("");
+  }
+
   return (
     <div className="p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -134,7 +149,7 @@ export function MachinesClient() {
               value={summary.total}
               active={!category && !status && !flag && scope === "active"}
               onClick={() => {
-                setScope("active");
+                switchScope("active");
                 resetFilters();
               }}
             />
@@ -145,8 +160,7 @@ export function MachinesClient() {
                 value={summary.byCategory[c]}
                 active={category === c && scope === "active"}
                 onClick={() => {
-                  setScope("active");
-                  setFlag("");
+                  switchScope("active");
                   setCategory(category === c ? "" : c);
                 }}
               />
@@ -163,8 +177,7 @@ export function MachinesClient() {
                 value={summary.byStatus[s]}
                 active={status === s && scope === "active"}
                 onClick={() => {
-                  setScope("active");
-                  setFlag("");
+                  switchScope("active");
                   setStatus(status === s ? "" : s);
                 }}
               />
@@ -174,7 +187,7 @@ export function MachinesClient() {
               value={summary.archived + summary.voided}
               active={scope === "archive"}
               onClick={() => {
-                setScope("archive");
+                switchScope("archive");
                 resetFilters();
               }}
             />
@@ -190,10 +203,11 @@ export function MachinesClient() {
                 accent={summary[t.key] > 0}
                 active={flag === t.key && scope === "active"}
                 onClick={() => {
-                  setScope("active");
+                  const next = flag === t.key ? "" : t.key;
+                  switchScope("active");
                   setCategory("");
                   setStatus("");
-                  setFlag(flag === t.key ? "" : t.key);
+                  setFlag(next);
                 }}
               />
             ))}
@@ -245,27 +259,29 @@ export function MachinesClient() {
           data-testid="machine-filter-status"
         >
           <option value="">Любое состояние</option>
-          {(category ? statusesForCategory(category) : MACHINE_STATUSES).map((s) => (
+          {(category ? statusesForCategory(category) : MACHINE_STATUSES)
+            .filter((s) => isArchivedStatus(s) === (scope === "archive"))
+            .map((s) => (
             <option key={s} value={s}>
               {MACHINE_STATUS_LABEL[s]}
             </option>
           ))}
         </Select>
 
-        <div className="flex items-center gap-2">
+        {/* Селект и «Сбросить» — соседи в одной ячейке сетки: на 360px они не помещались рядом,
+            поэтому селект тянется, а кнопка не сжимается. */}
+        <div className="flex min-w-0 items-center gap-2">
           <Select
             value={scope}
-            onChange={(e) => {
-              setScope(e.target.value as "active" | "archive");
-              setArchivePages(1);
-            }}
+            onChange={(e) => switchScope(e.target.value as "active" | "archive")}
             data-testid="machine-filter-scope"
+            className="min-w-0 flex-1"
           >
             <option value="active">На площадке</option>
             <option value="archive">Архив</option>
           </Select>
           {filtersOn ? (
-            <Button variant="ghost" onClick={resetFilters} className="shrink-0">
+            <Button variant="ghost" onClick={resetFilters} className="shrink-0 px-2">
               Сбросить
             </Button>
           ) : null}
@@ -369,7 +385,7 @@ function SummaryChip({
       onClick={onClick}
       title={hint}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition-colors",
+        "inline-flex min-h-10 items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition-colors",
         active
           ? "border-neutral-900 bg-white text-neutral-900"
           : accent
@@ -391,8 +407,9 @@ function MachineRow({
   query: ReturnType<typeof parseQuery> | null;
 }) {
   const title = machineTitle(m);
+  // Заказчик виден прямо в строке — если совпало по нему, сниппет «почему нашлось» был бы дублем.
   const hidden = query?.active
-    ? firstHiddenMachineMatch(m, query, [m.model, m.location ?? "", title])
+    ? firstHiddenMachineMatch(m, query, [m.model, m.location ?? "", m.orgName ?? "", title])
     : null;
 
   return (

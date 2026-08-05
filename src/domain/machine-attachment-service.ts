@@ -18,7 +18,7 @@ export type NewMachinePhoto = {
   sizeBytes: number;
 };
 
-// Клиенту не отдаём filePath — файл доступен только через /api/machines/attachments/:id.
+// Клиенту не отдаём filePath — файл доступен только через GET /api/machines/photos/:id.
 const attachmentSelect = { id: true, mimeType: true, createdAt: true } as const;
 
 /**
@@ -86,19 +86,21 @@ export async function getMachinePhotoForDownload(attachmentId: string, actor: Ac
 }
 
 /**
- * Удалить фото. Свой снимок может убрать автор; чужой — диспетчер или админ (Максим чужие фото
- * не удаляет — это тот же принцип, что с вложениями задач: убирает автор либо старший по роли).
- * Событие пишется в журнал: картотека должна помнить, что фото было и кто его убрал.
+ * Удалить фото. Убрать снимок может любой, кто работает с картотекой — как и завести станок,
+ * сменить его состояние или дописать в журнал.
+ *
+ * Ограничения «только автор» здесь сознательно НЕТ (в отличие от вложений задач): у задач есть
+ * владелец-исполнитель, у картотеки площадки владельца нет. Иначе Максим не смог бы убрать неудачный
+ * снимок, загруженный Миленой, — а кнопка удаления стоит на каждом фото, и отказ выглядел бы сбоем.
+ * Факт удаления и автор действия остаются в журнале станка.
  */
 export async function deleteMachinePhoto(attachmentId: string, actor: Actor): Promise<void> {
   assertMachineAccess(actor);
   const att = await prisma.machineAttachment.findUnique({
     where: { id: attachmentId },
-    select: { filePath: true, createdById: true, machineId: true },
+    select: { filePath: true, machineId: true },
   });
   if (!att) throw Errors.notFound();
-  const isElevated = actor.role === "ADMIN" || actor.role === "DISPATCHER";
-  if (att.createdById !== actor.id && !isElevated) throw Errors.forbidden();
 
   await prisma.$transaction(async (tx) => {
     await tx.machineAttachment.delete({ where: { id: attachmentId } });

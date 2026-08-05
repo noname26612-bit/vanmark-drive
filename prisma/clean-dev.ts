@@ -38,8 +38,12 @@ async function main(): Promise<void> {
     tasks: await prisma.task.count(),
     events: await prisma.taskEvent.count(),
     shifts: await prisma.shift.count(),
+    machines: await prisma.machine.count(),
   };
-  console.log(`До очистки: задач ${before.tasks}, событий ${before.events}, смен ${before.shifts}`);
+  console.log(
+    `До очистки: задач ${before.tasks}, событий ${before.events}, смен ${before.shifts}, ` +
+      `станков ${before.machines}`,
+  );
 
   // Порядок важен: сначала то, что ссылается на задачи и смены, потом сами задачи и смены.
   await prisma.kpiMark.deleteMany({});
@@ -52,12 +56,21 @@ async function main(): Promise<void> {
   await prisma.driverAbsence.deleteMany({});
   await prisma.processedAction.deleteMany({});
 
-  // Номера заявок начинаем заново — иначе на чистом стенде первая задача получит номер за тысячу.
+  // Картотека станков (модуль «Станки»): e2e плодит тестовые карточки в той же dev-БД, и без
+  // очистки они копятся так же, как копились задачи. Порядок тот же: сначала ссылки, потом станки.
+  await prisma.machineEvent.deleteMany({});
+  await prisma.machineAttachment.deleteMany({});
+  await prisma.machine.deleteMany({});
+
+  // Номера заявок и станков начинаем заново — иначе на чистом стенде первая запись получит номер
+  // за тысячу.
   await prisma.$executeRawUnsafe(`ALTER SEQUENCE task_number_seq RESTART WITH 1`);
+  await prisma.$executeRawUnsafe(`ALTER SEQUENCE machine_number_seq RESTART WITH 1`);
 
   console.log(
     `После очистки: задач ${await prisma.task.count()}, событий ${await prisma.taskEvent.count()}, ` +
-      `смен ${await prisma.shift.count()}. Пользователи, справочники и настройки сохранены.`,
+      `смен ${await prisma.shift.count()}, станков ${await prisma.machine.count()}. ` +
+      `Пользователи, справочники и настройки сохранены.`,
   );
 }
 

@@ -85,6 +85,22 @@ describe("machine-flags: индикаторы станка", () => {
     expect(machineFlags(m, at("2026-08-10")).awaitingDiagnosis).toBe(false);
   });
 
+  it("повторный заезд снова требует диагностики — старая отметка не засчитывается", () => {
+    // Клиент привозит тот же станок второй раз: карточка живёт та же (PRD §16.3), но диагностика
+    // с прошлого заезда к новому отношения не имеет — иначе индикатор не загорится уже никогда.
+    const secondVisit = machine({
+      status: "ACCEPTED",
+      diagnosedAt: at("2026-07-10"), // диагностика прошлого заезда
+      arrivedAt: dateOnly("2026-08-03"), // новое поступление
+    });
+    expect(machineFlags(secondVisit, at("2026-08-05")).awaitingDiagnosis).toBe(true);
+  });
+
+  it("диагностика в день поступления засчитывается", () => {
+    const m = machine({ arrivedAt: dateOnly("2026-08-03"), diagnosedAt: at("2026-08-03") });
+    expect(machineFlags(m, at("2026-08-10")).awaitingDiagnosis).toBe(false);
+  });
+
   it("индикатор диагностики только у принятых (в ремонте — уже не ждёт)", () => {
     const m = machine({ status: "IN_REPAIR", diagnosedAt: null });
     expect(machineFlags(m, at("2026-08-10")).awaitingDiagnosis).toBe(false);

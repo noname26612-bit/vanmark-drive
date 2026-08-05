@@ -3,6 +3,7 @@ import { requireAnyRole } from "@/lib/session";
 import { AppHeader } from "@/components/app-header";
 import { PwaControls } from "@/components/pwa-controls";
 import { DispatcherNav } from "@/app/(dispatcher)/_components/dispatcher-nav";
+import { TaskDraftsProvider } from "@/app/(dispatcher)/_components/task-drafts";
 import { MachinesNav } from "./machines/_components/machines-nav";
 
 // Модуль «Станки» (PRD §16). Guard — БЕЛЫЙ список ролей: менеджер-сервисник, диспетчер, админ.
@@ -21,7 +22,9 @@ export default async function MachinesLayout({ children }: { children: ReactNode
           тем, кому их реально шлют: пуши таргетированы по ролям и менеджера-сервисника не достают. */}
       <PwaControls withPush={isStaff} />
       {isStaff ? <DispatcherNav showAdmin={user.role === "ADMIN"} /> : <MachinesNav />}
-      {children}
+      {/* Диспетчеру черновики свёрнутых заявок доступны и здесь: без провайдера плашка с черновиком
+          пропадала при заходе на «Станки» и возвращалась только на вкладках задач — выглядело как потеря. */}
+      {isStaff ? <TaskDraftsProvider>{children}</TaskDraftsProvider> : children}
     </div>
   );
 }

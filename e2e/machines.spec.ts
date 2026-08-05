@@ -202,6 +202,114 @@ test("комментарий попадает в журнал станка", asy
   await expect(page.getByTestId("machine-events")).toContainText(text);
 });
 
+test("повтор сохранения тем же ключом не заводит второй станок", async ({ page }) => {
+  await login(page, "maxim");
+  const model = unique("Повтор");
+  const key = `e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  // Ровно то, что делает форма при обрыве связи: второй запрос уходит с ТЕМ ЖЕ Idempotency-Key.
+  const first = await page.request.post("/api/machines", {
+    data: { category: "CLIENT", model },
+    headers: { "Idempotency-Key": key },
+  });
+  expect(first.status()).toBe(201);
+  const second = await page.request.post("/api/machines", {
+    data: { category: "CLIENT", model },
+    headers: { "Idempotency-Key": key },
+  });
+  expect(second.status()).toBe(201);
+  // Тот же станок, а не второй с новым учётным номером.
+  expect((await second.json()).data.id).toBe((await first.json()).data.id);
+
+  await page.goto("/machines");
+  await expect(
+    page.getByTestId("machine-list").locator("li").filter({ hasText: model }),
+  ).toHaveCount(1);
+});
+
+test("фильтр по состоянию не выводит архивные станки в область «На площадке»", async ({ page }) => {
+  await login(page, "maxim");
+  const model = unique("Выдан");
+  const machine = await createMachine(page, { category: "CLIENT", model });
+  await page.request.patch(`/api/machines/${machine.id}`, {
+    data: { op: "status", status: "RELEASED" },
+  });
+
+  // Прямой запрос «на площадке + выдан клиенту»: раньше фильтр состояния перезаписывал границу
+  // площадка/архив в одном объекте where, и архивный станок возвращался как активный.
+  const res = await page.request.get("/api/machines?scope=active&status=RELEASED");
+  const { data } = await res.json();
+  expect(data.machines.some((m: { id: string }) => m.id === machine.id)).toBe(false);
+});
+
+test("смена категории не стирает номер 77-N молча", async ({ page }) => {
+  await login(page, "maxim");
+  const model = unique("Номер-категория");
+  const ourNumber = 80000 + Math.floor(Math.random() * 9000);
+  const machine = await createMachine(page, { category: "OUR_SALE", model, ourNumber });
+
+  // Перевод в клиентские отклоняется, пока на станке висит наш номер: он написан маркером
+  // на железе, и молча освободить его нельзя — номер тут же уйдёт другому станку.
+  const res = await page.request.patch(`/api/machines/${machine.id}`, {
+    data: { op: "category", category: "CLIENT" },
+  });
+  expect(res.status()).toBe(422);
+  expect((await res.json()).error.message).toContain("Сначала снимите номер");
+
+  // Номер на месте — данные не потеряны.
+  const after = (await (await page.request.get(`/api/machines/${machine.id}`)).json()).data;
+  expect(after.ourNumber).toBe(ourNumber);
+  expect(after.category).toBe("OUR_SALE");
+});
+
+test("ответственного менеджера можно изменить после заведения карточки", async ({ page }) => {
+  await login(page, "maxim");
+  const model = unique("Ответственный");
+  const machine = await createMachine(page, { category: "CLIENT", model });
+
+  const meta = (await (await page.request.get("/api/machines/meta")).json()).data;
+  const someone = meta.responsibles[0];
+  expect(someone).toBeTruthy();
+
+  const res = await page.request.patch(`/api/machines/${machine.id}`, {
+    data: { op: "edit", responsibleId: someone.id },
+  });
+  expect(res.status()).toBe(200);
+  expect((await res.json()).data.responsibleName).toBe(someone.name);
+
+  // Смена ответственного видна в журнале как «было→стало».
+  await page.goto(`/machines/${machine.id}`);
+  await expect(page.getByTestId("machine-events")).toContainText("Ответственный");
+});
+
+test("водителя нельзя назначить ответственным за станок", async ({ page }) => {
+  await login(page, "maxim");
+  const model = unique("Чужой-ответственный");
+  const machine = await createMachine(page, { category: "CLIENT", model });
+
+  // id водителя берём из сида по логину — через админскую ручку его не достать роли Максима,
+  // поэтому используем заведомо несуществующий id и проверяем сам факт валидации белым списком.
+  const res = await page.request.patch(`/api/machines/${machine.id}`, {
+    data: { op: "edit", responsibleId: "00000000-0000-0000-0000-000000000000" },
+  });
+  expect(res.status()).toBe(422);
+  expect((await res.json()).error.message).toContain("сотрудника офиса");
+});
+
+test("слишком длинный текст не обрезается молча, а отклоняется с понятной ошибкой", async ({
+  page,
+}) => {
+  await login(page, "maxim");
+  const model = unique("Длинный");
+  const machine = await createMachine(page, { category: "CLIENT", model });
+
+  const res = await page.request.patch(`/api/machines/${machine.id}`, {
+    data: { op: "edit", defectNotes: "я".repeat(2500) },
+  });
+  expect(res.status()).toBe(422);
+  expect((await res.json()).error.message).toContain("Дефектовка");
+});
+
 test("плитка сводки фильтрует список: «Срочные» показывает только срочные", async ({ page }) => {
   await login(page, "maxim");
   const urgent = unique("Срочный");

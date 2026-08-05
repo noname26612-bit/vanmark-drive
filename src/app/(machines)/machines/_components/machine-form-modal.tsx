@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- локальные превью выбранных фото (blob:), next/image тут не нужен */
 
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Camera, X } from "lucide-react";
 import useSWR from "swr";
 import { fetcher, apiSend, ApiError } from "@/lib/fetcher";
@@ -12,6 +12,7 @@ import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Field } from "@/components/ui/field";
 import { DateField } from "@/components/ui/date-field";
+import { newActionId as newIdempotencyKey } from "@/lib/offline/id";
 import { MACHINE_CATEGORIES, isOurCategory } from "@/domain/machine-status";
 import { MACHINE_CATEGORY_LABEL } from "@/lib/machine-ui";
 import type { MachineDetail } from "@/lib/machine-dto";
@@ -68,6 +69,11 @@ export function MachineFormModal({
   // Трогал ли человек номер руками: пока нет — показываем подсказку следующего свободного.
   const [ourNumberEdited, setOurNumberEdited] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Ключ идемпотентности живёт на ПОПЫТКУ СОХРАНЕНИЯ, а не на вызов submit(): при слабой связи ответ
+  // может не дойти за таймаут, хотя станок уже создан. С новым ключом на каждое нажатие повтор завёл бы
+  // второй станок с новым учётным номером — лечится только аннулированием карточки. Ключ обнуляется
+  // при успехе и при повторном открытии формы.
+  const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
 
   // Справочные данные формы (следующий «77-N», список ответственных) — грузим только когда открыта.
   const { data: meta } = useSWR<Meta>(open ? "/api/machines/meta" : null, fetcher);
@@ -84,6 +90,7 @@ export function MachineFormModal({
       setShowAll(false);
       setError(null);
       setOurNumberEdited(false);
+      setIdempotencyKey(null);
     }
   }
 
@@ -99,6 +106,10 @@ export function MachineFormModal({
     setPhotos((prev) => [...prev, ...Array.from(list)]);
   }
 
+  function removePhoto(index: number) {
+    setPhotos((prev) => prev.filter((_, i) => i !== index));
+  }
+
   async function submit() {
     if (!form.model.trim()) {
       setError("Укажите модель станка");
@@ -106,6 +117,9 @@ export function MachineFormModal({
     }
     setSaving(true);
     setError(null);
+    // Один ключ на все попытки сохранить ЭТУ карточку — иначе повтор после таймаута создаст дубль.
+    const key = idempotencyKey ?? newIdempotencyKey();
+    if (!idempotencyKey) setIdempotencyKey(key);
     try {
       const ourNumber = ourNumberValue.trim();
       const created = await apiSend<MachineDetail>(
@@ -130,9 +144,10 @@ export function MachineFormModal({
           notes: form.notes,
           isUrgent: form.isUrgent,
         },
-        // Двойное нажатие на слабой связи не должно заводить два станка.
-        { "Idempotency-Key": crypto.randomUUID() },
+        // Повтор после обрыва/таймаута не должен заводить второй станок — ключ тот же (см. выше).
+        { "Idempotency-Key": key },
       );
+      setIdempotencyKey(null); // карточка создана — следующая заводится своим ключом
       // Фото передаём наверх: их догружает список, который не размонтируется вместе с формой.
       onCreated(created, photos);
       onClose();
@@ -193,21 +208,7 @@ export function MachineFormModal({
           <span className="text-sm font-medium text-neutral-700">Фото</span>
           <div className="mt-1 flex flex-wrap items-center gap-2">
             {photos.map((f, i) => (
-              <span key={i} className="relative">
-                <img
-                  src={URL.createObjectURL(f)}
-                  alt=""
-                  className="h-20 w-20 rounded-lg border border-neutral-200 object-cover"
-                />
-                <button
-                  type="button"
-                  onClick={() => setPhotos((p) => p.filter((_, idx) => idx !== i))}
-                  aria-label="Убрать фото"
-                  className="absolute -right-1.5 -top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-neutral-900 text-white"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </span>
+              <PhotoPreview key={`${f.name}-${f.lastModified}-${i}`} file={f} onRemove={() => removePhoto(i)} />
             ))}
             <button
               type="button"
@@ -363,5 +364,33 @@ export function MachineFormModal({
         </div>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * Превью выбранного фото. blob-ссылка создаётся один раз на файл и освобождается при размонтировании:
+ * вызов URL.createObjectURL прямо в разметке порождал бы новую ссылку на КАЖДЫЙ рендер (а рендер идёт
+ * на каждую букву в форме) — и ни одна из них не освобождалась бы, пока открыта вкладка.
+ */
+function PhotoPreview({ file, onRemove }: { file: File; onRemove: () => void }) {
+  // Ссылка создаётся один раз на файл (useMemo), освобождается при размонтировании/смене файла.
+  const url = useMemo(() => URL.createObjectURL(file), [file]);
+  useEffect(() => () => URL.revokeObjectURL(url), [url]);
+
+  return (
+    <span className="relative">
+      <img src={url} alt="" className="h-20 w-20 rounded-lg border border-neutral-200 object-cover" />
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label="Убрать фото"
+        // Тач-цель 44px (ui-guidelines): крестик на 24px промахивался пальцем на телефоне.
+        className="absolute -right-3 -top-3 flex h-11 w-11 items-center justify-center text-neutral-900"
+      >
+        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-neutral-900 text-white">
+          <X className="h-3.5 w-3.5" />
+        </span>
+      </button>
+    </span>
   );
 }
