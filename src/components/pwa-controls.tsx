@@ -5,13 +5,17 @@ import { useInstallPrompt } from "@/hooks/use-install-prompt";
 
 // Ненавязчивая полоса: «Установить приложение» и «Включить уведомления» (Этап 5).
 // Показывается только когда есть что предложить; после установки/подписки сворачивается.
-export function PwaControls() {
+//
+// withPush=false — не звать к уведомлениям там, где их не шлют. Так у менеджера-сервисника
+// (05.08.2026): рассылки таргетированы по ролям (водители / диспетчер+админ), его пуш не достанет,
+// и предложение «включить уведомления» было бы обещанием, которого система не выполняет.
+export function PwaControls({ withPush = true }: { withPush?: boolean }) {
   const push = usePushSubscription();
   const install = useInstallPrompt();
 
   const showInstall = install.canInstall;
-  const showEnable = push.state === "unsubscribed";
-  const showDenied = push.state === "denied";
+  const showEnable = withPush && push.state === "unsubscribed";
+  const showDenied = withPush && push.state === "denied";
 
   if (!showInstall && !showEnable && !showDenied) return null;
 

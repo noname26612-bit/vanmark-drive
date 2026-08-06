@@ -36,6 +36,9 @@ const USERS: SeedUser[] = [
   // (решение Артёма 23.06.2026). На проде заводится безопасно через seed-roster.ts.
   { login: "mikhail", name: "Михаил", role: "ADMIN", position: "Директор" },
   { login: "milena", name: "Милена", role: "DISPATCHER" },
+  // Максим — менеджер-сервисник (05.08.2026, PRD §16): видит ТОЛЬКО картотеку станков.
+  // На проде заводится безопасным точечным сидом prisma/seed-service-manager.ts.
+  { login: "maxim", name: "Максим", role: "SERVICE_MANAGER", position: "Менеджер-сервисник" },
   { login: "kashirskiy", name: "Алексей Каширский", role: "DRIVER" },
   { login: "pisarev", name: "Алексей Писарев", role: "DRIVER" },
   // Николай — штатный подменный водитель (закрывает задачи Каширского/Писарева на больничном/в

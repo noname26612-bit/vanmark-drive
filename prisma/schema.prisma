@@ -13,10 +13,14 @@ datasource db {
 }
 
 // Роли (ARCHITECTURE §4). Источник правды по правам — только сессия, см. §6.
+// SERVICE_MANAGER (05.08.2026) — менеджер-сервисник: ТОЛЬКО модуль станков (§4г, PRD §16).
+// Задач, KPI, смен, сводок и админки не видит. Права строятся белыми списками ролей,
+// никогда «всё кроме DRIVER» — иначе новая роль пролезает в чужие разделы.
 enum Role {
   ADMIN
   DISPATCHER
   DRIVER
+  SERVICE_MANAGER
 }
 
 // Статусы задачи (ARCHITECTURE §5). Переходы — только через матрицу в src/domain/task-status.ts.
@@ -115,6 +119,11 @@ model User {
   shifts          Shift[]            @relation("shiftDriver") // смены водителя (этап C)
   absences        DriverAbsence[]    @relation("driverAbsence") // отпуска/больничные водителя (№9)
   idleNotes       DriverIdleNote[]   @relation("idleNoteDriver") // пометки диспетчера о простое (02.07)
+
+  // Модуль «Станки» (§4г, PRD §16)
+  machinesResponsible Machine[]      @relation("machineResponsible") // станки, где этот менеджер — ответственный
+  machinesCreated     Machine[]      @relation("machineCreator") // станки, заведённые этим пользователем
+  machineEvents       MachineEvent[] @relation("machineEventActor") // записи в журналах станков
 }
 
 // Справочник типов задач (PRD §3). Новые типы заводит админ без правки кода.
@@ -588,4 +597,119 @@ model UiPreference {
   updatedAt DateTime @updatedAt
 
   @@id([userId, key])
+}
+
+// ───────────────────────── Модуль «Станки»: картотека б/у оборудования ─────────────────────────
+// Модель данных — ARCHITECTURE §4г, продукт — PRD §16. Решения Артёма 05.08.2026. Полностью
+// аддитивно: существующие таблицы не меняются (кроме обратных связей на User и +SERVICE_MANAGER
+// в enum Role). Доступ — только ролевой (SERVICE_MANAGER|DISPATCHER|ADMIN), изоляции «по владельцу»
+// у модуля нет by design: картотека площадки общая, а не личные задачи.
+
+// Чей станок и зачем он у нас (PRD §16.3). Определяет, какие состояния допустимы.
+enum MachineCategory {
+  CLIENT // клиентский — привезли в ремонт
+  OUR_SALE // наш, на продажу
+  OUR_RENTAL // наш, арендный
+}
+
+// Состояние станка. Жёсткой матрицы переходов НЕТ (осознанно, PRD §16.3): состояние ставится
+// свободно, проверяется только совместимость с категорией (src/domain/machine-status.ts).
+// Архивные (обратимые): RELEASED, SOLD, VOIDED. RENTED — НЕ архив, аренда возвращается в цикл.
+enum MachineStatus {
+  ACCEPTED // принят на площадку
+  NEEDS_REPAIR // требует ремонта (продиагностирован)
+  IN_REPAIR // в ремонте
+  READY // готов
+  RENTED // в аренде (только OUR_RENTAL) — возвратное состояние, не архив
+  RELEASED // выдан клиенту (только CLIENT) — архив
+  SOLD // продан (только OUR_SALE) — архив
+  VOIDED // аннулирован: заведён ошибочно (причина обязательна) — архив, вне счётчиков
+}
+
+// Карточка станка. number — сквозной учётный № ВСЕХ станков (Postgres sequence machine_number_seq,
+// START 1): решение Артёма 05.08 — этот номер пишут маркером на каждый станок, включая клиентские.
+// ourNumber — привычная маркировка «77-N» только наших: система подсказывает следующий свободный,
+// но допускает ручной ввод (при инвентаризации номер уже написан на железе). Дубль ourNumber ловится
+// @unique и отдаётся человеческой ошибкой ввода, а не 500.
+// Обязательны при создании ТОЛЬКО category и model (PRD §16.4): старые станки без данных не должны
+// блокировать инвентаризацию (урок обязательных контактов в заявках, снято 24.07.2026).
+model Machine {
+  id             String          @id @default(uuid())
+  number         Int             @unique @default(dbgenerated("nextval('machine_number_seq'::regclass)"))
+  ourNumber      Int?            @unique // «77-N»; null у клиентских
+  category       MachineCategory
+  status         MachineStatus   @default(ACCEPTED)
+  model          String // «ЛБМ 200», «Sorex 2 м»
+  configuration  String? // комплектация: нож, машинка, стойка…
+  metalThickness String? // «0,7 мм»
+  serialNumber   String?
+  // Заказчик (клиентские станки). Не обязательны — дозаполняются потом.
+  orgName        String?
+  contactName    String?
+  contactPhone   String?
+  // № заказа 1С — ТЕКСТ. Интеграции с 1С нет и не планируется (архив docs/archive/).
+  // Клиентский станок без этого номера подсвечивается в сводке янтарным (индикатор, не блокировка).
+  invoice1C      String?
+  // Ответственный менеджер (Милена/Максим/Михаил/Артём) — обычная связь на User без ограничения роли:
+  // это «кто ведёт станок», а не право доступа (права — только ролевые, ARCHITECTURE §6).
+  responsibleId  String?
+  responsible    User?           @relation("machineResponsible", fields: [responsibleId], references: [id])
+  deliveredBy    String? // кто привёз: свободный текст + подсказки (Каширский/Писарев/Султан/Заказчик/Яндекс)
+  arrivedAt      DateTime?       @db.Date // дата поступления на площадку
+  isUrgent       Boolean         @default(false)
+  defectNotes    String?         @db.Text // дефектовка: что не работает
+  location       String? // место на площадке: свободный текст + автоподсказка по введённым значениям
+  notes          String?         @db.Text
+  voidReason     String? // причина аннулирования — обязательна при status=VOIDED
+  diagnosedAt    DateTime? // кнопка «Диагностика проведена»
+  lastVerifiedAt DateTime? // кнопка «Подтверждён на месте» (сверка при обходе площадки)
+  createdById    String
+  createdBy      User            @relation("machineCreator", fields: [createdById], references: [id])
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  events      MachineEvent[]
+  attachments MachineAttachment[]
+
+  @@index([category, status])
+  @@index([status])
+  @@index([updatedAt])
+}
+
+// Журнал станка — ТОЛЬКО НА ЗАПИСЬ (CLAUDE.md правило 3), по образцу TaskEvent: события не
+// редактируются и не удаляются, исправление ошибки = новое событие. changes хранит «было→стало»
+// по ключевым полям правки — чтобы ответить, кто передвинул станок и когда (расследуемость).
+model MachineEvent {
+  id         String         @id @default(uuid())
+  machineId  String
+  machine    Machine        @relation(fields: [machineId], references: [id])
+  actorId    String
+  actor      User           @relation("machineEventActor", fields: [actorId], references: [id])
+  kind       String // created | status_change | edit | comment | photo_added | photo_removed
+  fromStatus MachineStatus?
+  toStatus   MachineStatus?
+  comment    String?
+  // Диф правки: [{ field, label, from, to }] — только ключевые поля (статус/место/категория/
+  // ответственный/номера/заказчик). Пустой массив не пишем: правка без изменений события не создаёт.
+  changes    Json?
+  at         DateTime       @default(now())
+
+  @@index([machineId, at])
+}
+
+// Фото станка. Механика вложений задач один в один: файл лежит в UPLOADS_DIR под серверным
+// uuid.ext (клиент имя не задаёт), раздача — только через route handler с проверкой прав, не из
+// public/. Создание станка НЕ ждёт фото: карточка сохраняется мгновенно, фото догружаются следом
+// с автоповтором (обрыв связи на площадке не теряет ввод).
+model MachineAttachment {
+  id          String   @id @default(uuid())
+  machineId   String
+  machine     Machine  @relation(fields: [machineId], references: [id])
+  filePath    String // относительный путь в UPLOADS_DIR (uuid.ext) — генерит сервер
+  mimeType    String
+  sizeBytes   Int
+  createdById String // кто загрузил (uuid без навигации, как в Attachment задач)
+  createdAt   DateTime @default(now())
+
+  @@index([machineId, createdAt])
 }

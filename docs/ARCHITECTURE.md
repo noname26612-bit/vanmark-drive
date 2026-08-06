@@ -34,6 +34,7 @@ src/
   app/
     (dispatcher)/board/...      # доска Милены: «Сегодня», «Все задачи», карточка
     (driver)/m/...              # PWA водителя: «Мои задачи», карточка, завершение
+    (machines)/machines/...     # модуль «Станки» (§4г): сводка, список, карточка — С/Д/А, адаптив
     api/                        # route handlers (REST)
     login/
   domain/                       # ЯДРО: статусная матрица, права, доменные сервисы
@@ -46,10 +47,18 @@ src/
     kpi-service.ts              # KPI: кандидаты, подтверждение/отклонение, ручные отметки, закрытие месяца, расчёт водителя (с изоляцией)
     capacity.ts                 # Ёмкость (Фаза 2): haversine, время в пути с коэффициентами, оценка задачи (чистые функции, юнит-тесты)
     capacity-service.ts         # Ёмкость: агрегация загрузки по водителям×дням для календаря (изоляция Д/А)
+    machine-access.ts           # Станки (§4г): кто имеет доступ к модулю (белый список ролей)
+    machine-status.ts           # Станки: совместимость категория×состояние, архивные состояния (чистые функции)
+    machine-flags.ts            # Станки: индикаторы сводки — рабочие дни диагностики, давность сверки (чистые функции)
+    machine-service.ts          # Станки: картотека, журнал «было→стало», счётчики сводки
+    machine-attachment-service.ts # Станки: фото (тот же том и та же раздача через handler, что у задач)
   lib/                          # prisma client, auth, утилиты
     push.ts                     # транспорт web-push (server-only): отправка + чистка протухших подписок
     cron.ts                     # планировщик node-cron (08:00 / 16:00 / 20:05 / 21:00 / 23:30 / 04:00)
     geocode.ts                  # геокодер адреса (server-only, внешний сервис, кэш по адресу) — Фаза 2, §4б
+    search-core.ts              # движок умного поиска: разбор запроса, матчинг, подсветка (общий для задач и станков)
+    task-search.ts              # предметный поиск по задачам поверх search-core
+    machine-search.ts           # предметный поиск по станкам поверх search-core
   components/                   # ui-компоненты (+ sw-register, pwa-controls — этап 5)
   hooks/                        # use-push-subscription, use-install-prompt (этап 5)
   instrumentation.ts            # register(): старт node-cron в Node-рантайме
@@ -66,7 +75,8 @@ CLAUDE.md
 ## 4. Модель данных (Prisma)
 
 ```prisma
-enum Role        { ADMIN DISPATCHER DRIVER }
+// SERVICE_MANAGER (05.08.2026) — менеджер-сервисник: ТОЛЬКО модуль станков (§4г), задач не видит.
+enum Role        { ADMIN DISPATCHER DRIVER SERVICE_MANAGER }
 // Переработка механики водителя: рабочая цепочка схлопнута в IN_PROGRESS «В работе».
 // ACCEPTED/EN_ROUTE/ON_SITE — LEGACY (новым задачам не присваиваются, остаются ради истории TaskEvent).
 enum TaskStatus  { NEW ASSIGNED IN_PROGRESS DONE ON_HOLD RESCHEDULED CANCELLED  /* legacy: */ ACCEPTED EN_ROUTE ON_SITE }
@@ -397,6 +407,89 @@ estimate   = type.onSiteMinutes + travelMin     (round)
 ```
 `trafficFactor` берёт `factorPercent` окна `TrafficWindow`, в которое попадает `timeFrom` (нет времени → дневное окно). Оценка пишется в `Task.estimatedMinutes` при создании и при правке адреса/`scheduledDate`/`timeFrom`/типа в `task-service`, если `estimateIsManual=false`. Агрегация для календаря (`capacity-service.ts`): сумма `estimatedMinutes` по (`assigneeId`, `scheduledDate`) за период — дёшево, индекс `@@index([assigneeId, scheduledDate])` уже есть. «Ремонтность» задачи для подсказки §14.5 определяется по `type.requiresPricing` (выездной ремонт + гарантия); отдельное поле типа не вводим.
 
+## 4г. Модель данных: модуль «Станки» (картотека, Фаза 2)
+
+Спека — PRD §16, решения Артёма 05.08.2026. **Полностью аддитивно**: ни одна существующая таблица не меняется, кроме `enum Role` (+`SERVICE_MANAGER`) и обратных связей на `User`. Это осознанный образец **модульного расширения на нового сотрудника**: новый модуль = роль + вкладка + свои таблицы + свои права. Задачи, KPI, смены и деньги модуль не трогает вообще — пересечений в коде нет, кроме общих примитивов (сессия, вложения, ошибки).
+
+```prisma
+enum MachineCategory { CLIENT OUR_SALE OUR_RENTAL }              // чей станок: клиентский / наш на продажу / наш арендный
+enum MachineStatus   { ACCEPTED NEEDS_REPAIR IN_REPAIR READY RENTED RELEASED SOLD VOIDED }
+
+// Карточка станка. number — сквозной учётный № ВСЕХ станков (Postgres sequence machine_number_seq),
+// пишется маркером на железо. ourNumber — привычная маркировка «77-N» только наших: подсказка
+// следующего + ручной ввод при инвентаризации (дубль ловится @unique и отдаётся человеческой ошибкой).
+model Machine {
+  id             String          @id @default(uuid())
+  number         Int             @unique @default(dbgenerated("nextval('machine_number_seq'::regclass)"))
+  ourNumber      Int?            @unique              // «77-N»; null у клиентских
+  category       MachineCategory
+  status         MachineStatus   @default(ACCEPTED)
+  model          String                               // обязательное поле №2 (кроме категории)
+  configuration  String?                              // комплектация: нож, машинка, стойка…
+  metalThickness String?                              // «0,7 мм»
+  serialNumber   String?
+  orgName        String?                              // заказчик (клиентские)
+  contactName    String?
+  contactPhone   String?
+  invoice1C      String?                              // № заказа 1С — ТЕКСТ, интеграции нет (архив)
+  responsibleId  String?                              // ответственный менеджер (Милена/Максим/Михаил/Артём)
+  deliveredBy    String?                              // кто привёз (свободный текст + подсказки)
+  arrivedAt      DateTime?       @db.Date             // дата поступления
+  isUrgent       Boolean         @default(false)
+  defectNotes    String?         @db.Text             // дефектовка
+  location       String?                              // место на площадке (свободный текст + datalist-подсказка)
+  notes          String?         @db.Text
+  voidReason     String?                              // причина аннулирования (обязательна при VOIDED)
+  diagnosedAt    DateTime?                            // «Диагностика проведена»
+  lastVerifiedAt DateTime?                            // «Подтверждён на месте» (сверка при обходе)
+  createdById    String
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  events         MachineEvent[]
+  attachments    MachineAttachment[]
+  @@index([category, status]) @@index([status]) @@index([updatedAt])
+}
+
+// Журнал станка — ТОЛЬКО НА ЗАПИСЬ (CLAUDE.md правило 3), как TaskEvent.
+// changes — «было→стало» по ключевым полям правки: [{field,label,from,to}] (расследуемость «кто передвинул станок»).
+model MachineEvent {
+  id        String        @id @default(uuid())
+  machineId String
+  actorId   String
+  kind      String                                    // created | status_change | edit | comment | photo_added | photo_removed
+  fromStatus MachineStatus?
+  toStatus   MachineStatus?
+  comment   String?
+  changes   Json?                                     // diff ключевых полей при kind=edit
+  at        DateTime      @default(now())
+  @@index([machineId, at])
+}
+
+// Фото станка — та же механика, что у вложений задач: файл в UPLOADS_DIR под серверным uuid,
+// раздача ТОЛЬКО через route handler с проверкой прав (не из public/).
+model MachineAttachment {
+  id          String   @id @default(uuid())
+  machineId   String
+  filePath    String                                  // относительный путь в UPLOADS_DIR (uuid.ext)
+  mimeType    String
+  sizeBytes   Int
+  createdById String
+  createdAt   DateTime @default(now())
+  @@index([machineId, createdAt])
+}
+```
+
+**Правила состояния** (`src/domain/machine-status.ts`, чистые функции + юнит-тесты):
+- **Жёсткой матрицы переходов НЕТ** — осознанно (PRD §16.3). Статусная матрица задач (§5) не менялась ни на строку и модулем станков не используется.
+- Проверяется **совместимость категории и состояния**: `RENTED` только у `OUR_RENTAL`, `SOLD` только у `OUR_SALE`, `RELEASED` только у `CLIENT`. Смена категории валидируется тем же предикатом (нельзя оставить `RENTED` у `OUR_SALE`).
+- **Архивные** (терминальные для списка, но обратимые): `RELEASED`, `SOLD`, `VOIDED`. `VOIDED` требует причину (`voidReason`) — лечение дублей инвентаризации в append-only картотеке, из счётчиков исключается. `RENTED` — **не архив** (аренда возвращается в цикл).
+- Переспрос перед архивным состоянием — на клиенте; возврат из архива разрешён (та же карточка, история копится).
+- **Optimistic-lock не делаем** — осознанно (пользователей три, конфликт правки практически невозможен; журнал «было→стало» позволяет разобрать любой спор постфактум).
+
+**Индикаторы сводки** (чистые функции, без cron и пушей — считаются при открытии экрана): «без заказа 1С» (`category=CLIENT && invoice1C пуст`), «срочные» (`isUrgent`), «ждёт диагностики» (`status=ACCEPTED && diagnosedAt=null` и прошло больше одного рабочего дня от `arrivedAt`; рабочие дни — упрощённо пн–пт, без производственного календаря), «давно не сверялся» (`lastVerifiedAt` старше 7 дней или пуст при возрасте карточки > 7 дней).
+
+**Нумерация:** `machine_number_seq` создаётся отдельным SQL в миграции (по образцу `task_number_seq`) и `START 1`. Важно (грабли проекта): `prisma migrate dev` без `--create-only` пересоздаёт таблицы и **дропает sequence** — миграции этого модуля пишутся `--create-only` с ручной правкой SQL. Значение `Role.SERVICE_MANAGER` добавляется **отдельной миграцией** (`ALTER TYPE ... ADD VALUE`): Postgres не позволяет использовать новое значение enum в той же транзакции, где оно создано.
+
 ## 5. Статусная матрица (единственный источник — `src/domain/task-status.ts`)
 
 | Из \ В | ASSIGNED | IN_PROGRESS | DONE | ON_HOLD | RESCHEDULED | CANCELLED |
@@ -426,6 +519,8 @@ estimate   = type.onSiteMinutes + travelMin     (round)
 - Rate limit на `/api/auth/*` (брутфорс), пароли — argon2id.
 - Обязательные e2e-тесты изоляции (см. skill security-check): водитель A не видит и не может изменить задачу водителя B ни одним эндпоинтом.
 - KPI (Фаза 1.5): `GET /api/my/kpi` и расчёт водителя берут `driverId` ТОЛЬКО из сессии; чужой расчёт по прямой ссылке/ID — **404**. Подтверждение нарушений, ручные отметки, настройки оплаты и закрытие месяца — только диспетчер/админ (водитель эти ручки не видит). Каждый KPI-эндпоинт проходит security-check (та же дисциплина, что и задачи).
+- **Роль SERVICE_MANAGER (05.08.2026, §4г).** Права роли — БЕЛЫЙ список, а не «всё кроме»: доступ к модулю станков дают три роли (`isMachineRole` = SERVICE_MANAGER | DISPATCHER | ADMIN, `src/domain/machine-access.ts`), всё остальное для новой роли закрыто по умолчанию. Ключевое требование при её вводе — **проверить существующие guard'ы на допущение «роль не DRIVER ⇒ штаб»**: `requireDispatcher` опирается на `isDispatcherRole` (белый список ADMIN|DISPATCHER — новая роль не проходит), `requireAdmin`/`requireDriver` — точное сравнение, страницы — `requireRole`/`requireAnyRole` с редиректом на `homeForRole`. Отдельно проверяются эндпоинты с одним лишь `requireApiUser()` (без роли): `canViewTask` для SERVICE_MANAGER возвращает false → чужая карточка/вложение отдают 404. Маршруты новой роли: `homeForRole('SERVICE_MANAGER') = '/machines'`; `exhaustive switch` в `src/domain/roles.ts` заставляет типизацию упасть, если роль забыли учесть.
+  - Модуль станков изоляции «по владельцу» не имеет by design (все три роли видят весь парк — это общая картотека, а не личные задачи), поэтому вся его защита — ролевая: `requireMachineUser()` в каждом handler'е, включая раздачу фото `GET /api/machines/photos/:id`. Водитель к любому `/api/machines/*` получает **404** (не 403 — не раскрываем существование модуля).
   - Участие в KPI/зарплате = наличие АКТИВНОГО денежного профиля (`DriverPayProfile.isActive`). Водители без профиля (подменный Николай, внешний перевозчик) исключены из детектора нарушений, списка кандидатов, ручных отметок и расчёта; экран «Мой расчёт» им не показывается (`isPayrollDriver`). Это единственный признак участия — отдельного флага в схеме нет.
 
 ## 7. API (route handlers)
@@ -472,7 +567,21 @@ estimate   = type.onSiteMinutes + travelMin     (round)
 | GET/PUT /api/admin/pay-profiles, /api/admin/kpi-rules, /api/admin/kpi-settings | А | оклад/премия по водителю, веса штрафов, прогрессия/порог |
 | GET/PUT /api/admin/capacity-settings, /api/admin/traffic-windows | А | база/рабочий день/скорость/петляние/обратная дорога; коэффициенты пробок (Фаза 2, §4б) |
 
-Контракт ответов: `{ data }` или `{ error: { code, message } }`; коды ошибок доменные (`FORBIDDEN_TRANSITION`, `PHOTO_REQUIRED`, `NOT_FOUND`, `PERIOD_CLOSED`).
+Модуль «Станки» (§4г, PRD §16) — все ручки доступны ровно трём ролям (С — менеджер-сервисник, Д — диспетчер, А — админ); водителю **404**:
+
+| Метод и путь | Кто | Что |
+|---|---|---|
+| GET /api/machines?scope=active\|archive&category&status&flag&q&take&skip | С, Д, А | список станков + счётчики сводки. `scope` — область просмотра (площадка/архив), `flag` — фильтр по плитке сводки (`urgent`, `awaitingDiagnosis`, `noInvoice1C`, `staleVerification`). Активные отдаются целиком (десятки), архив — постранично с серверным поиском `q` (номер, «77-N», модель, заказчик, телефон по цифрам, № заказа 1С) |
+| POST /api/machines | С, Д, А | завести станок. Обязательны только `category` и `model`; `number` выдаёт сервер (sequence), `ourNumber` — подсказка следующего или ручной ввод |
+| GET /api/machines/meta | С, Д, А | справочные данные формы одним запросом: подсказка следующего свободного «77-N» + сотрудники офиса для поля «ответственный» |
+| GET /api/machines/:id | С, Д, А | карточка + журнал + фото |
+| PATCH /api/machines/:id {op:edit\|status\|category\|diagnosed\|verified} | С, Д, А | правка полей (журнал пишет «было→стало»), смена состояния (валидация совместимости с категорией; `VOIDED` требует причину), смена категории, отметки «диагностика проведена» / «подтверждён на месте» |
+| POST /api/machines/:id/comments | С, Д, А | комментарий в журнал |
+| POST /api/machines/:id/attachments (multipart) | С, Д, А | фото станка (сжатие ~1920px на клиенте); карточка сохраняется до фото, догрузка с автоповтором |
+| GET /api/machines/photos/:id | С, Д, А | файл с проверкой прав (nosniff, не из public/). Путь намеренно не `/api/machines/attachments/:id` — тот пересекался бы с `/api/machines/:id/...` |
+| DELETE /api/machines/photos/:id | С, Д, А | удалить фото: автор либо диспетчер/админ (событие в журнал) |
+
+Контракт ответов: `{ data }` или `{ error: { code, message } }`; коды ошибок доменные (`FORBIDDEN_TRANSITION`, `PHOTO_REQUIRED`, `NOT_FOUND`, `PERIOD_CLOSED`, `MACHINE_STATUS_CATEGORY` — состояние не подходит категории).
 
 ## 8. Real-time, пуши, фоновые задачи
 
@@ -488,13 +597,15 @@ estimate   = type.onSiteMinutes + travelMin     (round)
 - Бэкапы (cron на VPS): `pg_dump` ежедневно + tar uploads, хранение 14 дней локально + копия наружу (рекомендация: S3-совместимый бакет или хотя бы rsync на второй сервер/диск). Восстановление отрепетировать до пилота.
 - Релиз: см. skill deploy-release (миграции → бэкап → up → healthcheck → smoke).
 - Env: `DATABASE_URL`, `AUTH_SECRET`, `AUTH_TRUST_HOST`, `SEED_PASSWORD`, `UPLOADS_DIR`, `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY` (тот же публичный ключ — уезжает в браузер для подписки), `CRON_TZ`, `GEOCODER_PROVIDER`/`GEOCODER_USER_AGENT`/`DADATA_API_KEY`/`DADATA_SECRET` (геокодер ёмкости, Фаза 2 §4б; на проде — `dadata` + ключ). Секреты — только в `.env` на сервере, в репозитории — `.env.example`.
+- Прод-сид менеджера-сервисника (§4г): `pnpm db:seed:service-manager` — заводит ОДНОГО пользователя с ролью `SERVICE_MANAGER` (логин `SM_LOGIN`, имя `SM_NAME` — по умолчанию `maxim`/«Максим»; пароль `SEED_PASSWORD_MAXIM`, иначе общий `SEED_PASSWORD`). Пароль ставится ТОЛЬКО при создании: существующему пользователю сид меняет разве что роль и **никогда не трогает пароли**. Полный `pnpm db:seed` на проде запрещён — он перезатирает пароли всей команды (урок этапов 11–15).
 - Прод-сид параметров ёмкости (Фаза 2): `pnpm db:seed:capacity` — безопасный (не трогает пользователей/пароли), ставит нормы типов, окна пробок, специализацию и настройки базы. Запускать после миграции `capacity_calendar`.
 - Логи: pino в stdout, `docker logs`; событийный журнал доступа — TaskEvent + auth-лог.
 
 ## 10. Тестирование
 
 - Unit (Vitest): статусная матрица (все разрешённые/запрещённые переходы), authz-функции, нумерация. KPI (Фаза 1.5): детекторы нарушений (опоздание/акт/точка на граничных данных), прогрессивный расчёт (0 ошибок = полная премия; прогрессия с 3-го нарушения; штрафы максимум обнуляют премию — итог не ниже оклада; режим ZERO — не ниже 0; сверка с примером PRD §12.3), идемпотентность детектора. Ёмкость (Фаза 2): haversine-расстояние, перевод в минуты с коэффициентами петляния/пробок, выбор окна `TrafficWindow` по `timeFrom` (включая отсутствие времени), оценка задачи на граничных данных; агрегация загрузки по дням.
-- e2e (Playwright): сценарий «Милена создала → назначила → водитель принял → выехал → на месте → фото → выполнено»; тесты изоляции (обязательно); требование фото при DONE. KPI: водитель видит только свой расчёт (чужой → 404); водительские ручки KPI не дают подтверждать/настраивать; закрытый месяц не меняется при правке отметок. Офлайн: действие без сети встаёт в очередь (оверлей + «не отправлено»), при возврате связи досылается, статус долетает до сервера (`offline.spec.ts`).
+- Станки (§4г): совместимость категория×состояние на всех парах, архивные состояния и обязательность причины при `VOIDED`, «было→стало» в журнале правки, счётчики сводки на граничных данных (рабочий день от `arrivedAt`, неделя от `lastVerifiedAt`), умный поиск (номер/«77-N»/телефон/раскладка).
+- e2e (Playwright): сценарий «Милена создала → назначила → водитель принял → выехал → на месте → фото → выполнено»; тесты изоляции (обязательно); требование фото при DONE. Изоляция роли SERVICE_MANAGER — **в обе стороны**: смоук «менеджер-сервисник → каждый существующий раздел = 403/404/redirect» (с адресными проверками денежных ручек KPI/зарплаты/сводки) и «водитель → любая ручка станков = 404». KPI: водитель видит только свой расчёт (чужой → 404); водительские ручки KPI не дают подтверждать/настраивать; закрытый месяц не меняется при правке отметок. Офлайн: действие без сети встаёт в очередь (оверлей + «не отправлено»), при возврате связи досылается, статус долетает до сервера (`offline.spec.ts`).
 
 ## 11. Офлайн-режим водителя (Фаза 2)
 
