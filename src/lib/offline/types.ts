@@ -28,6 +28,10 @@ export type QueuedAction = {
   blobId?: string; // ключ файла в STORE_BLOBS — для multipart (фото офлайн)
   blobMeta?: { name: string; type: string; kind: "PHOTO" | "DOCUMENT" };
   status: QueuedActionStatus;
+  // Момент захвата действия ПРЯМОЙ отправкой (status="syncing", outbox-страховка 07.08). Пока запись
+  // свежая (< DIRECT_STALE_MS), прогоны очереди её не трогают — прямой fetch ещё в полёте. Старше —
+  // страница умерла посреди отправки; reclaim возвращает действие в pending, и оно досылается.
+  directAt?: string;
   // Счётчик неудачных попыток досылки. Растёт между тиками ТОЛЬКО на HTTP 500 (необработанная ошибка
   // приложения — сигнатура «ядовитого» действия, см. sync.ts): по достижении порога SERVER_ERROR_LIMIT
   // действие уходит в conflict (SERVER_REJECTED), чтобы одно застрявшее действие не блокировало очередь

@@ -27,12 +27,14 @@ function deps(list: QueuedAction[], send: QueueDeps["send"]): QueueDeps & {
   conflicts: { id: string; code: string }[];
   conflictAttempts: { id: string; attempts: number }[];
   bumped: { id: string; attempts: number }[];
+  requeued: QueuedAction[];
   auth: string[];
 } {
   const removed: string[] = [];
   const conflicts: { id: string; code: string }[] = [];
   const conflictAttempts: { id: string; attempts: number }[] = [];
   const bumped: { id: string; attempts: number }[] = [];
+  const requeued: QueuedAction[] = [];
   const auth: string[] = [];
   return {
     list: () => Promise.resolve(list),
@@ -51,12 +53,17 @@ function deps(list: QueuedAction[], send: QueueDeps["send"]): QueueDeps & {
       bumped.push({ id: a.id, attempts });
       return Promise.resolve();
     },
+    requeue: (a) => {
+      requeued.push(a);
+      return Promise.resolve();
+    },
     onAuthRequired: () => auth.push("required"),
     onAuthOk: () => auth.push("ok"),
     removed,
     conflicts,
     conflictAttempts,
     bumped,
+    requeued,
     auth,
   };
 }
@@ -83,6 +90,10 @@ function statefulDeps(initial: QueuedAction[], send: QueueDeps["send"]) {
     },
     bumpAttempts: (a, attempts) => {
       store.set(a.id, { ...a, attempts });
+      return Promise.resolve();
+    },
+    requeue: (a) => {
+      store.set(a.id, { ...a });
       return Promise.resolve();
     },
     onAuthRequired: () => {},
@@ -274,5 +285,49 @@ describe("runQueueOnce — предохранитель от «ядовитог�
     await runQueueOnce(d); // успех → a1 удалён, дальше a2 удалён
     expect(store.get("a1")).toBeUndefined();
     expect(removed).toEqual(["a1", "a2"]);
+  });
+});
+
+// Страховка прямой отправки (outbox, 07.08): status="syncing" + directAt пишутся перед прямым fetch
+// (send.ts putDirect). Свежая запись = fetch в полёте, прогону её не трогать; старая = страница
+// умерла посреди отправки, действие возвращается в pending и досылается.
+describe("runQueueOnce: страховка прямой отправки (syncing)", () => {
+  it("свежий syncing → стоп прогона (fetch в полёте, FIFO не обгоняем)", async () => {
+    const send = vi.fn(() => Promise.resolve());
+    const d = deps(
+      [
+        action({ id: "direct", status: "syncing", directAt: new Date().toISOString() }),
+        action({ id: "next", seq: 2 }),
+      ],
+      send,
+    );
+    await expect(runQueueOnce(d)).resolves.toBe(0);
+    expect(send).not.toHaveBeenCalled();
+    expect(d.requeued).toEqual([]);
+  });
+
+  it("осиротевший syncing (directAt старше порога) → в pending и досылается в этом же прогоне", async () => {
+    const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+    const send = vi.fn(() => Promise.resolve());
+    const d = deps(
+      [
+        action({ id: "orphan", status: "syncing", directAt: stale }),
+        action({ id: "next", seq: 2 }),
+      ],
+      send,
+    );
+    await expect(runQueueOnce(d)).resolves.toBe(2);
+    expect(d.requeued.map((a) => ({ id: a.id, status: a.status }))).toEqual([
+      { id: "orphan", status: "pending" },
+    ]);
+    expect(d.removed).toEqual(["orphan", "next"]);
+  });
+
+  it("syncing без directAt (легаси/битая запись) → считается осиротевшим и досылается", async () => {
+    const send = vi.fn(() => Promise.resolve());
+    const d = deps([action({ id: "legacy", status: "syncing" })], send);
+    await expect(runQueueOnce(d)).resolves.toBe(1);
+    expect(d.requeued).toHaveLength(1);
+    expect(d.removed).toEqual(["legacy"]);
   });
 });

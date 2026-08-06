@@ -358,6 +358,9 @@ const B_STORE = "blobs";
 // src/lib/offline/sync.ts. Обрывы связи и прочие 5xx (502/503/504/501/505… — инфраструктура/деплой) к
 // порогу не считаем.
 const SERVER_ERROR_LIMIT = 5;
+// Возраст syncing-страховки (send.ts putDirect), после которого прямой fetch вкладки заведомо мёртв.
+// Держать в синхроне с DIRECT_STALE_MS в src/lib/offline/send.ts.
+const DIRECT_STALE_MS = 120000;
 
 // Открытие offline-БД из SW. ВАЖНО: indexedDB.open(name) БЕЗ версии создаёт БД, если её нет — и
 // раньше создавал ПУСТУЮ (без сторов): sync-событие, пришедшее до первого запуска приложения (или
@@ -453,6 +456,18 @@ async function replayQueue() {
   try {
     for (const a of actions) {
       if (a.status === "conflict") continue;
+      if (a.status === "syncing") {
+        // Страховка прямой отправки вкладки (send.ts putDirect). Свежая — fetch вкладки ещё в полёте:
+        // прерываем sync ошибкой, браузер повторит позже (к тому времени запись либо снята, либо
+        // осиротела). Старая — страница умерла посреди отправки: возвращаем в pending и досылаем
+        // (Idempotency-Key обезвредит повтор, если fetch вкладки всё же дошёл).
+        const started = a.directAt ? Date.parse(a.directAt) : NaN;
+        if (Number.isFinite(started) && Date.now() - started < DIRECT_STALE_MS) {
+          throw new Error("direct send in flight");
+        }
+        await idbPutKey(db, Q_STORE, a.id, Object.assign({}, a, { status: "pending", directAt: undefined }));
+        changed = true;
+      }
       let res;
       try {
         res = await sendQueuedAction(db, a);

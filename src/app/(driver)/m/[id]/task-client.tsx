@@ -7,6 +7,7 @@ import useSWR from "swr";
 import { Navigation, Loader2, Camera, X, FileText, Banknote, Users } from "lucide-react";
 import { CallButton } from "@/components/phone-call";
 import { ApiError } from "@/lib/fetcher";
+import { reportClientError } from "@/lib/report";
 import { cachedFetcher } from "@/lib/offline/cached-fetcher";
 import { useOnline } from "@/lib/offline/net";
 import { idbGet, STORE_BLOBS } from "@/lib/offline/db";
@@ -72,6 +73,50 @@ type StatusExtra = {
 // Типовые причины неоплаты «на месте» (№8, формулировки Артёма 23.06). «Другое» требует комментарий.
 const UNPAID_REASONS = ["Оплатят по счёту", "Оплата через офис", "Спор по сумме/работам", "Другое"];
 
+// ——— Маячок «ждём файл из камеры» (жалоба 07.08: «акт всегда по 2 раза») ———
+// Android может убить TWA, пока открыта системная камера: страница перезагружается, снятый кадр
+// пропадает ДО onChange — спасти его кодом нельзя (файла у страницы ещё не было). Зато пропажу
+// можно поймать: перед открытием камеры ставим отметку в localStorage, при живом возврате снимаем.
+// Отметка пережила перезагрузку страницы → был рестарт посреди съёмки: говорим водителю прямо
+// «снимите ещё раз» и шлём сигнал в client-log (частота проблемы видна без телефона водителя).
+const AWAIT_FILE_KEY = "vm-await-file";
+const AWAIT_FILE_FRESH_MS = 5 * 60_000; // старше — это не «только что снимал», молчим
+let restartChecked = false; // проверка одна на ЗАГРУЗКУ страницы: SPA-переходы рестартом не считаются
+
+function markAwaitingFile(): void {
+  try {
+    localStorage.setItem(AWAIT_FILE_KEY, JSON.stringify({ at: Date.now() }));
+  } catch {
+    /* нет localStorage — маячок просто не работает */
+  }
+}
+
+function clearAwaitingFile(): void {
+  try {
+    localStorage.removeItem(AWAIT_FILE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Свежая отметка пережила перезагрузку страницы? Снимает отметку, при детекте сразу шлёт сигнал
+ *  в client-log (fire-and-forget; двойной вызов гейтится restartChecked + дедупом report). */
+function restartLossDetected(): boolean {
+  if (restartChecked) return false;
+  restartChecked = true;
+  try {
+    const raw = localStorage.getItem(AWAIT_FILE_KEY);
+    if (!raw) return false;
+    localStorage.removeItem(AWAIT_FILE_KEY);
+    const at = (JSON.parse(raw) as { at?: number }).at ?? 0;
+    if (Date.now() - at >= AWAIT_FILE_FRESH_MS) return false;
+    reportClientError("camera-restart: page reloaded while waiting for file input", "camera-beacon");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Причины «завершаю без акта» (акты до 20:00, формулировки Артёма 02.07). Выбор обязателен,
 // но информационен: завершение не блокирует, Милена видит причину в кандидате нарушения.
 const ACT_MISSED_REASONS = [
@@ -135,7 +180,13 @@ export function DriverTaskClient({
   const [photoBusy, setPhotoBusy] = useState(false);
   // Полноэкранный просмотр фото (URL вложения) — закрытие крестиком/свайпом/«назад».
   const [lightbox, setLightbox] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  // Стартовое значение — детект «страница перезапустилась во время съёмки» (маячок выше): рестарт
+  // TWA возвращает водителя в эту же карточку, и он сразу видит, почему фото надо снять заново.
+  const [actionError, setActionError] = useState<string | null>(() =>
+    restartLossDetected()
+      ? "Приложение перезапустилось во время съёмки — фото не сохранилось. Снимите ещё раз."
+      : null,
+  );
   // Мгновенное подтверждение «действие ушло в очередь» — иначе постановка в очередь неотличима
   // от «кнопка не сработала» (жалобы 31.07). Гаснет само; ref таймера — чтобы не мигало при серии.
   const [queuedNotice, setQueuedNotice] = useState(false);
@@ -146,6 +197,15 @@ export function DriverTaskClient({
     queuedNoticeTimer.current = setTimeout(() => setQueuedNotice(false), 4000);
   }
   useEffect(() => () => clearTimeout(queuedNoticeTimer.current), []);
+  // Живой возврат из камеры (без перезагрузки страницы) снимает отметку маячка по visibilitychange:
+  // файл или отмена — оба целы, детект рестарта не нужен.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") clearAwaitingFile();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
   const [holdOpen, setHoldOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [comment, setComment] = useState("");
@@ -778,7 +838,10 @@ export function DriverTaskClient({
             <button
               type="button"
               disabled={photoBusy}
-              onClick={() => docRef.current?.click()}
+              onClick={() => {
+                markAwaitingFile();
+                docRef.current?.click();
+              }}
               className="mt-2 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-neutral-300 text-base font-medium text-neutral-800 disabled:opacity-50"
             >
               {photoBusy ? <Loader2 className="h-5 w-5 animate-spin" /> : <FileText className="h-5 w-5" />}
@@ -905,6 +968,7 @@ export function DriverTaskClient({
         multiple
         className="hidden"
         onChange={(e) => {
+          clearAwaitingFile();
           void uploadPhotos(e.target.files);
           e.target.value = "";
         }}
@@ -917,6 +981,7 @@ export function DriverTaskClient({
         accept="image/*,application/pdf"
         className="hidden"
         onChange={(e) => {
+          clearAwaitingFile();
           void uploadDoc(e.target.files);
           e.target.value = "";
         }}
@@ -963,7 +1028,10 @@ export function DriverTaskClient({
               <button
                 type="button"
                 disabled={photoBusy}
-                onClick={() => fileRef.current?.click()}
+                onClick={() => {
+                  markAwaitingFile();
+                  fileRef.current?.click();
+                }}
                 className="flex h-24 w-24 flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-neutral-300 text-xs text-neutral-500 disabled:opacity-50"
               >
                 {photoBusy ? <Loader2 className="h-6 w-6 animate-spin" /> : <Camera className="h-6 w-6" />}

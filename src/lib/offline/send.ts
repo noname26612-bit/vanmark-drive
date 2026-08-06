@@ -1,11 +1,43 @@
 "use client";
 // Отправка действия водителя: сразу (онлайн) или в очередь (офлайн/нет сети). Один ключ
 // Idempotency-Key на действие — сервер применит его ровно один раз даже при повторной досылке.
+//
+// Outbox-страховка (жалобы Писарева, 07.08): прямой fetch живёт до 15–90 с (таймауты fetcher.ts),
+// и всё это время действие существовало ТОЛЬКО в памяти страницы. Android убивает свёрнутую TWA
+// незаметно — так 03.08 бесследно пропало закрытие смены (в логах Caddy нет POST, в очереди пусто),
+// а фото актов гибли до первого байта. Теперь перед прямой отправкой действие (и blob) пишется в
+// очередь со статусом "syncing": смерть страницы оставляет запись, reclaim (sync.ts/sw.js) вернёт
+// её в pending и дошлёт. Свежий "syncing" прогоны не трогают — двойной отправки нет; гонку досылки
+// с прямым fetch дополнительно страхует серверный Idempotency-Key.
 import { apiSend, apiUpload, ApiError } from "@/lib/fetcher";
-import { idbGet, idbPut, STORE_BLOBS } from "./db";
-import { listQueue, putQueued } from "./queue";
+import { idbGet, idbPut, idbDelete, STORE_BLOBS, STORE_QUEUE } from "./db";
+import { listQueue, putQueued, registerBackgroundSync } from "./queue";
 import { newActionId } from "./id";
 import type { QueuedAction, QueuedActionKind } from "./types";
+
+/** Возраст syncing-записи, после которого прямой fetch заведомо мёртв (больше UPLOAD_TIMEOUT_MS). */
+export const DIRECT_STALE_MS = 120_000;
+
+/**
+ * Тихая страховочная запись прямой отправки: без события очереди (UI не мигает бейджем «ждёт» на
+ * время обычного fetch). Background Sync регистрируем: если страница умрёт в полёте, браузер позже
+ * разбудит SW, reclaim переведёт запись в pending и дошлёт. Отказ IndexedDB не роняет отправку —
+ * действие просто идёт без страховки, как раньше.
+ */
+async function putDirect(action: QueuedAction): Promise<void> {
+  try {
+    await idbPut(STORE_QUEUE, action.id, action);
+    void registerBackgroundSync();
+  } catch {
+    /* нет IndexedDB (private mode и т.п.) — деградация к прежнему поведению */
+  }
+}
+
+/** Тихое снятие страховки после исхода прямой отправки. Отказ не критичен: осиротевшую запись
+ *  подберёт reclaim, а повтор досылки обезврежен Idempotency-Key. */
+async function removeDirect(id: string): Promise<void> {
+  await idbDelete(STORE_QUEUE, id).catch(() => {});
+}
 
 type BlobRecord = { blob: Blob; name: string; type: string };
 
@@ -88,22 +120,26 @@ export async function enqueueOrSend(params: EnqueueParams): Promise<{ queued: bo
     await putQueued(action);
     return { queued: true };
   }
+  await putDirect({ ...action, status: "syncing", directAt: now }); // страховка на время прямого fetch
   try {
     await sendAction(action);
-    return { queued: false };
   } catch (e) {
     if (shouldQueueOnlineFailure(e)) {
-      await putQueued(action); // нет сети / сервер лёг — в очередь, досошлём позже
+      await putQueued(action); // нет сети / сервер лёг — тот же id: страховка становится pending-записью
       return { queued: true };
     }
+    await removeDirect(action.id);
     throw e; // доменная ошибка или онлайн-500 — наверх (откат оптимистики, показ причины)
   }
+  await removeDirect(action.id);
+  return { queued: false };
 }
 
 /**
- * Фото/документ: отправить сразу (онлайн) или сохранить blob в IndexedDB и поставить в очередь
- * (офлайн / нет сети). При досылке sendAction восстановит FormData из blob; после успеха sync.ts
- * удалит blob. Доменные ошибки (например, неверный mime) пробрасываются.
+ * Фото/документ: blob СНАЧАЛА сохраняется в IndexedDB (страховка — кадр переживает смерть страницы),
+ * затем действие либо уходит сразу (онлайн, sendAction восстановит FormData из blob), либо встаёт в
+ * очередь (офлайн / нет сети / хвост). После успеха blob и страховка удаляются. Доменные ошибки
+ * (например, неверный mime) пробрасываются — blob при этом тоже освобождаем.
  */
 export async function enqueuePhoto(params: {
   url: string;
@@ -113,20 +149,7 @@ export async function enqueuePhoto(params: {
   kind: "PHOTO" | "DOCUMENT";
 }): Promise<{ queued: boolean }> {
   const occurredAt = new Date().toISOString();
-  if ((typeof navigator === "undefined" || navigator.onLine) && !(await queueBusy())) {
-    try {
-      const form = new FormData();
-      form.append("file", params.blob, params.fileName);
-      if (params.kind === "DOCUMENT") form.append("kind", "DOCUMENT");
-      await apiUpload(params.url, form, { "Idempotency-Key": newActionId(), "X-Occurred-At": occurredAt });
-      return { queued: false };
-    } catch (e) {
-      if (!shouldQueueOnlineFailure(e)) throw e; // доменная ошибка или онлайн-500 — наверх
-      // нет сети / сервер лёг — уходим в офлайн-ветку (в очередь)
-    }
-  }
   const blobId = newActionId();
-  await idbPut(STORE_BLOBS, blobId, { blob: params.blob, name: params.fileName, type: params.blob.type });
   const action: QueuedAction = {
     id: newActionId(),
     seq: nextSeq(),
@@ -141,6 +164,39 @@ export async function enqueuePhoto(params: {
     attempts: 0,
     createdAt: occurredAt,
   };
-  await putQueued(action);
-  return { queued: true };
+  let blobSaved = true;
+  try {
+    await idbPut(STORE_BLOBS, blobId, { blob: params.blob, name: params.fileName, type: params.blob.type });
+  } catch {
+    blobSaved = false; // нет IndexedDB — работаем без страховки, из памяти (как раньше)
+  }
+
+  const online = typeof navigator === "undefined" || navigator.onLine;
+  if (!blobSaved) {
+    // Деградация без IndexedDB: очередь всё равно недоступна — только прямая попытка.
+    const form = new FormData();
+    form.append("file", params.blob, params.fileName);
+    if (params.kind === "DOCUMENT") form.append("kind", "DOCUMENT");
+    await apiUpload(params.url, form, { "Idempotency-Key": action.id, "X-Occurred-At": occurredAt });
+    return { queued: false };
+  }
+  if (!online || (await queueBusy())) {
+    await putQueued(action);
+    return { queued: true };
+  }
+  await putDirect({ ...action, status: "syncing", directAt: occurredAt }); // страховка на время загрузки
+  try {
+    await sendAction(action); // FormData соберётся из сохранённого blob
+  } catch (e) {
+    if (shouldQueueOnlineFailure(e)) {
+      await putQueued(action); // обрыв/таймаут/шлюз — тот же id: страховка становится pending-записью
+      return { queued: true };
+    }
+    await removeDirect(action.id);
+    await idbDelete(STORE_BLOBS, blobId).catch(() => {});
+    throw e; // доменная ошибка или онлайн-500 — наверх
+  }
+  await removeDirect(action.id);
+  await idbDelete(STORE_BLOBS, blobId).catch(() => {});
+  return { queued: false };
 }

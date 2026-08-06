@@ -272,6 +272,12 @@ function ShiftBlock({ today }: { today: string }) {
   const view = overlayShift(currentShift(shift ?? null, today), pendingShift);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Подтверждение закрытия — вторым тапом по той же кнопке, БЕЗ window.confirm: системный диалог
+  // пропадает при сворачивании TWA (жалоба 07.08 — водитель нажал «Закрыть смену», диалог исчез,
+  // закрытие не ушло, а он был уверен в обратном). Сбрасывается сам через 6 с.
+  const [confirmClose, setConfirmClose] = useState(false);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(confirmTimer.current), []);
 
   async function act(op: "open" | "close" | "reopen") {
     setBusy(true);
@@ -290,6 +296,17 @@ function ShiftBlock({ today }: { today: string }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  function tapClose() {
+    clearTimeout(confirmTimer.current);
+    if (confirmClose) {
+      setConfirmClose(false);
+      void act("close");
+      return;
+    }
+    setConfirmClose(true);
+    confirmTimer.current = setTimeout(() => setConfirmClose(false), 6000);
   }
 
   const pendingNote = view?.pendingLocal ? (
@@ -318,10 +335,18 @@ function ShiftBlock({ today }: { today: string }) {
   }
 
   if (view.status === "CLOSED") {
+    // Пока закрытие не дошло до сервера (лежит в очереди), карточка — янтарная и говорит об этом
+    // прямо: «смена закрыта» без оговорок вводила в заблуждение (для диспетчера она ещё открыта).
     return (
-      <div className="mb-3 rounded-xl border border-neutral-200 bg-white p-3">
-        <p className="text-sm text-neutral-500">
-          Смена закрыта · {hhmm(view.openedAt)}–{hhmm(view.closedAt)}
+      <div
+        className={`mb-3 rounded-xl border p-3 ${
+          view.pendingLocal ? "border-amber-300 bg-amber-50" : "border-neutral-200 bg-white"
+        }`}
+      >
+        <p className={`text-sm ${view.pendingLocal ? "text-amber-900" : "text-neutral-500"}`}>
+          {view.pendingLocal
+            ? `Закрытие сохранено (${hhmm(view.closedAt)}) — уйдёт при связи. У диспетчера смена пока открыта.`
+            : `Смена закрыта · ${hhmm(view.openedAt)}–${hhmm(view.closedAt)}`}
         </p>
         <button
           type="button"
@@ -352,15 +377,20 @@ function ShiftBlock({ today }: { today: string }) {
       <button
         type="button"
         disabled={busy}
-        onClick={() => {
-          if (window.confirm("Закрыть смену? Если закроете случайно — потом можно возобновить.")) {
-            void act("close");
-          }
-        }}
-        className="mt-2 inline-flex h-11 w-full items-center justify-center rounded-lg border border-neutral-300 bg-white text-base font-medium text-neutral-800 disabled:opacity-60"
+        onClick={tapClose}
+        className={`mt-2 inline-flex h-11 w-full items-center justify-center rounded-lg border text-base font-medium disabled:opacity-60 ${
+          confirmClose
+            ? "border-amber-400 bg-amber-100 text-amber-900"
+            : "border-neutral-300 bg-white text-neutral-800"
+        }`}
       >
-        Закрыть смену
+        {confirmClose ? "Точно закрыть смену?" : "Закрыть смену"}
       </button>
+      {confirmClose ? (
+        <p className="mt-1 text-center text-xs text-neutral-500">
+          Нажмите ещё раз для подтверждения. Случайно закрытую смену можно возобновить.
+        </p>
+      ) : null}
       {pendingNote}
       {err ? <p className="mt-1 text-sm text-red-600">{err}</p> : null}
     </div>
