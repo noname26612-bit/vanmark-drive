@@ -22,7 +22,7 @@ export function onQueueChanged(cb: () => void): () => void {
  * Best-effort — нет API (или отзыв разрешения) → тихая деградация к тикам при открытом приложении.
  * SyncManager не описан в lib.dom, поэтому доступ через локальный расширенный тип.
  */
-async function registerBackgroundSync(): Promise<void> {
+export async function registerBackgroundSync(): Promise<void> {
   try {
     if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
     const reg = (await navigator.serviceWorker.ready) as ServiceWorkerRegistration & {

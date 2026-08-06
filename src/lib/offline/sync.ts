@@ -22,9 +22,15 @@ import { ApiError } from "@/lib/fetcher";
 import { reportClientError } from "@/lib/report";
 import { idbDelete, STORE_BLOBS } from "./db";
 import { listQueue, dequeue, putQueued } from "./queue";
-import { sendAction } from "./send";
+import { sendAction, DIRECT_STALE_MS } from "./send";
 import { setAuthRequired } from "./auth-required";
 import type { QueuedAction } from "./types";
+
+/** Свежая страховка прямой отправки (send.ts): fetch ещё в полёте — прогону её не трогать. */
+function directInFlight(a: QueuedAction, now: number): boolean {
+  const started = a.directAt ? Date.parse(a.directAt) : Number.NaN;
+  return Number.isFinite(started) && now - started < DIRECT_STALE_MS;
+}
 
 /**
  * Порог предохранителя: после стольких подряд необработанных ошибок приложения (HTTP 500) по ОДНОМУ
@@ -52,6 +58,7 @@ export type QueueDeps = {
   dropBlob: (blobId: string) => Promise<void>;
   markConflict: (a: QueuedAction, lastError: { code: string; message: string }, attempts: number) => Promise<void>;
   bumpAttempts: (a: QueuedAction, attempts: number) => Promise<void>; // сохранить счётчик отказов между тиками
+  requeue: (a: QueuedAction) => Promise<void>; // осиротевшая страховка прямой отправки → назад в pending
   onAuthRequired: () => void; // 401/403 при досылке — сессия/права
   onAuthOk: () => void; // любое успешное действие снимает флаг сессии
 };
@@ -70,6 +77,16 @@ export async function runQueueOnce(deps: QueueDeps): Promise<number> {
   let sent = 0;
   for (const a of actions) {
     if (a.status === "conflict") continue; // конфликтные ждут разбора, не трогаем
+    if (a.status === "syncing") {
+      // Страховка прямой отправки (send.ts). Свежая — fetch ещё в полёте: стоп по FIFO (как при
+      // «занятой» очереди), дошлём остаток следующим тиком. Старая — страница умерла посреди
+      // отправки: возвращаем в pending и досылаем прямо в этом прогоне (Idempotency-Key обезвредит
+      // повтор, если fetch всё же успел дойти).
+      if (directInFlight(a, Date.now())) break;
+      const revived: QueuedAction = { ...a, status: "pending", directAt: undefined };
+      await deps.requeue(revived);
+      a.status = "pending";
+    }
     try {
       await deps.send(a);
       await deps.remove(a.id);
@@ -132,6 +149,7 @@ const DEPS = {
     return putQueued({ ...a, status: "conflict", attempts, lastError });
   },
   bumpAttempts: (a: QueuedAction, attempts: number) => putQueued({ ...a, attempts }),
+  requeue: (a: QueuedAction) => putQueued(a),
   onAuthRequired: () => setAuthRequired(true),
   onAuthOk: () => setAuthRequired(false),
 };
