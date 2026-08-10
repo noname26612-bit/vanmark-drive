@@ -20,27 +20,37 @@ import {
   isArchivedStatus,
   statusesForCategory,
 } from "@/domain/machine-status";
+import { machineDueState } from "@/domain/machine-flags";
 import {
   MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_BAR,
   MACHINE_STATUS_LABEL,
+  dueBadgeClass,
+  formatDayShort,
   machineTitle,
 } from "@/lib/machine-ui";
 import type { MachineDetail, MachineListItem, MachineListResult } from "@/lib/machine-dto";
-import type { MachineCategory, MachineStatus } from "@/generated/prisma/enums";
-import { MachineCategoryBadge, MachineStatusBadge } from "./_components/machine-badges";
+import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
+import { MachineCategoryBadge, MachineKindBadge, MachineStatusBadge } from "./_components/machine-badges";
 import { MachineFormModal } from "./_components/machine-form-modal";
 import { uploadMachinePhotos } from "@/lib/machine-photo-upload";
 
-type FlagKey = "noInvoice1C" | "urgent" | "awaitingDiagnosis" | "staleVerification";
+type FlagKey = "noInvoice1C" | "urgent" | "awaitingDiagnosis" | "staleVerification" | "duePressing";
 
 // Плитки-индикаторы. Цвет — только там, где он несёт смысл (ui-guidelines): янтарь = требует
 // действия сейчас. «Срочные» — тоже янтарь: это очередь, а не авария.
 const FLAG_TILES: { key: FlagKey; label: string; hint: string }[] = [
   { key: "urgent", label: "Срочные", hint: "помечены как срочные" },
+  { key: "duePressing", label: "Горит срок", hint: "срок прошёл или в ближайшие 2 дня" },
   { key: "awaitingDiagnosis", label: "Ждут диагностики", hint: "приняты больше рабочего дня назад" },
   { key: "noInvoice1C", label: "Без заказа 1С", hint: "клиентские без номера заказа" },
   { key: "staleVerification", label: "Давно не сверялись", hint: "не подтверждали больше недели" },
+];
+
+// Чипы видов оборудования (решение Артёма 07.08: ножи — в общей картотеке с фильтром).
+const KIND_CHIPS: { key: EquipmentKind; label: string }[] = [
+  { key: "MACHINE", label: "Станки" },
+  { key: "ROLLER_KNIFE", label: "Ножи" },
 ];
 
 // Фоновая догрузка фото после создания карточки: статус показываем плашкой, чтобы человек видел,
@@ -51,6 +61,7 @@ export function MachinesClient() {
   const [scope, setScope] = useState<"active" | "archive">("active");
   const [category, setCategory] = useState<"" | MachineCategory>("");
   const [status, setStatus] = useState<"" | MachineStatus>("");
+  const [kind, setKind] = useState<"" | EquipmentKind>("");
   const [flag, setFlag] = useState<FlagKey | "">("");
   const [q, setQ] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -64,6 +75,7 @@ export function MachinesClient() {
   params.set("scope", scope);
   if (category) params.set("category", category);
   if (status) params.set("status", status);
+  if (kind) params.set("kind", kind);
   if (flag) params.set("flag", flag);
   if (scope === "archive") {
     if (debouncedQ.trim()) params.set("q", debouncedQ.trim());
@@ -101,10 +113,11 @@ export function MachinesClient() {
   const resetFilters = () => {
     setCategory("");
     setStatus("");
+    setKind("");
     setFlag("");
     setQ("");
   };
-  const filtersOn = Boolean(category || status || flag || q.trim());
+  const filtersOn = Boolean(category || status || kind || flag || q.trim());
 
   // Переключение области просмотра: фильтры, несовместимые с новой областью, снимаем сразу.
   // Иначе комбинации молча дают пустой список — «Архив» + состояние «Принят» (его в архиве не бывает)
@@ -166,6 +179,25 @@ export function MachinesClient() {
               />
             ))}
           </div>
+
+          {/* Виды оборудования. Ряд появляется, только когда в картотеке есть ножи (или фильтр
+              уже включён): пустой парк ножей не должен добавлять шум. */}
+          {summary.byKind.ROLLER_KNIFE > 0 || kind ? (
+            <div className="flex flex-wrap gap-1.5">
+              {KIND_CHIPS.map((k) => (
+                <SummaryChip
+                  key={k.key}
+                  label={k.label}
+                  value={summary.byKind[k.key]}
+                  active={kind === k.key && scope === "active"}
+                  onClick={() => {
+                    switchScope("active");
+                    setKind(kind === k.key ? "" : k.key);
+                  }}
+                />
+              ))}
+            </div>
+          ) : null}
 
           {/* Состояния и индикаторы — компактными чипами, а не плитками: на телефоне 13 плиток
               съедали весь первый экран, и до списка станков приходилось долго скроллить. */}
@@ -411,6 +443,8 @@ function MachineRow({
   const hidden = query?.active
     ? firstHiddenMachineMatch(m, query, [m.model, m.location ?? "", m.orgName ?? "", title])
     : null;
+  // Красный — только просрочен, янтарный — только «≤2 дней»; спокойный срок (и аренда/архив) — серый.
+  const dueState = m.dueDate ? machineDueState(m, new Date()) : null;
 
   return (
     <li>
@@ -442,7 +476,18 @@ function MachineRow({
               <Highlighted text={title} query={query} />
             </span>
             <MachineStatusBadge status={m.status} />
+            <MachineKindBadge kind={m.kind} />
             <MachineCategoryBadge category={m.category} />
+            {m.dueDate ? (
+              <span
+                className={cn("rounded px-1.5 py-0.5 text-xs font-medium", dueBadgeClass(dueState))}
+                data-testid="machine-due-badge"
+              >
+                {dueState === "overdue"
+                  ? `просрочен ${formatDayShort(m.dueDate)}`
+                  : `до ${formatDayShort(m.dueDate)}`}
+              </span>
+            ) : null}
           </span>
 
           <span className="truncate text-sm text-neutral-800">

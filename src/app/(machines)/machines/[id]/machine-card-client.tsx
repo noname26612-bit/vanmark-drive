@@ -4,7 +4,7 @@
 
 import { useRef, useState } from "react";
 import useSWR from "swr";
-import { Camera, MapPin, Stethoscope, Trash2 } from "lucide-react";
+import { Camera, Copy, Factory, MapPin, Stethoscope, Trash2 } from "lucide-react";
 import { fetcher, apiSend, ApiError } from "@/lib/fetcher";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
@@ -16,23 +16,30 @@ import { DateField } from "@/components/ui/date-field";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { BackLink } from "@/components/back-link";
 import {
+  EQUIPMENT_KINDS,
+  EQUIPMENT_KIND_LABEL,
   MACHINE_CATEGORIES,
   isArchivedStatus,
   isOurCategory,
   reasonRequiredFor,
   statusesForCategory,
 } from "@/domain/machine-status";
+import { machineDueState } from "@/domain/machine-flags";
 import {
   EVENT_LABEL,
   MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_LABEL,
+  dueBadgeClass,
   formatDay,
   formatMoment,
   machineTitle,
 } from "@/lib/machine-ui";
-import type { MachineDetail } from "@/lib/machine-dto";
-import type { MachineCategory, MachineStatus } from "@/generated/prisma/enums";
-import { MachineCategoryBadge, MachineStatusBadge } from "../_components/machine-badges";
+import { copyText } from "@/lib/clipboard";
+import type { MachineDetail, MachineEventView } from "@/lib/machine-dto";
+import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
+import { MachineCategoryBadge, MachineKindBadge, MachineStatusBadge } from "../_components/machine-badges";
+import { ModelCombobox } from "../_components/model-combobox";
+import { ShopTaskModal } from "./shop-task-modal";
 import { uploadMachinePhotos } from "@/lib/machine-photo-upload";
 
 export function MachineCardClient({ id, initial }: { id: string; initial: MachineDetail }) {
@@ -41,8 +48,8 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
     fetcher,
     { fallbackData: initial, revalidateOnFocus: true },
   );
-  // Список сотрудников офиса для поля «Ответственный» (правится и после заведения карточки).
-  const { data: meta } = useSWR<{ responsibles: { id: string; name: string }[] }>(
+  // Справочники формы: сотрудники офиса для «Ответственного» и модели для подсказок комбобокса.
+  const { data: meta } = useSWR<{ responsibles: { id: string; name: string }[]; models: string[] }>(
     "/api/machines/meta",
     fetcher,
   );
@@ -53,6 +60,10 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
   const [editing, setEditing] = useState(false);
   const [comment, setComment] = useState("");
   const [uploading, setUploading] = useState<{ done: number; total: number } | null>(null);
+  const [shopTaskOpen, setShopTaskOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [pinnedEditing, setPinnedEditing] = useState(false);
+  const [pinnedDraft, setPinnedDraft] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function send(body: Record<string, unknown>) {
@@ -142,6 +153,12 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
   }
 
   const archived = isArchivedStatus(machine.status);
+  // Комментарии живут отдельной лентой, технические события — в сворачиваемой «Истории».
+  const comments = machine.events.filter((e) => e.kind === "comment");
+  const history = machine.events.filter((e) => e.kind !== "comment");
+  // События отсортированы свежие-сверху — первый shop_task и есть последнее задание в цех.
+  const lastShopTask = machine.events.find((e) => e.kind === "shop_task") ?? null;
+  const dueState = machineDueState(machine, new Date());
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 p-4">
@@ -155,6 +172,7 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
             {machineTitle(machine)}
           </h1>
           <MachineStatusBadge status={machine.status} size="md" />
+          <MachineKindBadge kind={machine.kind} />
           <MachineCategoryBadge category={machine.category} />
           {machine.isUrgent ? (
             <span className="rounded border border-amber-500 px-2 py-0.5 text-xs font-medium text-amber-700">
@@ -212,7 +230,45 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
           </Field>
         </div>
 
+        {/* Срок готовности/выдачи — оперативное поле, правится прямо здесь, без формы «Изменить».
+            DateField коммитит по выбору/Enter/уходу из поля — лишних запросов не будет. */}
+        <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
+          <div className="w-52 shrink-0">
+            <Field label="Срок готовности / выдачи">
+              <DateField
+                value={machine.dueDate ?? ""}
+                disabled={busy}
+                onChange={(v) => {
+                  if ((machine.dueDate ?? "") !== v) send({ op: "edit", dueDate: v });
+                }}
+                testId="machine-due-date"
+              />
+            </Field>
+          </div>
+          {machine.dueDate ? (
+            <span
+              className={cn("mb-2 rounded px-2 py-0.5 text-xs font-medium", dueBadgeClass(dueState))}
+              data-testid="machine-due-state"
+            >
+              {dueState === "overdue"
+                ? `Просрочен (${formatDay(machine.dueDate)})`
+                : dueState === "soon"
+                  ? `Горит: ${formatDay(machine.dueDate)}`
+                  : `До ${formatDay(machine.dueDate)}`}
+            </span>
+          ) : null}
+        </div>
+
         <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() => setShopTaskOpen(true)}
+            data-testid="machine-shop-task"
+          >
+            <Factory className="h-4 w-4" />
+            Задание в цех
+          </Button>
           <Button
             variant="secondary"
             disabled={busy}
@@ -246,6 +302,11 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
             "не отмечена"
           )}
         </p>
+
+        {/* Пока станок в ремонте, последнее переданное задание видно без раскопок в истории. */}
+        {machine.status === "IN_REPAIR" && lastShopTask?.comment ? (
+          <LastShopTask event={lastShopTask} />
+        ) : null}
       </section>
 
       {/* ── Фото ── */}
@@ -330,6 +391,7 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
             machine={machine}
             busy={busy}
             responsibles={meta?.responsibles ?? []}
+            models={meta?.models ?? []}
             onSave={async (patch) => {
               const ok = await send({ op: "edit", ...patch });
               if (ok) setEditing(false);
@@ -354,68 +416,207 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
             <div className="sm:col-span-2">
               <Row label="Дефектовка" value={machine.defectNotes} block />
             </div>
-            <div className="sm:col-span-2">
-              <Row label="Заметки" value={machine.notes} block />
-            </div>
           </dl>
         )}
       </section>
 
-      {/* ── Журнал ── */}
+      {/* ── Комментарии: закреплённая заметка + лента (PRD §16.5, решение Артёма 07.08) ── */}
       <section className="rounded-lg border border-neutral-200 bg-white p-4">
-        <h2 className="mb-2 text-sm font-medium text-neutral-700">История</h2>
-        <div className="mb-3 flex gap-2">
-          <Input
+        <h2 className="mb-2 text-sm font-medium text-neutral-700">Комментарии</h2>
+
+        {/* Закреплённая заметка — прежнее поле «Заметки», теперь всегда на виду и правится тут же. */}
+        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50/60 p-3" data-testid="machine-pinned-note">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-neutral-500">Закреплённая заметка</span>
+            {pinnedEditing ? null : (
+              <Button
+                variant="ghost"
+                className="!py-1 text-xs"
+                disabled={busy}
+                onClick={() => {
+                  setPinnedDraft(machine.notes ?? "");
+                  setPinnedEditing(true);
+                }}
+                data-testid="machine-pinned-edit"
+              >
+                {machine.notes ? "Изменить" : "Добавить"}
+              </Button>
+            )}
+          </div>
+          {pinnedEditing ? (
+            <div className="flex flex-col gap-2">
+              <Textarea
+                rows={2}
+                value={pinnedDraft}
+                onChange={(e) => setPinnedDraft(e.target.value)}
+                placeholder="Заметка, которая всегда видна в карточке"
+                data-testid="machine-pinned-input"
+              />
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" disabled={busy} onClick={() => setPinnedEditing(false)}>
+                  Отмена
+                </Button>
+                <Button
+                  disabled={busy}
+                  onClick={async () => {
+                    const ok = await send({ op: "edit", notes: pinnedDraft });
+                    if (ok) setPinnedEditing(false);
+                  }}
+                  data-testid="machine-pinned-save"
+                >
+                  Сохранить
+                </Button>
+              </div>
+            </div>
+          ) : machine.notes ? (
+            <p className="whitespace-pre-wrap text-sm text-neutral-800">{machine.notes}</p>
+          ) : (
+            <p className="text-sm text-neutral-400">Пока пусто.</p>
+          )}
+        </div>
+
+        {/* Ввод: многострочный, отправка только кнопкой (Enter — перенос строки, не отправка). */}
+        <div className="mb-3 flex flex-col gap-2">
+          <Textarea
+            rows={2}
             value={comment}
             onChange={(e) => setComment(e.target.value)}
-            placeholder="Комментарий к станку"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") sendComment();
-            }}
+            placeholder="Комментарий к станку…"
             data-testid="machine-comment"
           />
           <Button
             onClick={sendComment}
             disabled={busy || !comment.trim()}
-            className="shrink-0"
+            className="self-end"
             data-testid="machine-comment-send"
           >
-            Добавить
+            Добавить комментарий
           </Button>
         </div>
-        <ul className="flex flex-col gap-2" data-testid="machine-events">
-          {machine.events.map((e) => (
-            <li key={e.id} className="border-b border-neutral-100 pb-2 last:border-0">
-              <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-neutral-500">
-                <span className="font-medium text-neutral-700">
-                  {EVENT_LABEL[e.kind] ?? e.kind}
-                </span>
-                <span>{formatMoment(e.at)}</span>
-                <span>· {e.actorName}</span>
-              </div>
-              {e.kind === "status_change" && e.toStatus ? (
-                <p className="text-sm text-neutral-800">
-                  {e.fromStatus ? `${MACHINE_STATUS_LABEL[e.fromStatus]} → ` : ""}
-                  {MACHINE_STATUS_LABEL[e.toStatus]}
-                </p>
-              ) : null}
-              {e.changes.length > 0 ? (
-                <ul className="text-sm text-neutral-800">
-                  {e.changes.map((c) => (
-                    <li key={c.field}>
-                      <span className="text-neutral-500">{c.label}:</span> {c.from ?? "—"} →{" "}
-                      <span className="font-medium">{c.to ?? "—"}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              {e.comment ? <p className="text-sm text-neutral-800">{e.comment}</p> : null}
-            </li>
-          ))}
-        </ul>
+
+        {comments.length === 0 ? (
+          <p className="text-sm text-neutral-400">Комментариев пока нет.</p>
+        ) : (
+          <ul className="flex flex-col gap-2" data-testid="machine-comments">
+            {comments.map((e) => (
+              <li key={e.id} className="border-b border-neutral-100 pb-2 last:border-0">
+                <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-neutral-500">
+                  <span className="font-medium text-neutral-700">{e.actorName}</span>
+                  <span>{formatMoment(e.at)}</span>
+                </div>
+                {e.comment ? (
+                  <p className="whitespace-pre-wrap text-sm text-neutral-800">{e.comment}</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
+      {/* ── История изменений: технические события, свёрнута — Максим чаще читает комментарии ── */}
+      <section className="rounded-lg border border-neutral-200 bg-white p-4">
+        <button
+          type="button"
+          onClick={() => setHistoryOpen((v) => !v)}
+          className="flex min-h-12 w-full items-center justify-between text-left"
+          data-testid="machine-history-toggle"
+        >
+          <span className="text-sm font-medium text-neutral-700">
+            История изменений ({history.length})
+          </span>
+          <span className="text-sm text-neutral-400">{historyOpen ? "Скрыть" : "Показать"}</span>
+        </button>
+        {historyOpen ? (
+          <ul className="mt-2 flex flex-col gap-2" data-testid="machine-events">
+            {history.map((e) => (
+              <li key={e.id} className="border-b border-neutral-100 pb-2 last:border-0">
+                <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-neutral-500">
+                  <span className="font-medium text-neutral-700">
+                    {EVENT_LABEL[e.kind] ?? e.kind}
+                  </span>
+                  <span>{formatMoment(e.at)}</span>
+                  <span>· {e.actorName}</span>
+                </div>
+                {e.kind === "status_change" && e.toStatus ? (
+                  <p className="text-sm text-neutral-800">
+                    {e.fromStatus ? `${MACHINE_STATUS_LABEL[e.fromStatus]} → ` : ""}
+                    {MACHINE_STATUS_LABEL[e.toStatus]}
+                  </p>
+                ) : null}
+                {e.changes.length > 0 ? (
+                  <ul className="text-sm text-neutral-800">
+                    {e.changes.map((c) => (
+                      <li key={c.field}>
+                        <span className="text-neutral-500">{c.label}:</span> {c.from ?? "—"} →{" "}
+                        <span className="font-medium">{c.to ?? "—"}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {e.comment ? (
+                  <p className="whitespace-pre-wrap text-sm text-neutral-800">{e.comment}</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
+
+      {shopTaskOpen ? (
+        <ShopTaskModal
+          machine={machine}
+          onClose={() => setShopTaskOpen(false)}
+          onDone={(updated) => {
+            mutate(updated, { revalidate: false });
+          }}
+        />
+      ) : null}
+
       {lightbox ? <PhotoLightbox url={lightbox} onClose={() => setLightbox(null)} /> : null}
+    </div>
+  );
+}
+
+/** Последнее задание в цех — компактно, с разворотом длинного текста и повторным копированием. */
+function LastShopTask({ event }: { event: MachineEventView }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const text = event.comment ?? "";
+  return (
+    <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3" data-testid="machine-last-shop-task">
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-medium text-neutral-500">
+          Последнее задание в цех · {formatMoment(event.at)} · {event.actorName}
+        </span>
+        <Button
+          variant="ghost"
+          className="!py-1 text-xs"
+          onClick={async () => {
+            // Повторное копирование события в журнал не пишет — задание то же самое.
+            if (await copyText(text)) {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            }
+          }}
+          data-testid="machine-last-shop-task-copy"
+        >
+          <Copy className="h-3.5 w-3.5" /> {copied ? "Скопировано" : "Скопировать ещё раз"}
+        </Button>
+      </div>
+      <p
+        className={cn("whitespace-pre-wrap text-sm text-neutral-800", !expanded && "line-clamp-3")}
+      >
+        {text}
+      </p>
+      {text.split("\n").length > 3 ? (
+        <button
+          type="button"
+          className="mt-1 text-xs text-neutral-500 underline underline-offset-2"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? "Свернуть" : "Показать целиком"}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -461,15 +662,18 @@ function MachineEditForm({
   machine,
   busy,
   responsibles,
+  models,
   onSave,
 }: {
   machine: MachineDetail;
   busy: boolean;
   responsibles: { id: string; name: string }[];
+  models: string[];
   onSave: (patch: Record<string, unknown>) => void;
 }) {
   const [f, setF] = useState({
     model: machine.model,
+    kind: machine.kind,
     responsibleId: machine.responsibleId ?? "",
     ourNumber: machine.ourNumber === null ? "" : String(machine.ourNumber),
     configuration: machine.configuration ?? "",
@@ -482,8 +686,8 @@ function MachineEditForm({
     deliveredBy: machine.deliveredBy ?? "",
     location: machine.location ?? "",
     arrivedAt: machine.arrivedAt ?? "",
+    dueDate: machine.dueDate ?? "",
     defectNotes: machine.defectNotes ?? "",
-    notes: machine.notes ?? "",
     isUrgent: machine.isUrgent,
   });
   const set = (patch: Partial<typeof f>) => setF((prev) => ({ ...prev, ...patch }));
@@ -491,7 +695,25 @@ function MachineEditForm({
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       <Field label="Модель" required>
-        <Input value={f.model} onChange={(e) => set({ model: e.target.value })} />
+        <ModelCombobox
+          value={f.model}
+          onChange={(v) => set({ model: v })}
+          models={models}
+          testId="machine-edit-model"
+        />
+      </Field>
+      <Field label="Вид">
+        <Select
+          value={f.kind}
+          onChange={(e) => set({ kind: e.target.value as EquipmentKind })}
+          data-testid="machine-edit-kind"
+        >
+          {EQUIPMENT_KINDS.map((k) => (
+            <option key={k} value={k}>
+              {EQUIPMENT_KIND_LABEL[k]}
+            </option>
+          ))}
+        </Select>
       </Field>
       {isOurCategory(machine.category) ? (
         <Field label="Наш номер (77-N)">
@@ -551,14 +773,12 @@ function MachineEditForm({
       <Field label="Дата поступления">
         <DateField value={f.arrivedAt} onChange={(v) => set({ arrivedAt: v })} />
       </Field>
+      <Field label="Срок готовности / выдачи">
+        <DateField value={f.dueDate} onChange={(v) => set({ dueDate: v })} testId="machine-edit-due-date" />
+      </Field>
       <div className="sm:col-span-2">
         <Field label="Дефектовка">
           <Textarea rows={2} value={f.defectNotes} onChange={(e) => set({ defectNotes: e.target.value })} />
-        </Field>
-      </div>
-      <div className="sm:col-span-2">
-        <Field label="Заметки">
-          <Textarea rows={2} value={f.notes} onChange={(e) => set({ notes: e.target.value })} />
         </Field>
       </div>
       <label className="flex items-center gap-2 text-sm text-neutral-700">

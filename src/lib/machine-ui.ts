@@ -4,9 +4,15 @@
 // у задач: то, чем занимаются прямо сейчас, должно бросаться в глаза.
 // Классы — строками-литералами, иначе Tailwind их не увидит.
 import type { MachineCategory, MachineStatus } from "@/generated/prisma/enums";
-import { MACHINE_CATEGORY_LABEL, MACHINE_STATUS_LABEL } from "@/domain/machine-status";
+import {
+  EQUIPMENT_KIND_LABEL,
+  EQUIPMENT_KIND_SHORT,
+  MACHINE_CATEGORY_LABEL,
+  MACHINE_STATUS_LABEL,
+} from "@/domain/machine-status";
+import type { DueState } from "@/domain/machine-flags";
 
-export { MACHINE_CATEGORY_LABEL, MACHINE_STATUS_LABEL };
+export { EQUIPMENT_KIND_LABEL, EQUIPMENT_KIND_SHORT, MACHINE_CATEGORY_LABEL, MACHINE_STATUS_LABEL };
 
 export const MACHINE_STATUS_BADGE: Record<MachineStatus, string> = {
   ACCEPTED: "border border-slate-300 text-slate-600",
@@ -58,6 +64,25 @@ export function formatDay(iso: string | null | undefined): string {
   return m ? `${m[3]}.${m[2]}.${m[1]}` : "—";
 }
 
+/** «дд.мм» из «YYYY-MM-DD» — для компактного бейджа срока в списке. */
+export function formatDayShort(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const m = /^\d{4}-(\d{2})-(\d{2})/.exec(iso);
+  return m ? `${m[2]}.${m[1]}` : "—";
+}
+
+// Бейдж срока: красный ТОЛЬКО «просрочен», янтарный ТОЛЬКО «горит ≤2 дней» (ui-guidelines);
+// null (спокойный срок, аренда, архив) — нейтральный графит.
+export const DUE_BADGE: Record<Exclude<DueState, null> | "neutral", string> = {
+  overdue: "border border-red-600 text-red-700",
+  soon: "border border-amber-500 text-amber-700",
+  neutral: "border border-slate-300 text-slate-500",
+};
+
+export function dueBadgeClass(state: DueState): string {
+  return DUE_BADGE[state ?? "neutral"];
+}
+
 /** ISO-момент → «дд.мм чч:мм» для ленты журнала. */
 export function formatMoment(iso: string): string {
   const d = new Date(iso);
@@ -72,6 +97,7 @@ export const EVENT_LABEL: Record<string, string> = {
   status_change: "Состояние",
   edit: "Правка",
   comment: "Комментарий",
+  shop_task: "Задание в цех",
   photo_added: "Добавлено фото",
   photo_removed: "Удалено фото",
 };

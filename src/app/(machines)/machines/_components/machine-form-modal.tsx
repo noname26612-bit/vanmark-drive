@@ -13,41 +13,40 @@ import { Textarea } from "@/components/ui/textarea";
 import { Field } from "@/components/ui/field";
 import { DateField } from "@/components/ui/date-field";
 import { newActionId as newIdempotencyKey } from "@/lib/offline/id";
-import { MACHINE_CATEGORIES, isOurCategory } from "@/domain/machine-status";
-import { MACHINE_CATEGORY_LABEL } from "@/lib/machine-ui";
+import { EQUIPMENT_KINDS, MACHINE_CATEGORIES, isOurCategory } from "@/domain/machine-status";
+import { modelSuggestionPool } from "@/domain/machine-models";
+import { EQUIPMENT_KIND_LABEL, MACHINE_CATEGORY_LABEL } from "@/lib/machine-ui";
+import {
+  EMPTY_MACHINE_FORM,
+  clearMachineDraft,
+  hasHiddenFieldValues,
+  isDirtyMachineForm,
+  loadMachineDraft,
+  saveMachineDraft,
+} from "@/lib/machine-draft";
+import { cn } from "@/lib/cn";
+import { ModelCombobox } from "./model-combobox";
 import type { MachineDetail } from "@/lib/machine-dto";
-import type { MachineCategory } from "@/generated/prisma/enums";
+import type { EquipmentKind, MachineCategory } from "@/generated/prisma/enums";
 
 // Кто обычно привозит станки — подсказки, а не жёсткий список (PRD §16.4).
 const DELIVERED_BY = ["Каширский", "Писарев", "Султан", "Заказчик", "Яндекс"];
 
-type Meta = { nextOurNumber: number; responsibles: { id: string; name: string }[] };
+type Meta = { nextOurNumber: number; responsibles: { id: string; name: string }[]; models: string[] };
 
-const EMPTY = {
-  model: "",
-  ourNumber: "",
-  configuration: "",
-  metalThickness: "",
-  serialNumber: "",
-  orgName: "",
-  contactName: "",
-  contactPhone: "",
-  invoice1C: "",
-  responsibleId: "",
-  deliveredBy: "",
-  arrivedAt: "",
-  defectNotes: "",
-  location: "",
-  notes: "",
-  isUrgent: false,
-};
+// Структура формы живёт в machine-draft.ts — её же сохраняет и восстанавливает черновик.
+const EMPTY = EMPTY_MACHINE_FORM;
 
 /**
- * Форма заведения станка. Цель — ≤30 секунд с телефона (PRD §16.5): наверху только категория,
- * модель и фото, всё остальное — за «Показать все поля».
+ * Форма заведения станка. Цель — ≤30 секунд с телефона (PRD §16.5): наверху только вид, категория,
+ * модель и фото, всё остальное — за «Показать все поля» (сворачивается обратно той же кнопкой).
  *
  * Ключевое: карточка сохраняется ДО фото. Ответ приходит сразу, форма закрывается, а снимки
  * догружаются фоном с автоповтором (uploadMachinePhotos) — обрыв связи на площадке не теряет ввод.
+ *
+ * Черновик (решение Артёма 07.08): закрытие крестиком/фоном/Escape молча сохраняет заполненную
+ * форму в localStorage; следующее открытие восстанавливает её с плашкой «Восстановлен черновик».
+ * Явная «Отмена» переспрашивает и выбрасывает. Фото в черновик не входят (File не сериализуется).
  */
 export function MachineFormModal({
   open,
@@ -61,11 +60,13 @@ export function MachineFormModal({
   onCreated: (machine: MachineDetail, photos: File[]) => void;
 }) {
   const [category, setCategory] = useState<MachineCategory>("CLIENT");
+  const [kind, setKind] = useState<EquipmentKind>("MACHINE");
   const [form, setForm] = useState(EMPTY);
   const [photos, setPhotos] = useState<File[]>([]);
   const [showAll, setShowAll] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [restoredDraft, setRestoredDraft] = useState(false);
   // Трогал ли человек номер руками: пока нет — показываем подсказку следующего свободного.
   const [ourNumberEdited, setOurNumberEdited] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -75,26 +76,74 @@ export function MachineFormModal({
   // при успехе и при повторном открытии формы.
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
 
-  // Справочные данные формы (следующий «77-N», список ответственных) — грузим только когда открыта.
+  // Справочники формы (следующий «77-N», ответственные, модели для подсказок) — только когда открыта.
   const { data: meta } = useSWR<Meta>(open ? "/api/machines/meta" : null, fetcher);
+  const modelPool = useMemo(() => modelSuggestionPool(meta?.models ?? []), [meta?.models]);
 
   // Сброс при каждом открытии — паттерн React «adjust state on prop change» (setState во время
-  // рендера, не в эффекте: см. DateField). Форма короткая, черновики ей ни к чему в отличие от заявок.
+  // рендера, не в эффекте: см. DateField). Вместо пустой формы поднимаем черновик, если он есть.
   const [prevOpen, setPrevOpen] = useState(open);
   if (open !== prevOpen) {
     setPrevOpen(open);
     if (open) {
-      setCategory("CLIENT");
-      setForm(EMPTY);
+      const draft = loadMachineDraft();
+      if (draft && isDirtyMachineForm(draft.form)) {
+        setCategory(draft.category);
+        setKind(draft.kind);
+        setForm(draft.form);
+        // Восстановленные значения не должны прятаться за свёрнутыми полями.
+        setShowAll(hasHiddenFieldValues(draft.form));
+        setOurNumberEdited(draft.form.ourNumber.trim() !== "");
+        setRestoredDraft(true);
+      } else {
+        setCategory("CLIENT");
+        setKind("MACHINE");
+        setForm(EMPTY);
+        setShowAll(false);
+        setOurNumberEdited(false);
+        setRestoredDraft(false);
+      }
       setPhotos([]);
-      setShowAll(false);
       setError(null);
-      setOurNumberEdited(false);
       setIdempotencyKey(null);
     }
   }
 
   const set = (patch: Partial<typeof EMPTY>) => setForm((f) => ({ ...f, ...patch }));
+
+  const dirty = isDirtyMachineForm(form);
+
+  // Закрытие крестиком/фоном/Escape: заполненную форму молча уносим в черновик — случайный тап
+  // по фону не должен терять ввод (ровно жалоба Артёма).
+  function handleClose() {
+    if (saving) return;
+    if (dirty) {
+      saveMachineDraft({ category, kind, form });
+    } else {
+      clearMachineDraft();
+    }
+    onClose();
+  }
+
+  // Явная «Отмена» — осознанный выброс, с переспросом (образец черновиков заявок).
+  function handleDiscard() {
+    if (saving) return;
+    if (dirty && !window.confirm("Выбросить черновик? Заполненные поля пропадут.")) return;
+    clearMachineDraft();
+    onClose();
+  }
+
+  // «Начать заново» на плашке восстановленного черновика.
+  function startFresh() {
+    clearMachineDraft();
+    setCategory("CLIENT");
+    setKind("MACHINE");
+    setForm(EMPTY);
+    setShowAll(false);
+    setOurNumberEdited(false);
+    setRestoredDraft(false);
+    setError(null);
+  }
 
   // Наш станок — подсказываем следующий свободный номер, но он остаётся правимым: при
   // инвентаризации номер уже написан маркером на железе и может быть любым (PRD §16.2).
@@ -127,6 +176,7 @@ export function MachineFormModal({
         "POST",
         {
           category,
+          kind,
           model: form.model.trim(),
           ourNumber: isOurCategory(category) && ourNumber ? Number(ourNumber) : null,
           configuration: form.configuration,
@@ -139,6 +189,7 @@ export function MachineFormModal({
           responsibleId: form.responsibleId || null,
           deliveredBy: form.deliveredBy,
           arrivedAt: form.arrivedAt,
+          dueDate: form.dueDate,
           defectNotes: form.defectNotes,
           location: form.location,
           notes: form.notes,
@@ -148,6 +199,7 @@ export function MachineFormModal({
         { "Idempotency-Key": key },
       );
       setIdempotencyKey(null); // карточка создана — следующая заводится своим ключом
+      clearMachineDraft(); // введённое доехало до БД — черновику больше нечего страховать
       // Фото передаём наверх: их догружает список, который не размонтируется вместе с формой.
       onCreated(created, photos);
       onClose();
@@ -159,8 +211,54 @@ export function MachineFormModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Новый станок" wide>
+    <Modal
+      open={open}
+      onClose={handleClose}
+      title={kind === "ROLLER_KNIFE" ? "Новый нож" : "Новый станок"}
+      wide
+    >
       <div className="flex flex-col gap-3">
+        {restoredDraft ? (
+          <div
+            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2"
+            data-testid="machine-draft-restored"
+          >
+            <span className="text-sm text-neutral-600">
+              Восстановлен черновик — форма заполнена тем, что вводили раньше.
+            </span>
+            <Button
+              variant="ghost"
+              className="!py-1 text-xs"
+              onClick={startFresh}
+              data-testid="machine-draft-fresh"
+            >
+              Начать заново
+            </Button>
+          </div>
+        ) : null}
+
+        {/* Вид оборудования — сегмент из двух кнопок (решение Артёма 07.08: ножи в общей картотеке). */}
+        <div role="radiogroup" aria-label="Вид оборудования" className="grid grid-cols-2 gap-2">
+          {EQUIPMENT_KINDS.map((k) => (
+            <button
+              key={k}
+              type="button"
+              role="radio"
+              aria-checked={kind === k}
+              onClick={() => setKind(k)}
+              data-testid={`machine-kind-${k}`}
+              className={cn(
+                "min-h-12 rounded-lg border px-3 py-2 text-sm font-medium transition-colors",
+                kind === k
+                  ? "border-neutral-900 bg-neutral-900 text-white"
+                  : "border-neutral-200 bg-white text-neutral-600 active:bg-neutral-50",
+              )}
+            >
+              {EQUIPMENT_KIND_LABEL[k]}
+            </button>
+          ))}
+        </div>
+
         <Field label="Категория" required>
           <Select
             value={category}
@@ -175,13 +273,14 @@ export function MachineFormModal({
           </Select>
         </Field>
 
-        <Field label="Модель" required hint="«ЛБМ 200», «Sorex 2 м»">
-          <Input
+        <Field label="Модель" required hint="Начните печатать — подскажем: «лбм», «ван», «tapco»…">
+          <ModelCombobox
             value={form.model}
-            onChange={(e) => set({ model: e.target.value })}
-            placeholder="Модель станка"
+            onChange={(v) => set({ model: v })}
+            models={modelPool}
+            placeholder="Модель"
             autoFocus
-            data-testid="machine-model"
+            testId="machine-model"
           />
         </Field>
 
@@ -248,7 +347,7 @@ export function MachineFormModal({
         </label>
 
         {showAll ? (
-          <div className="grid gap-3 border-t border-neutral-200 pt-3 sm:grid-cols-2">
+          <div className="grid gap-3 border-t border-neutral-200 pt-3 sm:grid-cols-2" data-testid="machine-extra-fields">
             <Field label="Комплектация" hint="нож, машинка, стойка…">
               <Input
                 value={form.configuration}
@@ -326,6 +425,13 @@ export function MachineFormModal({
             <Field label="Дата поступления">
               <DateField value={form.arrivedAt} onChange={(v) => set({ arrivedAt: v })} />
             </Field>
+            <Field label="Срок готовности / выдачи" hint="Подсветим, когда останется ≤2 дней">
+              <DateField
+                value={form.dueDate}
+                onChange={(v) => set({ dueDate: v })}
+                testId="machine-form-due-date"
+              />
+            </Field>
 
             <div className="sm:col-span-2">
               <Field label="Дефектовка" hint="что не работает — со слов клиента или по осмотру">
@@ -342,20 +448,22 @@ export function MachineFormModal({
               </Field>
             </div>
           </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setShowAll(true)}
-            className="self-start text-sm font-medium text-neutral-600 underline underline-offset-2 hover:text-neutral-900"
-          >
-            Показать все поля
-          </button>
-        )}
+        ) : null}
+        {/* Переключатель виден всегда: раньше кнопка исчезала после разворота, и свернуть поля
+            обратно было нельзя (правка Артёма 07.08). Данные в свёрнутых полях сохраняются. */}
+        <button
+          type="button"
+          onClick={() => setShowAll((v) => !v)}
+          className="self-start text-sm font-medium text-neutral-600 underline underline-offset-2 hover:text-neutral-900"
+          data-testid="machine-toggle-fields"
+        >
+          {showAll ? "Скрыть дополнительные поля" : "Показать все поля"}
+        </button>
 
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
 
         <div className="mt-1 flex items-center justify-end gap-2">
-          <Button variant="secondary" onClick={onClose} disabled={saving}>
+          <Button variant="secondary" onClick={handleDiscard} disabled={saving}>
             Отмена
           </Button>
           <Button onClick={submit} disabled={saving} data-testid="machine-save">
