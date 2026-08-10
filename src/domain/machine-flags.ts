@@ -5,13 +5,16 @@
 // фоновой машинерией. Сроки и KPI Максима — этап 3, когда должность приживётся.
 import { dateKeyInTz, utcDateKey, KPI_TZ } from "./kpi";
 import { isArchivedStatus } from "./machine-status";
-import type { MachineCategory, MachineStatus } from "@/generated/prisma/enums";
+import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
 
 /** Норматив диагностики: станок должен быть продиагностирован за один рабочий день (памятка должности). */
 export const DIAGNOSIS_WORKDAYS = 1;
 
 /** Порог сверки на площадке: не подтверждали больше недели — пора пройтись и сверить. */
 export const VERIFY_STALE_DAYS = 7;
+
+/** Горизонт «горящего» срока: дедлайн сегодня или в ближайшие 2 дня (решение Артёма 07.08). */
+export const DUE_SOON_DAYS = 2;
 
 // Потолок перебора дней: карточки бывают старыми, а точное число дней сверх порога никому не нужно.
 const MAX_SCAN_DAYS = 400;
@@ -52,11 +55,13 @@ export function daysBetween(fromKey: string, toKey: string): number {
 
 /** Минимум данных станка, нужный для индикаторов. */
 export type FlaggableMachine = {
+  kind: EquipmentKind;
   category: MachineCategory;
   status: MachineStatus;
   invoice1C: string | null;
   isUrgent: boolean;
   arrivedAt: Date | null;
+  dueDate: Date | null;
   diagnosedAt: Date | null;
   lastVerifiedAt: Date | null;
   createdAt: Date;
@@ -67,7 +72,42 @@ export type MachineFlags = {
   urgent: boolean;
   awaitingDiagnosis: boolean; // принят и висит без диагностики дольше рабочего дня
   staleVerification: boolean; // давно не подтверждали, что станок физически на месте
+  duePressing: boolean; // срок просрочен или горит (≤ DUE_SOON_DAYS) — см. machineDueState
 };
+
+// ─────────────────────────────── Срок готовности/выдачи ───────────────────────────────
+
+/** Степень «горения» срока: просрочен / ближайшие DUE_SOON_DAYS дней / спокойно (нет). */
+export type DueState = "overdue" | "soon" | null;
+
+/**
+ * Срок «горит» только пока станок на площадке и работа не закончена. В аренде (RENTED) станок уже
+ * у клиента, в архиве — уехал совсем: там дата показывается нейтрально и в счётчики не попадает.
+ */
+const DUE_ACTIVE_STATUSES: ReadonlySet<MachineStatus> = new Set<MachineStatus>([
+  "ACCEPTED",
+  "NEEDS_REPAIR",
+  "IN_REPAIR",
+  "READY",
+]);
+
+/**
+ * Состояние срока одного станка. Считается по МСК-дню, как остальные индикаторы. Дату принимает
+ * и как Date (сервер, поле @db.Date), и как строку «YYYY-MM-DD» (клиент, DTO) — чтобы у порога
+ * не завелось второй реализации на клиенте.
+ */
+export function machineDueState(
+  m: { status: MachineStatus; dueDate: Date | string | null },
+  now: Date,
+  tz: string = KPI_TZ,
+): DueState {
+  if (m.dueDate === null || !DUE_ACTIVE_STATUSES.has(m.status)) return null;
+  const dueKey = typeof m.dueDate === "string" ? m.dueDate : utcDateKey(m.dueDate);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dueKey)) return null;
+  const todayKey = dateKeyInTz(now, tz);
+  if (dueKey < todayKey) return "overdue";
+  return daysBetween(todayKey, dueKey) <= DUE_SOON_DAYS ? "soon" : null;
+}
 
 /**
  * Индикаторы одного станка. Архивные (выдан/продан/аннулирован) не подсвечиваются никогда:
@@ -75,7 +115,13 @@ export type MachineFlags = {
  */
 export function machineFlags(m: FlaggableMachine, now: Date, tz: string = KPI_TZ): MachineFlags {
   if (isArchivedStatus(m.status)) {
-    return { noInvoice1C: false, urgent: false, awaitingDiagnosis: false, staleVerification: false };
+    return {
+      noInvoice1C: false,
+      urgent: false,
+      awaitingDiagnosis: false,
+      staleVerification: false,
+      duePressing: false,
+    };
   }
   const todayKey = dateKeyInTz(now, tz);
 
@@ -102,12 +148,15 @@ export function machineFlags(m: FlaggableMachine, now: Date, tz: string = KPI_TZ
     urgent: m.isUrgent,
     awaitingDiagnosis,
     staleVerification,
+    duePressing: machineDueState(m, now, tz) !== null,
   };
 }
 
 export type MachineSummary = {
   /** Активные (не архивные и не аннулированные) по категориям. */
   byCategory: Record<MachineCategory, number>;
+  /** Активные по видам оборудования (станки/роликовые ножи). */
+  byKind: Record<EquipmentKind, number>;
   /** Активные по состояниям. */
   byStatus: Record<MachineStatus, number>;
   total: number; // всего активных
@@ -117,10 +166,15 @@ export type MachineSummary = {
   urgent: number;
   awaitingDiagnosis: number;
   staleVerification: number;
+  duePressing: number;
 };
 
 function emptyByCategory(): Record<MachineCategory, number> {
   return { CLIENT: 0, OUR_SALE: 0, OUR_RENTAL: 0 };
+}
+
+function emptyByKind(): Record<EquipmentKind, number> {
+  return { MACHINE: 0, ROLLER_KNIFE: 0 };
 }
 
 function emptyByStatus(): Record<MachineStatus, number> {
@@ -145,6 +199,7 @@ function emptyByStatus(): Record<MachineStatus, number> {
 export function summarize(machines: FlaggableMachine[], now: Date, tz: string = KPI_TZ): MachineSummary {
   const out: MachineSummary = {
     byCategory: emptyByCategory(),
+    byKind: emptyByKind(),
     byStatus: emptyByStatus(),
     total: 0,
     archived: 0,
@@ -153,6 +208,7 @@ export function summarize(machines: FlaggableMachine[], now: Date, tz: string = 
     urgent: 0,
     awaitingDiagnosis: 0,
     staleVerification: 0,
+    duePressing: 0,
   };
 
   for (const m of machines) {
@@ -167,11 +223,13 @@ export function summarize(machines: FlaggableMachine[], now: Date, tz: string = 
     }
     out.total += 1;
     out.byCategory[m.category] += 1;
+    out.byKind[m.kind] += 1;
     const f = machineFlags(m, now, tz);
     if (f.noInvoice1C) out.noInvoice1C += 1;
     if (f.urgent) out.urgent += 1;
     if (f.awaitingDiagnosis) out.awaitingDiagnosis += 1;
     if (f.staleVerification) out.staleVerification += 1;
+    if (f.duePressing) out.duePressing += 1;
   }
   return out;
 }

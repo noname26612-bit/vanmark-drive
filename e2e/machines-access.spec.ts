@@ -78,6 +78,7 @@ const MACHINE_API: [string, string][] = [
   ["GET", "/api/machines/00000000-0000-0000-0000-000000000000"],
   ["PATCH", "/api/machines/00000000-0000-0000-0000-000000000000"],
   ["POST", "/api/machines/00000000-0000-0000-0000-000000000000/comments"],
+  ["POST", "/api/machines/00000000-0000-0000-0000-000000000000/shop-task"],
   ["GET", "/api/machines/photos/00000000-0000-0000-0000-000000000000"],
   ["DELETE", "/api/machines/photos/00000000-0000-0000-0000-000000000000"],
 ];

@@ -626,6 +626,13 @@ enum MachineStatus {
   VOIDED // аннулирован: заведён ошибочно (причина обязательна) — архив, вне счётчиков
 }
 
+// Вид оборудования (решение Артёма 07.08.2026): б/у роликовые ножи ведутся в той же картотеке —
+// своих полей у ножей нет, общих хватает. Вид ортогонален категории и состоянию.
+enum EquipmentKind {
+  MACHINE // станок
+  ROLLER_KNIFE // роликовый нож
+}
+
 // Карточка станка. number — сквозной учётный № ВСЕХ станков (Postgres sequence machine_number_seq,
 // START 1): решение Артёма 05.08 — этот номер пишут маркером на каждый станок, включая клиентские.
 // ourNumber — привычная маркировка «77-N» только наших: система подсказывает следующий свободный,
@@ -637,6 +644,7 @@ model Machine {
   id             String          @id @default(uuid())
   number         Int             @unique @default(dbgenerated("nextval('machine_number_seq'::regclass)"))
   ourNumber      Int?            @unique // «77-N»; null у клиентских
+  kind           EquipmentKind   @default(MACHINE)
   category       MachineCategory
   status         MachineStatus   @default(ACCEPTED)
   model          String // «ЛБМ 200», «Sorex 2 м»
@@ -656,6 +664,10 @@ model Machine {
   responsible    User?           @relation("machineResponsible", fields: [responsibleId], references: [id])
   deliveredBy    String? // кто привёз: свободный текст + подсказки (Каширский/Писарев/Султан/Заказчик/Яндекс)
   arrivedAt      DateTime?       @db.Date // дата поступления на площадку
+  // Срок готовности/выдачи — универсальный дедлайн (сдача в аренду, обещанный ремонт, отгрузка).
+  // Подсветка «просрочен/≤2 дней» считается в src/domain/machine-flags.ts при открытии экрана;
+  // пушей и cron по срокам нет (решение Артёма 07.08.2026). В RENTED и архиве срок не «горит».
+  dueDate        DateTime?       @db.Date
   isUrgent       Boolean         @default(false)
   defectNotes    String?         @db.Text // дефектовка: что не работает
   location       String? // место на площадке: свободный текст + автоподсказка по введённым значениям
