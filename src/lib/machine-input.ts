@@ -2,7 +2,7 @@
 // Тот же «обоснованный unknown-парсинг», что в task-input.ts: один контролируемый каст,
 // обязательные поля и бизнес-правила проверяет домен (machine-service).
 import type { EditMachineInput } from "@/domain/machine-service";
-import { MachineCategory, MachineStatus } from "@/generated/prisma/enums";
+import { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
 
 export function parseCategory(v: unknown): MachineCategory | undefined {
   return typeof v === "string" && Object.values(MachineCategory).includes(v as MachineCategory)
@@ -13,6 +13,12 @@ export function parseCategory(v: unknown): MachineCategory | undefined {
 export function parseMachineStatus(v: unknown): MachineStatus | undefined {
   return typeof v === "string" && Object.values(MachineStatus).includes(v as MachineStatus)
     ? (v as MachineStatus)
+    : undefined;
+}
+
+export function parseEquipmentKind(v: unknown): EquipmentKind | undefined {
+  return typeof v === "string" && Object.values(EquipmentKind).includes(v as EquipmentKind)
+    ? (v as EquipmentKind)
     : undefined;
 }
 
@@ -31,6 +37,7 @@ const STRINGS = [
   "defectNotes",
   "notes",
   "arrivedAt",
+  "dueDate",
   "responsibleId",
 ] as const;
 
@@ -48,12 +55,17 @@ export function parseMachineFields(body: Record<string, unknown>): EditMachineIn
     const v = body.ourNumber;
     out.ourNumber = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
   }
+  // Мусорное значение молча игнорируется (стиль файла); осмысленность проверяет домен.
+  if ("kind" in body) {
+    const kind = parseEquipmentKind(body.kind);
+    if (kind) out.kind = kind;
+  }
 
   return out as EditMachineInput;
 }
 
 /** Флаг-плитка сводки, по которой фильтруется список (белый список — из query приходит что угодно). */
-const FLAGS = ["noInvoice1C", "urgent", "awaitingDiagnosis", "staleVerification"] as const;
+const FLAGS = ["noInvoice1C", "urgent", "awaitingDiagnosis", "staleVerification", "duePressing"] as const;
 export type MachineFlagFilter = (typeof FLAGS)[number];
 
 export function parseFlag(v: string | null): MachineFlagFilter | undefined {

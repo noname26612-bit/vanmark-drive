@@ -10,6 +10,7 @@ import {
 const m = (over: Partial<SearchableMachine> = {}): SearchableMachine => ({
   number: 213,
   ourNumber: null,
+  kind: "MACHINE",
   category: "CLIENT",
   status: "IN_REPAIR",
   model: "ЛБМ 200",

@@ -7,7 +7,7 @@
 //
 // Статусная матрица ЗАДАЧ (src/domain/task-status.ts, CLAUDE.md правило 2) этим модулем не
 // используется и не менялась ни на строку.
-import type { MachineCategory, MachineStatus } from "@/generated/prisma/enums";
+import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
 
 export const MACHINE_CATEGORIES: readonly MachineCategory[] = [
   "CLIENT",
@@ -101,3 +101,20 @@ export const MACHINE_STATUS_LABEL: Record<MachineStatus, string> = {
 export function isOurCategory(category: MachineCategory): boolean {
   return category === "OUR_SALE" || category === "OUR_RENTAL";
 }
+
+// ─────────────────────────────── Вид оборудования ───────────────────────────────
+// Б/у роликовые ножи ведутся в ТОЙ ЖЕ картотеке (решение Артёма 07.08.2026): своих полей у ножей
+// нет, общих хватает; вид ортогонален категории и состоянию. Раздел по-прежнему зовётся «Станки».
+
+export const EQUIPMENT_KINDS: readonly EquipmentKind[] = ["MACHINE", "ROLLER_KNIFE"] as const;
+
+export const EQUIPMENT_KIND_LABEL: Record<EquipmentKind, string> = {
+  MACHINE: "Станок",
+  ROLLER_KNIFE: "Роликовый нож",
+};
+
+/** Короткая подпись для бейджа и чипов. Бейдж вида показываем только ножам: «Станок» на каждой строке — шум. */
+export const EQUIPMENT_KIND_SHORT: Record<EquipmentKind, string> = {
+  MACHINE: "Станок",
+  ROLLER_KNIFE: "Нож",
+};

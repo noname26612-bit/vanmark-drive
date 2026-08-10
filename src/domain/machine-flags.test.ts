@@ -15,11 +15,13 @@ const at = (day: string, time = "12:00") => new Date(`${day}T${time}:00.000+03:0
 const dateOnly = (day: string) => new Date(`${day}T00:00:00.000Z`); // как @db.Date
 
 const machine = (over: Partial<FlaggableMachine> = {}): FlaggableMachine => ({
+  kind: "MACHINE",
   category: "CLIENT" as MachineCategory,
   status: "ACCEPTED" as MachineStatus,
   invoice1C: "4512",
   isUrgent: false,
   arrivedAt: dateOnly("2026-08-03"),
+  dueDate: null,
   diagnosedAt: null,
   lastVerifiedAt: at("2026-08-03"),
   createdAt: at("2026-08-03"),
@@ -124,12 +126,14 @@ describe("machine-flags: индикаторы станка", () => {
       invoice1C: null,
       isUrgent: true,
       lastVerifiedAt: at("2026-01-01"),
+      dueDate: dateOnly("2026-08-01"), // даже просроченный срок в архиве не горит
     });
     expect(machineFlags(gone, at("2026-08-11"))).toEqual({
       noInvoice1C: false,
       urgent: false,
       awaitingDiagnosis: false,
       staleVerification: false,
+      duePressing: false,
     });
   });
 });

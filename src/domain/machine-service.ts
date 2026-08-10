@@ -14,13 +14,16 @@ import {
   isStatusAllowedForCategory,
   isOurCategory,
   reasonRequiredFor,
+  EQUIPMENT_KIND_LABEL,
   MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_LABEL,
 } from "./machine-status";
 import { machineFlags, summarize, type FlaggableMachine } from "./machine-flags";
 import { machineMatches, parseQuery } from "@/lib/machine-search";
+import { buildShopTaskText } from "@/lib/machine-shop-task";
 import { utcDateKey } from "./kpi";
-import type { MachineCategory, MachineStatus, Role } from "@/generated/prisma/enums";
+import type { Prisma } from "@/generated/prisma/client";
+import type { EquipmentKind, MachineCategory, MachineStatus, Role } from "@/generated/prisma/enums";
 import type {
   MachineChange,
   MachineDetail,
@@ -39,6 +42,7 @@ const ARCHIVE_PAGE = 30;
 
 export type MachineFields = {
   ourNumber: number | null;
+  kind: EquipmentKind;
   model: string;
   configuration: string | null;
   metalThickness: string | null;
@@ -50,6 +54,7 @@ export type MachineFields = {
   responsibleId: string | null;
   deliveredBy: string | null;
   arrivedAt: string | null; // YYYY-MM-DD
+  dueDate: string | null; // YYYY-MM-DD — срок готовности/выдачи
   isUrgent: boolean;
   defectNotes: string | null;
   location: string | null;
@@ -66,6 +71,7 @@ const listSelect = {
   id: true,
   number: true,
   ourNumber: true,
+  kind: true,
   category: true,
   status: true,
   model: true,
@@ -82,6 +88,7 @@ const listSelect = {
   notes: true,
   isUrgent: true,
   arrivedAt: true,
+  dueDate: true,
   diagnosedAt: true,
   lastVerifiedAt: true,
   responsibleId: true,
@@ -93,11 +100,13 @@ const listSelect = {
 
 // Лёгкая выборка для счётчиков сводки: только поля, от которых зависят индикаторы.
 const flagSelect = {
+  kind: true,
   category: true,
   status: true,
   invoice1C: true,
   isUrgent: true,
   arrivedAt: true,
+  dueDate: true,
   diagnosedAt: true,
   lastVerifiedAt: true,
   createdAt: true,
@@ -107,6 +116,7 @@ type ListRow = {
   id: string;
   number: number;
   ourNumber: number | null;
+  kind: EquipmentKind;
   category: MachineCategory;
   status: MachineStatus;
   model: string;
@@ -123,6 +133,7 @@ type ListRow = {
   notes: string | null;
   isUrgent: boolean;
   arrivedAt: Date | null;
+  dueDate: Date | null;
   diagnosedAt: Date | null;
   lastVerifiedAt: Date | null;
   responsibleId: string | null;
@@ -137,6 +148,7 @@ function toListItem(m: ListRow): MachineListItem {
     id: m.id,
     number: m.number,
     ourNumber: m.ourNumber,
+    kind: m.kind,
     category: m.category,
     status: m.status,
     model: m.model,
@@ -153,6 +165,7 @@ function toListItem(m: ListRow): MachineListItem {
     notes: m.notes,
     isUrgent: m.isUrgent,
     arrivedAt: m.arrivedAt ? utcDateKey(m.arrivedAt) : null,
+    dueDate: m.dueDate ? utcDateKey(m.dueDate) : null,
     diagnosedAt: m.diagnosedAt?.toISOString() ?? null,
     lastVerifiedAt: m.lastVerifiedAt?.toISOString() ?? null,
     responsibleId: m.responsibleId,
@@ -246,6 +259,17 @@ async function buildFields(input: EditMachineInput, category: MachineCategory): 
     patch.arrivedAt = typeof raw === "string" && raw.trim() ? parseDay(raw.trim()) : null;
   }
 
+  if ("dueDate" in input) {
+    const raw = input.dueDate;
+    patch.dueDate = typeof raw === "string" && raw.trim() ? parseDay(raw.trim()) : null;
+  }
+
+  if ("kind" in input) {
+    const kind = input.kind;
+    if (!kind || !EQUIPMENT_KIND_LABEL[kind]) throw Errors.validation("Неизвестный вид оборудования");
+    patch.kind = kind;
+  }
+
   if ("ourNumber" in input) {
     const raw = input.ourNumber;
     if (raw === null || raw === undefined) {
@@ -285,6 +309,7 @@ function isUniqueViolation(e: unknown): boolean {
 // Поля, попадающие в «было→стало». Ключевые для расследования («кто передвинул станок») идут
 // первыми; длинные тексты тоже пишем, но обрезанными — журнал не хранилище текстов.
 const TRACKED: { field: keyof MachineFields | "category"; label: string }[] = [
+  { field: "kind", label: "Вид" },
   { field: "category", label: "Категория" },
   { field: "location", label: "Место на площадке" },
   { field: "responsibleId", label: "Ответственный" },
@@ -299,6 +324,7 @@ const TRACKED: { field: keyof MachineFields | "category"; label: string }[] = [
   { field: "invoice1C", label: "Заказ 1С" },
   { field: "deliveredBy", label: "Кто привёз" },
   { field: "arrivedAt", label: "Дата поступления" },
+  { field: "dueDate", label: "Срок" },
   { field: "isUrgent", label: "Срочно" },
   { field: "defectNotes", label: "Дефектовка" },
   { field: "notes", label: "Заметки" },
@@ -307,6 +333,7 @@ const TRACKED: { field: keyof MachineFields | "category"; label: string }[] = [
 /** Значение поля в человекочитаемом виде для журнала. */
 function displayValue(field: string, value: unknown, names: Map<string, string>): string | null {
   if (value === null || value === undefined) return null;
+  if (field === "kind") return EQUIPMENT_KIND_LABEL[value as EquipmentKind];
   if (field === "category") return MACHINE_CATEGORY_LABEL[value as MachineCategory];
   if (field === "responsibleId") return names.get(String(value)) ?? "—";
   if (field === "ourNumber") return `77-${String(value)}`;
@@ -392,8 +419,10 @@ export type ListParams = {
   scope?: "active" | "archive";
   category?: MachineCategory;
   status?: MachineStatus;
+  /** Вид оборудования: станки/роликовые ножи. */
+  kind?: EquipmentKind;
   /** Готовый фильтр-плитка из сводки. */
-  flag?: "noInvoice1C" | "urgent" | "awaitingDiagnosis" | "staleVerification";
+  flag?: "noInvoice1C" | "urgent" | "awaitingDiagnosis" | "staleVerification" | "duePressing";
   q?: string;
   take?: number;
   skip?: number;
@@ -422,6 +451,7 @@ export async function listMachines(params: ListParams, actor: Actor): Promise<Ma
       scopeFilter,
       ...(params.status ? [{ status: params.status }] : []),
       ...(params.category ? [{ category: params.category }] : []),
+      ...(params.kind ? [{ kind: params.kind }] : []),
     ],
   };
 
@@ -453,6 +483,11 @@ export async function listMachines(params: ListParams, actor: Actor): Promise<Ma
       const row = byId.get(item.id);
       return row ? machineFlags(row, now)[flag] : false;
     });
+    // «Горит срок» смотрят, чтобы решить, за что хвататься — ближайший срок первым. У всех
+    // прошедших фильтр dueDate заполнен (иначе флаг не горит); строки YYYY-MM-DD сравниваются лексикографически.
+    if (flag === "duePressing") {
+      items = [...items].sort((a, b) => (a.dueDate ?? "").localeCompare(b.dueDate ?? ""));
+    }
   }
 
   const q = parseQuery(params.q ?? "");
@@ -565,6 +600,47 @@ export async function editMachine(
   return getMachine(id, actor);
 }
 
+/** Совместимость нового состояния с категорией — общая проверка changeStatus и sendShopTask. */
+function assertStatusAllowed(category: MachineCategory, status: MachineStatus): void {
+  if (!MACHINE_STATUS_LABEL[status]) throw Errors.validation("Неизвестное состояние");
+  if (!isStatusAllowedForCategory(category, status)) {
+    throw Errors.machineStatusCategory(
+      `«${MACHINE_STATUS_LABEL[status]}» не подходит категории «${MACHINE_CATEGORY_LABEL[category]}»`,
+    );
+  }
+}
+
+/**
+ * Запись смены состояния внутри транзакции — единая для changeStatus и sendShopTask, чтобы
+ * семантика (voidReason, событие с «откуда→куда») не разъехалась между двумя путями.
+ */
+async function applyStatusChangeTx(
+  tx: Prisma.TransactionClient,
+  before: { id: string; status: MachineStatus },
+  toStatus: MachineStatus,
+  reason: string | null,
+  actorId: string,
+): Promise<void> {
+  await tx.machine.update({
+    where: { id: before.id },
+    data: {
+      status: toStatus,
+      // Причина аннулирования живёт на карточке (её показываем в архиве); при выходе из VOIDED — снимаем.
+      voidReason: toStatus === "VOIDED" ? reason : null,
+    },
+  });
+  await tx.machineEvent.create({
+    data: {
+      machineId: before.id,
+      actorId,
+      kind: "status_change",
+      fromStatus: before.status,
+      toStatus,
+      comment: reason,
+    },
+  });
+}
+
 /**
  * Смена состояния. Матрицы переходов нет (PRD §16.3) — проверяется совместимость с категорией
  * и обязательность причины для аннулирования. Возврат из архива разрешён: та же карточка живёт
@@ -584,35 +660,14 @@ export async function changeStatus(
   if (!MACHINE_STATUS_LABEL[input.status]) throw Errors.validation("Неизвестное состояние");
   if (before.status === input.status) return getMachine(id, actor);
 
-  if (!isStatusAllowedForCategory(before.category, input.status)) {
-    throw Errors.machineStatusCategory(
-      `«${MACHINE_STATUS_LABEL[input.status]}» не подходит категории «${MACHINE_CATEGORY_LABEL[before.category]}»`,
-    );
-  }
+  assertStatusAllowed(before.category, input.status);
   const reason = trimTo(input.reason, MAX_SHORT, "Причина");
   if (reasonRequiredFor(input.status) && !reason) {
     throw Errors.reasonRequired();
   }
 
   await prisma.$transaction(async (tx) => {
-    await tx.machine.update({
-      where: { id },
-      data: {
-        status: input.status,
-        // Причина аннулирования живёт на карточке (её показываем в архиве); при выходе из VOIDED — снимаем.
-        voidReason: input.status === "VOIDED" ? reason : null,
-      },
-    });
-    await tx.machineEvent.create({
-      data: {
-        machineId: id,
-        actorId: actor.id,
-        kind: "status_change",
-        fromStatus: before.status,
-        toStatus: input.status,
-        comment: reason,
-      },
-    });
+    await applyStatusChangeTx(tx, before, input.status, reason, actor.id);
   });
   return getMachine(id, actor);
 }
@@ -689,6 +744,42 @@ export async function markChecked(
   return getMachine(id, actor);
 }
 
+/**
+ * «Задание в цех»: фиксирует полный текст задания событием kind=shop_task (текст собирается из
+ * карточки + комментария «что сделать» и уходит в Telegram-группу руками Максима — цех вне
+ * системы, PRD §16.6) и, по флагу, той же транзакцией переводит станок «В ремонте».
+ */
+export async function sendShopTask(
+  id: string,
+  input: { note?: string | null; toInRepair?: boolean },
+  actor: Actor,
+): Promise<MachineDetail> {
+  assertMachineAccess(actor);
+  const before = await prisma.machine.findUnique({ where: { id } });
+  if (!before) throw Errors.notFound();
+
+  const note = trimTo(input.note, MAX_TEXT, "Комментарий для цеха");
+  const text = buildShopTaskText(before, note);
+  // Составной текст может вылезти за потолок события из-за длинной дефектовки — говорим честно,
+  // а не обрезаем молча (правило trimTo).
+  if (text.length > MAX_TEXT) {
+    throw Errors.validation(
+      `Задание получилось длиннее ${MAX_TEXT} символов — сократите комментарий или дефектовку`,
+    );
+  }
+
+  const toInRepair = input.toInRepair === true && before.status !== "IN_REPAIR";
+  if (toInRepair) assertStatusAllowed(before.category, "IN_REPAIR");
+
+  await prisma.$transaction(async (tx) => {
+    await tx.machineEvent.create({
+      data: { machineId: id, actorId: actor.id, kind: "shop_task", comment: text },
+    });
+    if (toInRepair) await applyStatusChangeTx(tx, before, "IN_REPAIR", null, actor.id);
+  });
+  return getMachine(id, actor);
+}
+
 /** Комментарий в журнал станка. */
 export async function addComment(id: string, text: string, actor: Actor): Promise<MachineDetail> {
   assertMachineAccess(actor);
@@ -718,6 +809,20 @@ export async function listResponsibles(actor: Actor): Promise<{ id: string; name
     select: { id: true, name: true },
     orderBy: { name: "asc" },
   });
+}
+
+/**
+ * Реально введённые модели (по всей картотеке, включая архив) — сырьё для подсказок формы.
+ * Пул «базовый справочник + эти значения» собирает клиент (src/domain/machine-models.ts).
+ */
+export async function listKnownModels(actor: Actor): Promise<string[]> {
+  assertMachineAccess(actor);
+  const rows = await prisma.machine.findMany({
+    select: { model: true },
+    distinct: ["model"],
+    orderBy: { model: "asc" },
+  });
+  return rows.map((r) => r.model).filter((m) => m.trim().length > 0);
 }
 
 export { isArchivedStatus };

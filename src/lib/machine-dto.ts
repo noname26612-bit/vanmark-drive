@@ -1,6 +1,6 @@
 // Формы ответов модуля «Станки» — общие типы для сервера и клиента (как idle-note-dto/task-dto).
 // Даты отдаются строками: календарные — «YYYY-MM-DD», моменты — ISO.
-import type { MachineCategory, MachineStatus } from "@/generated/prisma/enums";
+import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
 import type { MachineSummary } from "@/domain/machine-flags";
 
 export type { MachineSummary };
@@ -15,7 +15,7 @@ export type MachineChange = {
 
 export type MachineEventView = {
   id: string;
-  kind: string; // created | status_change | edit | comment | photo_added | photo_removed
+  kind: string; // created | status_change | edit | comment | shop_task | photo_added | photo_removed
   actorName: string;
   fromStatus: MachineStatus | null;
   toStatus: MachineStatus | null;
@@ -35,6 +35,7 @@ export type MachineListItem = {
   id: string;
   number: number;
   ourNumber: number | null;
+  kind: EquipmentKind;
   category: MachineCategory;
   status: MachineStatus;
   model: string;
@@ -51,6 +52,7 @@ export type MachineListItem = {
   notes: string | null;
   isUrgent: boolean;
   arrivedAt: string | null; // YYYY-MM-DD
+  dueDate: string | null; // YYYY-MM-DD — срок готовности/выдачи
   diagnosedAt: string | null; // ISO
   lastVerifiedAt: string | null; // ISO
   responsibleId: string | null;

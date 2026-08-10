@@ -15,16 +15,18 @@ import {
   type ParsedQuery,
 } from "./search-core";
 import {
+  EQUIPMENT_KIND_LABEL,
   MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_LABEL,
 } from "@/domain/machine-status";
-import type { MachineCategory, MachineStatus } from "@/generated/prisma/enums";
+import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
 
 export { parseQuery, highlightRanges, phoneHighlightRanges, type MatchRange, type ParsedQuery };
 
 export type SearchableMachine = {
   number: number;
   ourNumber: number | null;
+  kind: EquipmentKind;
   category: MachineCategory;
   status: MachineStatus;
   model: string;
@@ -64,6 +66,9 @@ function textFields(m: SearchableMachine): string[] {
     formatOurNumber(m.ourNumber),
     MACHINE_STATUS_LABEL[m.status],
     MACHINE_CATEGORY_LABEL[m.category],
+    // Подпись вида — только у ножей: «нож»/«роликовый» находит их, а слово «станок» не
+    // превращается в запрос-пустышку, матчащий всю картотеку.
+    m.kind !== "MACHINE" ? EQUIPMENT_KIND_LABEL[m.kind] : null,
   ].filter((v): v is string => typeof v === "string" && v.length > 0);
 }
 
