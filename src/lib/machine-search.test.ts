@@ -85,6 +85,17 @@ describe("machine-search: текст", () => {
     expect(find(m({ category: "OUR_RENTAL" }), "арендный")).toBe(true);
   });
 
+  it("роликовый нож находится по виду — даже без слова «нож» в полях", () => {
+    const knife = m({ kind: "ROLLER_KNIFE", model: "LBA 2007", configuration: null, defectNotes: null });
+    expect(find(knife, "нож")).toBe(true);
+    expect(find(knife, "роликовый")).toBe(true);
+  });
+
+  it("подпись вида не вешается на станки: «роликовый» чужой станок не находит", () => {
+    const machineOnly = m({ configuration: null, defectNotes: null });
+    expect(find(machineOnly, "роликовый")).toBe(false);
+  });
+
   it("пустой запрос показывает всё", () => {
     expect(find(m(), "")).toBe(true);
     expect(find(m(), "   ")).toBe(true);

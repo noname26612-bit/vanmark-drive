@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   daysBetween,
   isWeekend,
+  machineDueState,
   machineFlags,
   summarize,
   workdaysBetween,
@@ -138,6 +139,59 @@ describe("machine-flags: индикаторы станка", () => {
   });
 });
 
+describe("machine-flags: срок готовности/выдачи", () => {
+  // «Сегодня» в тестах — 2026-08-11 (вторник), полдень МСК.
+  const now = at("2026-08-11");
+  const dueOn = (day: string) => machine({ dueDate: dateOnly(day) });
+
+  it("просрочен: срок вчера и раньше", () => {
+    expect(machineDueState(dueOn("2026-08-10"), now)).toBe("overdue");
+    expect(machineDueState(dueOn("2026-07-01"), now)).toBe("overdue");
+  });
+
+  it("горит: срок сегодня и в ближайшие 2 дня; дальше — спокойно", () => {
+    expect(machineDueState(dueOn("2026-08-11"), now)).toBe("soon"); // сегодня — ещё не просрочен
+    expect(machineDueState(dueOn("2026-08-12"), now)).toBe("soon");
+    expect(machineDueState(dueOn("2026-08-13"), now)).toBe("soon"); // ровно +2
+    expect(machineDueState(dueOn("2026-08-14"), now)).toBe(null); // +3 — рано подсвечивать
+  });
+
+  it("без срока не горит", () => {
+    expect(machineDueState(machine(), now)).toBe(null);
+  });
+
+  it("в аренде и в архиве срок не горит даже просроченный", () => {
+    expect(
+      machineDueState(machine({ status: "RENTED", dueDate: dateOnly("2026-08-01") }), now),
+    ).toBe(null);
+    expect(
+      machineDueState(machine({ status: "RELEASED", dueDate: dateOnly("2026-08-01") }), now),
+    ).toBe(null);
+    expect(
+      machineDueState(machine({ status: "VOIDED", dueDate: dateOnly("2026-08-01") }), now),
+    ).toBe(null);
+  });
+
+  it("принимает дату и строкой YYYY-MM-DD (клиентский DTO) — порог один на всех", () => {
+    expect(machineDueState({ status: "ACCEPTED", dueDate: "2026-08-12" }, now)).toBe("soon");
+    expect(machineDueState({ status: "ACCEPTED", dueDate: "2026-08-10" }, now)).toBe("overdue");
+    expect(machineDueState({ status: "ACCEPTED", dueDate: "мусор" }, now)).toBe(null);
+  });
+
+  it("граница МСК-суток: в 23:30 UTC по Москве уже следующий день", () => {
+    // 2026-08-11T23:30Z = 2026-08-12 02:30 МСК → срок «завтра, 12-е» уже сегодняшний.
+    const lateUtc = new Date("2026-08-11T23:30:00.000Z");
+    expect(machineDueState(dueOn("2026-08-12"), lateUtc)).toBe("soon");
+    expect(machineDueState(dueOn("2026-08-11"), lateUtc)).toBe("overdue"); // 11-е по МСК уже вчера
+  });
+
+  it("duePressing в флагах: горит и просроченный, спокойный — нет", () => {
+    expect(machineFlags(dueOn("2026-08-10"), now).duePressing).toBe(true);
+    expect(machineFlags(dueOn("2026-08-12"), now).duePressing).toBe(true);
+    expect(machineFlags(dueOn("2026-08-20"), now).duePressing).toBe(false);
+  });
+});
+
 describe("machine-flags: счётчики сводки", () => {
   const now = at("2026-08-11");
 
@@ -191,5 +245,33 @@ describe("machine-flags: счётчики сводки", () => {
     expect(s.total).toBe(0);
     expect(s.byStatus.ACCEPTED).toBe(0);
     expect(s.byCategory.CLIENT).toBe(0);
+    expect(s.byKind).toEqual({ MACHINE: 0, ROLLER_KNIFE: 0 });
+    expect(s.duePressing).toBe(0);
+  });
+
+  it("считает виды по активным: архивный нож в счётчик не входит", () => {
+    const s = summarize(
+      [
+        machine(),
+        machine({ kind: "ROLLER_KNIFE" }),
+        machine({ kind: "ROLLER_KNIFE", status: "RELEASED" }), // архив
+      ],
+      now,
+    );
+    expect(s.byKind).toEqual({ MACHINE: 1, ROLLER_KNIFE: 1 });
+  });
+
+  it("горящие сроки суммируются только по активным станкам", () => {
+    const s = summarize(
+      [
+        machine({ dueDate: dateOnly("2026-08-10") }), // просрочен
+        machine({ dueDate: dateOnly("2026-08-12") }), // горит
+        machine({ dueDate: dateOnly("2026-08-25") }), // спокойный
+        machine({ dueDate: dateOnly("2026-08-10"), status: "RENTED" }), // аренда — не считается
+        machine({ dueDate: dateOnly("2026-08-10"), status: "RELEASED" }), // архив — не считается
+      ],
+      now,
+    );
+    expect(s.duePressing).toBe(2);
   });
 });

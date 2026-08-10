@@ -43,8 +43,13 @@ export function ModelCombobox({
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Escape") {
-      setOpen(false);
-      setActive(-1);
+      // Открытый список глотает Escape (stopPropagation): иначе событие долетит до document-слушателя
+      // модалки, и вместо закрытия подсказок закроется вся форма. Закрытый — пропускает к модалке.
+      if (open) {
+        e.stopPropagation();
+        setOpen(false);
+        setActive(-1);
+      }
       return;
     }
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -73,7 +78,12 @@ export function ModelCombobox({
           setOpen(true);
           setActive(-1);
         }}
-        onFocus={() => setOpen(true)}
+        // Полный список по программному autoFocus не разворачиваем — он накрыл бы форму при каждом
+        // открытии. Фокус с текстом продолжает подбор; явный клик/тап по полю открывает список всегда.
+        onFocus={() => {
+          if (value.trim()) setOpen(true);
+        }}
+        onClick={() => setOpen(true)}
         // Клик по подсказке идёт через onMouseDown с preventDefault, поэтому blur здесь означает
         // настоящий уход из поля — список можно закрывать сразу, клики не теряются.
         onBlur={() => {
