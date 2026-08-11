@@ -4,7 +4,7 @@
 import { prisma } from "@/lib/prisma";
 import type { AttachmentKind, Role } from "@/generated/prisma/enums";
 import { canViewTask } from "./authz";
-import { isDispatcherRole } from "./task-status";
+import { isTaskManagerRole } from "./task-access";
 import { validateUpload, matchesMagic } from "./attachments";
 import { markWorksheetSigned, revertWorksheetSignIfNoDocs } from "./work-service";
 import { Errors } from "./errors";
@@ -36,11 +36,13 @@ const attachmentSelect = {
 export async function addAttachment(taskId: string, actor: Actor, input: NewAttachment) {
   const task = await prisma.task.findUnique({
     where: { id: taskId },
-    select: { id: true, assigneeId: true, coDriverId: true, status: true },
+    select: { id: true, assigneeId: true, coDriverId: true, status: true, archivedAt: true },
   });
   if (!task) throw Errors.notFound();
   if (!canViewTask(actor, task)) throw Errors.notFound(); // чужая → 404, не 403
   if (task.status === "CANCELLED") throw Errors.validation("Задача отменена");
+  // Архивная заявка выведена из работы (11.08.2026) — фото и акты к ней не прикладываем.
+  if (task.archivedAt) throw Errors.validation("Заявка в архиве — сначала верните её из архива");
 
   const kind: AttachmentKind = input.kind ?? "PHOTO";
   const verdict = validateUpload(input.mimeType, input.sizeBytes, kind);
@@ -106,7 +108,8 @@ export async function deleteAttachment(attachmentId: string, actor: Actor): Prom
   });
   if (!att) throw Errors.notFound();
   if (!canViewTask(actor, att.task)) throw Errors.notFound();
-  if (att.createdById !== actor.id && !isDispatcherRole(actor.role)) throw Errors.forbidden();
+  // Чужое вложение удаляет только тот, кто ведёт заявки (Д/А, с 11.08.2026 — менеджер-сервисник).
+  if (att.createdById !== actor.id && !isTaskManagerRole(actor.role)) throw Errors.forbidden();
   if (att.task.status === "DONE") throw Errors.validation("Нельзя удалить фото завершённой задачи");
 
   // Удаление последнего акта откатывает ведомость SIGNED→PRICED (этап 14) — атомарно с удалением.

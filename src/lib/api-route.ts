@@ -6,6 +6,7 @@ import { fail } from "@/lib/api";
 import { DomainError, Errors } from "@/domain/errors";
 import { isDispatcherRole } from "@/domain/task-status";
 import { assertMachineAccess } from "@/domain/machine-access";
+import { isTaskManagerRole } from "@/domain/task-access";
 import type { Role } from "@/domain/roles";
 
 export type ApiUser = { id: string; login: string; role: Role; name?: string | null };
@@ -17,9 +18,20 @@ export async function requireApiUser(): Promise<ApiUser> {
   return { id, login, role, name };
 }
 
+/** Диспетчерский контур: смены, KPI/нарушения, простой, сводка, расценка. Максиму сюда нельзя. */
 export async function requireDispatcher(): Promise<ApiUser> {
   const user = await requireApiUser();
   if (!isDispatcherRole(user.role)) throw Errors.forbidden();
+  return user;
+}
+
+/**
+ * Работа с ЗАЯВКАМИ (решение Артёма 11.08.2026): диспетчер, админ и менеджер-сервисник.
+ * Белый список — src/domain/task-access.ts. Не путать с requireDispatcher: там смены и деньги.
+ */
+export async function requireTaskManager(): Promise<ApiUser> {
+  const user = await requireApiUser();
+  if (!isTaskManagerRole(user.role)) throw Errors.forbidden();
   return user;
 }
 

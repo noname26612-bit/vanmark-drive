@@ -167,6 +167,7 @@ async function getActCompletenessCounts(driverId: string, period: string): Promi
       assigneeId: driverId,
       status: "DONE",
       requiresSignedDoc: true,
+      archivedAt: null, // архивная заявка (11.08.2026) не входит в базу бонуса за акты
       completedAt: { gte: start, lt: end },
     },
     select: { _count: { select: { attachments: { where: { kind: "DOCUMENT" } } } } },
@@ -309,6 +310,7 @@ export async function detectCandidatesForDate(
     prisma.task.findMany({
       where: {
         assigneeId: { in: tracked },
+        archivedAt: null, // по убранной в архив заявке нарушений не заводим (11.08.2026)
         OR: [{ scheduledDate: scheduledDay }, { completedAt: { gte: completedFrom, lt: dayEnd } }],
       },
       select: {

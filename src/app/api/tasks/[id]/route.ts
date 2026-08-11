@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireApiUser, requireDispatcher, errorResponse, readJson } from "@/lib/api-route";
+import { requireApiUser, requireTaskManager, errorResponse, readJson } from "@/lib/api-route";
 import {
   getTaskById,
   updateTaskFields,
   assignTask,
   rescheduleTask,
   planTask,
+  archiveTask,
+  unarchiveTask,
 } from "@/domain/task-service";
 import { parseTaskFields } from "@/lib/task-input";
 import { Errors } from "@/domain/errors";
@@ -27,10 +29,11 @@ export async function GET(_req: Request, { params }: Ctx) {
   }
 }
 
-// PATCH /api/tasks/:id — редактирование полей / назначение / перенос (диспетчер).
+// PATCH /api/tasks/:id — редактирование полей / назначение / перенос / архив.
+// Кто ведёт заявки: диспетчер, админ и менеджер-сервисник (11.08.2026).
 export async function PATCH(req: Request, { params }: Ctx) {
   try {
-    const user = await requireDispatcher();
+    const user = await requireTaskManager();
     const { id } = await params;
     const body = await readJson(req);
     const op = typeof body.op === "string" ? body.op : "edit";
@@ -59,6 +62,14 @@ export async function PATCH(req: Request, { params }: Ctx) {
           ? (body.assigneeId as string | null)
           : null;
       return NextResponse.json(ok(await planTask(id, { scheduledDate, assigneeId }, user)));
+    }
+    if (op === "archive") {
+      // Архив (11.08.2026): убрать дубль/ошибочную заявку из работы. Причина по желанию — пишется в журнал.
+      const reason = typeof body.reason === "string" ? body.reason : null;
+      return NextResponse.json(ok(await archiveTask(id, user, reason)));
+    }
+    if (op === "unarchive") {
+      return NextResponse.json(ok(await unarchiveTask(id, user)));
     }
     const fields = parseTaskFields(body);
     return NextResponse.json(ok(await updateTaskFields(id, fields, user)));
