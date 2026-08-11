@@ -167,23 +167,31 @@ export async function updateWorkCatalogItem(id: string, input: Partial<WorkCatal
 
 // ───────────────────────────── Ведомость задачи ─────────────────────────────
 
+// Кто может МЕНЯТЬ ведомость — белый список (11.08.2026). Заполняет её ответственный водитель,
+// расценивает диспетчер/админ. Все прочие, кто задачу видит, — только читают: напарник (PRD §4,
+// 20.07.2026) и менеджер-сервисник, которому с 11.08.2026 открыты заявки, но не денежный контур.
+// Форма важна: прежняя проверка «DRIVER и не свой ⇒ нельзя» пускала бы к DRAFT-мутациям любую
+// новую роль, как только она получает canViewTask.
+function canEditWorksheet(actor: Actor, task: { assigneeId: string | null }): boolean {
+  if (isDispatcherRole(actor.role)) return true;
+  return actor.role === "DRIVER" && task.assigneeId === actor.id;
+}
+
 // Загружает задачу с проверкой доступа (изоляция: чужая → 404) и флага requiresPricing.
-// Ведомость — зона ОТВЕТСТВЕННОГО (PRD §4, 20.07.2026): напарник видит задачу через canViewTask,
-// но заполнять/отправлять ведомость не может — для роли DRIVER требуем assigneeId === actor.id
-// (без этого гейта расширение canViewTask на напарника открыло бы ему DRAFT-мутации).
-async function loadTaskForWorksheet(taskId: string, actor: Actor) {
+// mode="write" дополнительно требует право менять ведомость (см. canEditWorksheet).
+async function loadTaskForWorksheet(taskId: string, actor: Actor, mode: "read" | "write" = "write") {
   const task = await prisma.task.findUnique({
     where: { id: taskId },
     include: { type: { select: { requiresPricing: true } } },
   });
   if (!task) throw Errors.notFound();
   if (!canViewTask(actor, task)) throw Errors.notFound();
-  if (actor.role === "DRIVER" && task.assigneeId !== actor.id) throw Errors.forbidden();
+  if (mode === "write" && !canEditWorksheet(actor, task)) throw Errors.forbidden();
   return task;
 }
 
 export async function listWorkItems(taskId: string, actor: Actor) {
-  await loadTaskForWorksheet(taskId, actor);
+  await loadTaskForWorksheet(taskId, actor, "read");
   return prisma.workItem.findMany({ where: { taskId }, orderBy: { sortOrder: "asc" } });
 }
 

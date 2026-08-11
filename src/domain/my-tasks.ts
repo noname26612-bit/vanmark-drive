@@ -23,10 +23,13 @@ function ownershipWhere(driverId: string): Prisma.TaskWhereInput {
  * оно лежит в верхнеуровневом AND, ни одна ветка дат не может «вытащить» чужую задачу.
  *
  * scope="today" (решение Артёма 04.06.2026 — вариант «свернуть в Сегодня»):
- *   - задачи на сегодня (любой статус: видно и выполненные за день);
+ *   - задачи на сегодня (кроме отменённых — 11.08.2026: отменённую водителю показывать незачем,
+ *     про отмену ему приходит пуш, а в списке она только сбивает);
  *   - просроченные незавершённые (дата < сегодня) — чтобы не потерялись;
  *   - без даты незавершённые — у водителя нет экрана «все задачи», иначе пропадут из вида.
  * scope="upcoming": задачи на будущее (дата > сегодня), кроме отменённых.
+ *
+ * Архивные (11.08.2026) не показываются ни в одной вкладке: заявка убрана из работы совсем.
  */
 export function myTasksWhere(
   driverId: string,
@@ -37,6 +40,7 @@ export function myTasksWhere(
     return {
       AND: [
         ownershipWhere(driverId),
+        { archivedAt: null },
         { scheduledDate: { gt: today }, status: { not: "CANCELLED" } },
       ],
     };
@@ -44,6 +48,8 @@ export function myTasksWhere(
   return {
     AND: [
       ownershipWhere(driverId),
+      { archivedAt: null },
+      { status: { not: "CANCELLED" } },
       {
         OR: [
           { scheduledDate: today },

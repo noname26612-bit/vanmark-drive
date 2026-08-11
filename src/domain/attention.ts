@@ -11,11 +11,12 @@ import type { TaskStatus } from "@/generated/prisma/enums";
 // Завершённые статусы — их во «внимание» не тащим (задача закрыта).
 const TERMINAL: TaskStatus[] = ["DONE", "CANCELLED"];
 
-/** Просроченные: дата строго меньше сегодня и задача ещё не завершена. */
+/** Просроченные: дата строго меньше сегодня и задача ещё не завершена (архивные — не в счёт). */
 export function overdueWhere(today: Date): Prisma.TaskWhereInput {
   return {
     scheduledDate: { lt: today },
     status: { notIn: TERMINAL },
+    archivedAt: null,
   };
 }
 
@@ -25,5 +26,6 @@ export function tomorrowPassWhere(tomorrow: Date): Prisma.TaskWhereInput {
     scheduledDate: tomorrow,
     passStatus: "NEEDED",
     status: { notIn: TERMINAL },
+    archivedAt: null,
   };
 }

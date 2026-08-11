@@ -65,8 +65,16 @@ export type TaskDTO = {
   coDriverId: string | null;
   coDriver: AssigneeDTO;
   createdById: string;
+  // Кто поставил заявку (11.08.2026): маленький бейдж на карточках — с появлением второго
+  // постановщика (Максима) сразу видно, чья заявка. Связь тянется одним include во всех ответах
+  // (и в списках, и в результатах мутаций), поэтому форма вложенная: плоское поле пришлось бы
+  // собирать в каждой точке возврата. В телефоне водителя бейдж не показывается.
+  createdBy: { name: string };
   cancelReason: string | null;
   holdReason: string | null;
+  // Архив (11.08.2026): заявка убрана из работы. null — активная.
+  archivedAt: string | null;
+  archivedById: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -130,8 +138,10 @@ export type WorkItemDTO = {
   createdAt: string;
 };
 
-export type TaskDetailDTO = TaskDTO & {
+export type TaskDetailDTO = Omit<TaskDTO, "createdBy"> & {
   createdBy: { id: string; name: string };
+  // Кто убрал заявку в архив (11.08.2026) — показывается в плашке «Заявка в архиве».
+  archivedByName?: string | null;
   events: TaskEventDTO[];
   attachments: AttachmentDTO[];
   workItems: WorkItemDTO[];

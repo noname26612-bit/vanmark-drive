@@ -37,7 +37,7 @@ describe("myTasksWhere — наполнение вкладок", () => {
   it("today: сегодняшние + просроченные открытые + без даты открытые", () => {
     const w = myTasksWhere(ME, TODAY, "today");
     const and = w.AND as Array<Record<string, unknown>>;
-    expect(and[1]).toEqual({
+    expect(and).toContainEqual({
       OR: [
         { scheduledDate: TODAY },
         { scheduledDate: { lt: TODAY }, status: { notIn: ["DONE", "CANCELLED"] } },
@@ -49,6 +49,21 @@ describe("myTasksWhere — наполнение вкладок", () => {
   it("upcoming: только будущее (дата > сегодня), без отменённых", () => {
     const w = myTasksWhere(ME, TODAY, "upcoming");
     const and = w.AND as Array<Record<string, unknown>>;
-    expect(and[1]).toEqual({ scheduledDate: { gt: TODAY }, status: { not: "CANCELLED" } });
+    expect(and).toContainEqual({ scheduledDate: { gt: TODAY }, status: { not: "CANCELLED" } });
+  });
+
+  // 11.08.2026: отменённую заявку водителю не показываем нигде — про отмену ему приходит пуш,
+  // а в списке она только сбивает («ехать или не ехать?»).
+  it("today: отменённые исключены целиком, а не только в ветке просрочки", () => {
+    const and = myTasksWhere(ME, TODAY, "today").AND as Array<Record<string, unknown>>;
+    expect(and).toContainEqual({ status: { not: "CANCELLED" } });
+  });
+
+  // 11.08.2026: архив — мягкое удаление, заявка убрана из работы полностью.
+  it("архивные не попадают ни в одну вкладку", () => {
+    for (const scope of ["today", "upcoming"] as const) {
+      const and = myTasksWhere(ME, TODAY, scope).AND as Array<Record<string, unknown>>;
+      expect(and).toContainEqual({ archivedAt: null });
+    }
   });
 });

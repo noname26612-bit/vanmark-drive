@@ -188,6 +188,7 @@ export async function buildWorkloadCalendar(fromKey: string, toKey: string): Pro
       where: {
         assigneeId: { not: null },
         status: { not: "CANCELLED" },
+        archivedAt: null, // архивная заявка не занимает день (11.08.2026)
         scheduledDate: { gte: from, lte: to },
       },
       select: {

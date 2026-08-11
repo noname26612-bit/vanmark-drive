@@ -2,6 +2,7 @@
 // Любой переход статуса в системе проходит через checkTransition — в обход нельзя.
 // Менять матрицу — только после согласования с Артёмом.
 import type { Role, TaskStatus } from "@/generated/prisma/enums";
+import { isTaskManagerRole } from "./task-access";
 
 export type EdgeRule = {
   /** Может ли назначенный водитель сам выполнить переход.
@@ -66,6 +67,8 @@ export function reasonRequiredFor(to: TaskStatus, from?: TaskStatus): boolean {
   return false;
 }
 
+/** Диспетчерский контур: смены, KPI и нарушения, пометки простоя, сводка, расценка, админка.
+ *  Заявки живут по другому (более широкому) белому списку — isTaskManagerRole в task-access.ts. */
 export function isDispatcherRole(role: Role): boolean {
   return role === "ADMIN" || role === "DISPATCHER";
 }
@@ -102,11 +105,12 @@ export function checkTransition(
 ): TransitionVerdict {
   const rule = transitionRule(from, to);
 
-  // Диспетчер/админ ведёт статусы вручную. Помимо «водительских» рёбер матрицы ему разрешена свободная
-  // установка любого актуального статуса — в т.ч. выход из DONE/CANCELLED (исправления, откат №700,
-  // решение Артёма 24.07.2026). Ограничение: оба статуса «ручные» (не legacy/RESCHEDULED) и переход
-  // непустой. Побочные эффекты отката снимает transitionTask; причина обязательна (reasonRequiredFor).
-  if (isDispatcherRole(actor.role)) {
+  // Кто ведёт заявки (диспетчер, админ, с 11.08.2026 — менеджер-сервисник), тот ведёт и статусы вручную.
+  // Помимо «водительских» рёбер матрицы ему разрешена свободная установка любого актуального статуса —
+  // в т.ч. выход из DONE/CANCELLED (исправления, откат №700, решение Артёма 24.07.2026). Ограничение:
+  // оба статуса «ручные» (не legacy/RESCHEDULED) и переход непустой. Побочные эффекты отката снимает
+  // transitionTask; причина обязательна (reasonRequiredFor). Сама матрица рёбер НЕ менялась.
+  if (isTaskManagerRole(actor.role)) {
     const manual = MANUAL_STATUSES.has(from) && MANUAL_STATUSES.has(to) && from !== to;
     if (rule || manual) return { ok: true, reasonRequired: reasonRequiredFor(to, from) };
     return { ok: false, code: "INVALID_TRANSITION" };

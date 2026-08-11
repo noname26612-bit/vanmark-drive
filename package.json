@@ -24,6 +24,7 @@
     "db:seed:roster": "tsx prisma/seed-roster.ts",
     "db:seed:service-manager": "tsx prisma/seed-service-manager.ts",
     "db:seed:pilot": "tsx prisma/seed-pilot.ts",
+    "db:recompute-estimates": "tsx prisma/recompute-estimates.ts",
     "db:clean:dev": "tsx prisma/clean-dev.ts",
     "db:studio": "prisma studio",
     "prisma": "prisma",

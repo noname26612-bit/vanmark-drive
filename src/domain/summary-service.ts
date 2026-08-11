@@ -112,7 +112,12 @@ export async function getDriverSummary(
         orderBy: { name: "asc" },
       }),
       prisma.task.findMany({
-        where: { status: "DONE", assigneeId: { not: null }, completedAt: { gte: range.gte, lt: range.lt } },
+        where: {
+          status: "DONE",
+          assigneeId: { not: null },
+          archivedAt: null, // архивные заявки из сводки исключены (11.08.2026)
+          completedAt: { gte: range.gte, lt: range.lt },
+        },
         select: {
           assigneeId: true,
           coDriverId: true, // напарник (20.07): задача видна в сводке обоим, деньги — ответственному
@@ -128,7 +133,11 @@ export async function getDriverSummary(
         select: { driverId: true, kind: true, occurredAt: true },
       }),
       prisma.taskEvent.findMany({
-        where: { toStatus: { in: ["CANCELLED", "RESCHEDULED"] }, at: { gte: range.gte, lt: range.lt } },
+        where: {
+          toStatus: { in: ["CANCELLED", "RESCHEDULED"] },
+          at: { gte: range.gte, lt: range.lt },
+          task: { archivedAt: null },
+        },
         select: { at: true, toStatus: true, task: { select: { assigneeId: true } } },
       }),
       // Закрытые смены периода (этап D) — для простоя. Грубый range по дню смены, точное окно ниже.
@@ -144,7 +153,12 @@ export async function getDriverSummary(
       }),
       // Деньги (v2): полученные оплаты «на месте».
       prisma.task.findMany({
-        where: { status: "DONE", paymentReceived: true, completedAt: { gte: range.gte, lt: range.lt } },
+        where: {
+          status: "DONE",
+          paymentReceived: true,
+          archivedAt: null,
+          completedAt: { gte: range.gte, lt: range.lt },
+        },
         select: { completedAt: true, paymentAmount: true },
       }),
       // Деньги (v2): расценённые работы (ведомости PRICED/SIGNED) по задачам, закрытым в окне.
@@ -152,6 +166,7 @@ export async function getDriverSummary(
         where: {
           status: "DONE",
           worksheetStatus: { in: ["PRICED", "SIGNED"] },
+          archivedAt: null,
           completedAt: { gte: range.gte, lt: range.lt },
         },
         select: { completedAt: true, workItems: { select: { price: true, quantity: true } } },
@@ -394,6 +409,7 @@ export async function getSummaryDetails(
       where: {
         status: "DONE",
         completedAt: { gte: range.gte, lt: range.lt },
+        archivedAt: null, // список за цифрой строится теми же фильтрами, что и сама цифра
         ...(m === "carrier" ? { assignee: { isExternal: true } } : {}),
         ...(m === "payments" ? { paymentReceived: true } : {}),
         ...(m === "priced-works" ? { worksheetStatus: { in: ["PRICED", "SIGNED"] } } : {}),
@@ -626,6 +642,7 @@ export async function getCarrierSummary(granularity: string, anchorRaw: string):
       status: "DONE",
       completedAt: { gte: range.gte, lt: range.lt },
       assignee: { isExternal: true },
+      archivedAt: null,
     },
     select: {
       id: true,

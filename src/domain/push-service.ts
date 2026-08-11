@@ -65,6 +65,7 @@ export async function runMorningReminders(): Promise<void> {
           OR: [{ assigneeId: d.id }, { coDriverId: d.id }],
           scheduledDate: today,
           status: { notIn: ["DONE", "CANCELLED"] },
+          archivedAt: null, // убранную в архив заявку в «у тебя N задач» не считаем (11.08.2026)
         },
       });
       if (count > 0) await sendPushToUser(d.id, buildMorningPayload(count));
@@ -93,6 +94,7 @@ export async function runPassWarnings(): Promise<void> {
       scheduledDate: tomorrow,
       passStatus: "NEEDED",
       status: { notIn: ["DONE", "CANCELLED"] },
+      archivedAt: null,
     },
   });
   if (count === 0) return;

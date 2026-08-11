@@ -11,6 +11,7 @@ import type { DriverDTO, TaskDTO } from "@/lib/task-dto";
 import { STATUS_BAR, addDaysISO, formatDate } from "@/lib/task-ui";
 import { parseQuery, taskMatches, type ParsedQuery } from "@/lib/task-search";
 import { StatusBadge } from "@/components/status-badge";
+import { AuthorBadge } from "@/components/author-badge";
 import { formatMinutes } from "@/domain/capacity";
 import { TypeIcon } from "@/components/type-icon";
 import { Button } from "@/components/ui/button";
@@ -57,7 +58,9 @@ export function PlanningClient({
   const weekEnd = addDaysISO(weekStart, HORIZON_DAYS - 1);
   const days = Array.from({ length: HORIZON_DAYS }, (_, i) => addDaysISO(weekStart, i));
 
-  const key = `/api/tasks?dateFrom=${weekStart}&dateTo=${weekEnd}&includeUndated=1`;
+  // hideCancelled (11.08.2026): отменённая заявка не занимает ячейку и не входит ни в «≈ часы»,
+  // ни в счётчик «N зад.» — иначе диспетчер планирует день по завышенной загрузке.
+  const key = `/api/tasks?dateFrom=${weekStart}&dateTo=${weekEnd}&includeUndated=1&hideCancelled=1`;
   const { data: tasks, isLoading, error: loadError, mutate } = useSWR<TaskDTO[]>(key, fetcher, LIVE);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -422,6 +425,8 @@ function PlanCard({
         <TypeIcon name={task.type.icon} className="h-3.5 w-3.5 text-neutral-500" />№
         <Highlighted text={String(task.number)} query={query} />
         {task.priority ? <span className="text-red-500">●</span> : null}
+        {/* Автор заявки (11.08.2026) — прижат вправо, чтобы не спорить с номером на узкой карточке. */}
+        <AuthorBadge name={task.createdBy?.name} className="ml-auto" />
       </span>
       <span className="mt-0.5 block truncate text-neutral-700">
         <Highlighted text={task.title} query={query} />

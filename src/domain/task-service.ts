@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
 import type { PassStatus, PaymentType, Role, TaskStatus, WorksheetStatus } from "@/generated/prisma/enums";
 import { checkTransition, isDispatcherRole } from "./task-status";
+import { assertTaskManager, isTaskManagerRole } from "./task-access";
 import { resolveAssignedDate } from "./assign-date";
 import { resolveCompletionDate, formatDayRu } from "./completion-date";
 import { canViewTask } from "./authz";
@@ -17,6 +18,7 @@ import { notifyTaskAssignee, notifyCoDriverAssigned } from "@/lib/push";
 import { geocodeAddress } from "@/lib/geocode";
 import { computeEstimate } from "./capacity-service";
 import { syncUnsignedDocMark } from "./kpi-service";
+import { periodOf } from "./kpi";
 import type { LatLng } from "./capacity";
 
 export type Actor = { id: string; role: Role };
@@ -61,13 +63,24 @@ export type ListFilters = {
   status?: TaskStatus;
   typeId?: string;
   q?: string;
+  // Отменённые заявки вне рабочих экранов (11.08.2026): «Сегодня», «Планирование» и окно дня
+  // календаря просят hideCancelled=1 — отменённая не мешает и не попадает ни в сумму часов, ни в
+  // счётчик «N зад.». Во «Все задачи» флага нет: там отмену находят фильтром по статусу.
+  hideCancelled?: boolean;
+  // Архив (11.08.2026): по умолчанию списки показывают только активные заявки. scope="archive" —
+  // раздел «Архив» во «Все задачи», scope="all" — служебная область (не используется в UI).
+  scope?: "active" | "archive" | "all";
 };
 
 // Краткие связи для карточек/списков (используется и записями: createTask/assign/transition...).
+// createdBy — для бейджа «кто поставил заявку» (11.08.2026): постановщиков теперь двое (Милена и
+// Максим), и на доске нужно видеть автора, не открывая карточку. Клиенту уходит плоским
+// createdByName (см. withActFlag) — так же, как сделано в картотеке станков.
 const taskInclude = {
   type: true,
   assignee: { select: { id: true, name: true, login: true } },
   coDriver: { select: { id: true, name: true, login: true } },
+  createdBy: { select: { name: true } },
 } satisfies Prisma.TaskInclude;
 
 // Списки-чтения дополнительно тянут число приложенных актов (DOCUMENT-вложений) — лёгкий
@@ -126,6 +139,8 @@ type WorkItemWithHint = TaskDetail["workItems"][number] & { defaultPrice?: numbe
 export type TaskDetailWire = Omit<TaskDetail, "workItems" | "carrierCost"> & {
   workItems: WorkItemWithHint[];
   carrierCost?: number | null;
+  // Имя убравшего заявку в архив (11.08.2026); null — заявка активна.
+  archivedByName: string | null;
 };
 
 // Элемент списка для клиента: payload с _count, развёрнутым в булев флаг hasSignedDoc (этап 14).
@@ -153,6 +168,15 @@ export function stripMoneyForDriver<T extends { carrierCost?: number | null }>(
   const { carrierCost: _hidden, ...rest } = t;
   void _hidden;
   return rest;
+}
+
+/**
+ * Цены работ для того, кто ведёт заявки, но не расценивает (менеджер-сервисник, 11.08.2026).
+ * Состав ведомости он видит — это часть заявки; суммы обнуляем, как водителю (PRD §13).
+ * carrierCost при этом остаётся: стоимость поездки внешнего перевозчика вносит сам постановщик.
+ */
+function stripWorkPrices(task: TaskDetail & { archivedByName: string | null }): TaskDetailWire {
+  return { ...task, workItems: task.workItems.map((w) => ({ ...w, price: null })) };
 }
 
 // Правила пары «ответственный + напарник» → единый формат ошибок API (Errors.validation).
@@ -191,6 +215,10 @@ function parseDate(s: string | null | undefined): Date | null {
 export async function listTasks(filters: ListFilters): Promise<TaskListWire[]> {
   const and: Prisma.TaskWhereInput[] = [];
 
+  // Архивные заявки не видны нигде, кроме явного раздела «Архив» (11.08.2026).
+  if (filters.scope === "archive") and.push({ archivedAt: { not: null } });
+  else if (filters.scope !== "all") and.push({ archivedAt: null });
+
   if (filters.undatedOnly) {
     and.push({ scheduledDate: null });
   } else if (filters.date) {
@@ -221,6 +249,7 @@ export async function listTasks(filters: ListFilters): Promise<TaskListWire[]> {
     and.push({ OR: [{ assigneeId: filters.assigneeId }, { coDriverId: filters.assigneeId }] });
 
   if (filters.status) and.push({ status: filters.status });
+  else if (filters.hideCancelled) and.push({ status: { not: "CANCELLED" } });
   if (filters.typeId) and.push({ typeId: filters.typeId });
 
   const q = filters.q?.trim();
@@ -336,12 +365,22 @@ export async function listAttention(today: string): Promise<BoardAttention> {
 
 /** Карточка задачи с историей. Изоляция: водителю чужая задача отдаёт 404. */
 export async function getTaskById(taskId: string, actor: Actor): Promise<TaskDetailWire> {
-  const task = await prisma.task.findUnique({ where: { id: taskId }, include: taskDetailInclude });
-  if (!task) throw Errors.notFound();
-  if (!canViewTask(actor, task)) throw Errors.notFound();
+  const row = await prisma.task.findUnique({ where: { id: taskId }, include: taskDetailInclude });
+  if (!row) throw Errors.notFound();
+  if (!canViewTask(actor, row)) throw Errors.notFound();
+  // Имя убравшего в архив (11.08.2026): archivedById — uuid без навигации (как принято в проекте),
+  // поэтому имя достаём отдельным точечным запросом и только когда заявка действительно в архиве.
+  const archivedByName = row.archivedById
+    ? ((await prisma.user.findUnique({ where: { id: row.archivedById }, select: { name: true } }))?.name ?? null)
+    : null;
+  const task = { ...row, archivedByName };
   // Диспетчеру/админу подставляем цену-подсказку из справочника к позициям ведомости (для расценки).
-  // Водителю — НЕ отдаём (PRD §13: цены ему не видны; carrierCost — деньги компании, 02.07).
-  if (!isDispatcherRole(actor.role)) return stripMoneyForDriver(task);
+  // Всем остальным — НЕ отдаём (PRD §13: водителю цены не видны; менеджеру-сервиснику расценка тоже
+  // закрыта — 11.08.2026, у него заявки без денежного контура). carrierCost — стоимость поездки
+  // внешнего перевозчика — это поле самой заявки, его вырезаем только водителю (stripMoneyForDriver).
+  if (!isDispatcherRole(actor.role)) {
+    return isTaskManagerRole(actor.role) ? stripWorkPrices(task) : stripMoneyForDriver(task);
+  }
   const ids = [
     ...new Set(task.workItems.map((w) => w.catalogItemId).filter((x): x is string => x !== null)),
   ];
@@ -366,7 +405,7 @@ export async function createTask(
   input: Partial<CreateTaskInput>,
   actor: Actor,
 ): Promise<TaskListItem> {
-  if (!isDispatcherRole(actor.role)) throw Errors.forbidden();
+  assertTaskManager(actor);
 
   const typeId = input.typeId;
   const title = clean(input.title);
@@ -491,9 +530,10 @@ export async function updateTaskFields(
   fields: Partial<CreateTaskInput>,
   actor: Actor,
 ): Promise<TaskListItem> {
-  if (!isDispatcherRole(actor.role)) throw Errors.forbidden();
+  assertTaskManager(actor);
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw Errors.notFound();
+  assertNotArchived(task.archivedAt);
   // Редактирование закрытых заявок (решение Артёма 02.07.2026): правка полей разрешена и для
   // завершённых/отменённых, НО без смены даты (перенос завершённой запрещён — как в planTask).
   const terminal = task.status === "DONE" || task.status === "CANCELLED";
@@ -679,9 +719,10 @@ export async function assignTask(
   actor: Actor,
   opts: { today?: string } = {},
 ): Promise<TaskListItem> {
-  if (!isDispatcherRole(actor.role)) throw Errors.forbidden();
+  assertTaskManager(actor);
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw Errors.notFound();
+  assertNotArchived(task.archivedAt);
   if (task.status === "DONE" || task.status === "CANCELLED") throw Errors.invalidTransition();
 
   let name = "";
@@ -781,9 +822,10 @@ export async function planTask(
   input: { scheduledDate: string | null; assigneeId: string | null },
   actor: Actor,
 ): Promise<TaskListItem> {
-  if (!isDispatcherRole(actor.role)) throw Errors.forbidden();
+  assertTaskManager(actor);
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw Errors.notFound();
+  assertNotArchived(task.archivedAt);
   if (task.status === "DONE" || task.status === "CANCELLED") throw Errors.invalidTransition();
 
   const newDate = parseDate(input.scheduledDate);
@@ -869,6 +911,86 @@ export async function planTask(
   return result;
 }
 
+/**
+ * Архив заявки (решение Артёма 11.08.2026): убрать дубль или ошибочно заведённую заявку из работы,
+ * не ломая нумерацию и не переписывая журнал. Это НЕ статус (матрица §5 не менялась) и не удаление:
+ * строка остаётся, события остаются, номер за заявкой сохраняется. Архивная заявка исчезает из всех
+ * рабочих выборок и из аналитики (сводка, KPI, календарь загрузки, списки водителя).
+ *
+ * Гейт закрытого месяца: завершённая заявка уже посчитана в зарплате, поэтому убрать её из
+ * закрытого периода нельзя — иначе задним числом поедут выплаченные цифры. Открытый месяц можно:
+ * там пересчёт и так живой.
+ */
+export async function archiveTask(
+  taskId: string,
+  actor: Actor,
+  reason?: string | null,
+): Promise<TaskListItem> {
+  assertTaskManager(actor);
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
+  if (!task) throw Errors.notFound();
+  if (task.archivedAt) throw Errors.validation("Заявка уже в архиве");
+  await assertArchivePeriodOpen(task.completedAt);
+
+  const note = clean(reason);
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.task.update({
+      where: { id: taskId },
+      data: { archivedAt: new Date(), archivedById: actor.id },
+      include: taskInclude,
+    });
+    await tx.taskEvent.create({
+      data: {
+        taskId,
+        actorId: actor.id,
+        kind: "archive",
+        comment: note ? `В архив: ${note}` : "В архив",
+      },
+    });
+    // Нерешённых кандидатов в нарушения по этой заявке убираем: держать в списке Милены нарушение
+    // по заявке, которой больше нет в работе, — мусор. Решённые (CONFIRMED/DISMISSED) не трогаем —
+    // это её решение и, возможно, уже посчитанные деньги. При возврате из архива ночной детектор
+    // заведёт кандидатов заново (он идемпотентный).
+    await tx.kpiMark.deleteMany({ where: { taskId, status: "CANDIDATE" } });
+    return updated;
+  });
+}
+
+/** Вернуть заявку из архива (та же кнопка наоборот) — если убрали по ошибке. */
+export async function unarchiveTask(taskId: string, actor: Actor): Promise<TaskListItem> {
+  assertTaskManager(actor);
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
+  if (!task) throw Errors.notFound();
+  if (!task.archivedAt) throw Errors.validation("Заявка не в архиве");
+  await assertArchivePeriodOpen(task.completedAt);
+
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.task.update({
+      where: { id: taskId },
+      data: { archivedAt: null, archivedById: null },
+      include: taskInclude,
+    });
+    await tx.taskEvent.create({
+      data: { taskId, actorId: actor.id, kind: "unarchive", comment: "Возвращена из архива" },
+    });
+    return updated;
+  });
+}
+
+/** Заявка в архиве выведена из работы: править и вести её статусы нельзя, пока не вернули. */
+function assertNotArchived(archivedAt: Date | null): void {
+  if (archivedAt) throw Errors.validation("Заявка в архиве — сначала верните её из архива");
+}
+
+// Завершённая заявка из ЗАКРЫТОГО расчётного месяца не уходит в архив и не возвращается из него:
+// её вклад в KPI и зарплату уже заморожен снимком PayrollStatement. Незавершённых это не касается.
+async function assertArchivePeriodOpen(completedAt: Date | null): Promise<void> {
+  if (!completedAt) return;
+  const period = periodOf(completedAt);
+  const closed = await prisma.payrollStatement.count({ where: { period } });
+  if (closed > 0) throw Errors.periodClosed();
+}
+
 export type TransitionOptions = {
   comment?: string | null;
   reason?: string | null;
@@ -895,6 +1017,10 @@ export async function transitionTask(
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw Errors.notFound();
   if (!canViewTask(actor, task)) throw Errors.notFound(); // изоляция: чужая → 404
+  // Архивная заявка выведена из работы (11.08.2026): вести её статусы нельзя — ни водителю по старой
+  // ссылке (из списков она пропала, но ссылка и офлайн-очередь могли остаться), ни диспетчеру.
+  // Нужно продолжить работу — сначала «Вернуть из архива».
+  assertNotArchived(task.archivedAt);
 
   const isAssignee = task.assigneeId !== null && task.assigneeId === actor.id;
   const verdict = checkTransition({ role: actor.role, isAssignee }, task.status, toStatus);
@@ -1072,8 +1198,10 @@ export async function transitionTask(
   });
   // Отмена диспетчером → пуш водителю (PRD §7). Движение статуса вперёд самим водителем не шлём.
   if (toStatus === "CANCELLED") notifyTaskAssignee(result, "cancelled", actor.id);
-  // Деньги компании (carrierCost) водителю не отдаём (02.07, этап 3).
-  return actor.role === "DRIVER" ? stripMoneyForDriver(result) : result;
+  // Деньги компании (carrierCost) отдаём только тем, кто ведёт заявки (11.08.2026). Форма важна:
+  // прежнее «роль === DRIVER ⇒ вырезать» отдавало сумму любой НОВОЙ роли по умолчанию — это ровно та
+  // мина, о которой предупреждает ARCHITECTURE §6. Здесь, как и в getTaskById, — белый список.
+  return isTaskManagerRole(actor.role) ? result : stripMoneyForDriver(result);
 }
 
 export async function rescheduleTask(
@@ -1084,7 +1212,10 @@ export async function rescheduleTask(
 ): Promise<TaskListItem> {
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw Errors.notFound();
+  // Порядок важен: изоляция ПЕРВЕЕ прочих проверок. Иначе по чужой архивной заявке вернулось бы
+  // «Заявка в архиве» вместо 404 — и это подтвердило бы её существование постороннему.
   if (!canViewTask(actor, task)) throw Errors.notFound();
+  assertNotArchived(task.archivedAt);
 
   const isAssignee = task.assigneeId !== null && task.assigneeId === actor.id;
   const verdict = checkTransition({ role: actor.role, isAssignee }, task.status, "RESCHEDULED");

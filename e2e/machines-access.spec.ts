@@ -1,11 +1,15 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// БЛОКЕР ПРИЁМКИ этапа «Станки» (PRD §16, ARCHITECTURE §6): изоляция новой роли SERVICE_MANAGER
-// проверяется В ОБЕ СТОРОНЫ.
+// БЛОКЕР ПРИЁМКИ (PRD §16, ARCHITECTURE §6): изоляция роли SERVICE_MANAGER в ОБЕ СТОРОНЫ.
 //
 // Риск, ради которого написан этот файл: ввод новой роли в живую систему, где часть проверок могла
-// молча означать «не водитель ⇒ штаб». Такой guard пустил бы менеджера-сервисника в задачи, KPI и
-// зарплату. Поэтому здесь перебираются ВСЕ существующие разделы, а не выборка.
+// молча означать «не водитель ⇒ штаб». Такой guard пустил бы менеджера-сервисника в KPI и зарплату.
+// Поэтому здесь перебираются ВСЕ существующие разделы, а не выборка.
+//
+// 11.08.2026 граница сдвинулась (решение Артёма): Максиму открыли ЗАЯВКИ — он ставит и ведёт их
+// наравне с Миленой. Смены, KPI и нарушения, пометки простоя, «Сводка», расценка и админка остались
+// закрытыми. Соответственно и тест теперь проверяет не «закрыто всё», а именно эту границу: что
+// разрешено — работает, что запрещено — отказывает.
 const PASSWORD = process.env.SEED_PASSWORD ?? "vanmark123";
 const thisPeriod = new Date().toISOString().slice(0, 7);
 const today = new Date().toISOString().slice(0, 10);
@@ -18,12 +22,9 @@ async function login(page: Page, login: string): Promise<void> {
   await page.waitForURL((url) => !url.pathname.startsWith("/login"));
 }
 
-// Все страницы существующих разделов: ни одна не должна открыться менеджеру-сервиснику.
-const EXISTING_PAGES = [
-  "/board",
-  "/planning",
-  "/capacity",
-  "/tasks",
+// Страницы, закрытые для менеджера-сервисника: деньги (сводка, KPI, расценка), админка и
+// водительские экраны. Каждая обязана увести его на свой стартовый экран.
+const FORBIDDEN_PAGES = [
   "/pricing",
   "/summary",
   "/kpi",
@@ -37,11 +38,13 @@ const EXISTING_PAGES = [
   "/m/payroll",
 ];
 
-// Существующие ручки. Денежные (KPI, зарплата, сводка, админка) — адресно и полным списком:
-// именно они не должны утечь новой роли ни при каких обстоятельствах.
-const EXISTING_API: [string, string][] = [
-  ["GET", "/api/tasks"],
-  ["POST", "/api/tasks"],
+// Страницы заявок, открытые ему с 11.08.2026 (проверяем, что доступ реально появился).
+const ALLOWED_PAGES = ["/board", "/planning", "/capacity", "/tasks"];
+
+// Ручки, закрытые для менеджера-сервисника. Денежные (KPI, зарплата, сводка, админка) и весь
+// контур смен/нарушений — адресно и полным списком: именно они не должны утечь ни при каких
+// обстоятельствах, даже теперь, когда роли открыли заявки.
+const FORBIDDEN_API: [string, string][] = [
   ["GET", "/api/my/tasks"],
   ["GET", "/api/my/shift"],
   ["GET", "/api/my/kpi"],
@@ -54,10 +57,11 @@ const EXISTING_API: [string, string][] = [
   ["GET", `/api/summary/shifts?granularity=day&date=${today}`],
   ["GET", `/api/shifts?date=${today}`],
   ["GET", "/api/shifts/stale"],
-  ["GET", "/api/board/attention"],
-  ["GET", `/api/capacity/calendar?from=${today}&to=${today}`],
-  ["GET", "/api/absences"],
+  ["POST", "/api/shifts/00000000-0000-0000-0000-000000000000/confirm"],
+  ["PATCH", "/api/shifts/00000000-0000-0000-0000-000000000000"],
   ["GET", `/api/idle-notes?from=${today}&to=${today}`],
+  ["POST", "/api/idle-notes"],
+  ["POST", "/api/absences"],
   ["GET", "/api/admin/drivers"],
   ["GET", "/api/admin/pay-profiles"],
   ["GET", "/api/admin/kpi-rules"],
@@ -67,6 +71,14 @@ const EXISTING_API: [string, string][] = [
   ["GET", "/api/admin/capacity-settings"],
   ["GET", "/api/worksheets/pricing"],
   ["GET", "/api/work-catalog"],
+];
+
+// Ручки заявок, открытые ему с 11.08.2026 — обратная половина той же границы.
+const ALLOWED_API: string[] = [
+  "/api/tasks",
+  `/api/board/attention?date=${today}`,
+  `/api/capacity/calendar?from=${today}&to=${today}`,
+  `/api/absences?from=${today}&to=${today}`,
 ];
 
 // Все ручки модуля станков: водителю каждая обязана ответить 404 (не 403 — существование модуля
@@ -84,14 +96,14 @@ const MACHINE_API: [string, string][] = [
 ];
 
 test.describe("Изоляция роли: менеджер-сервисник → существующие разделы", () => {
-  test("ни одна существующая СТРАНИЦА не открывается — уводит на /machines", async ({ page }) => {
-    // 15 навигаций подряд: в dev каждая страница компилируется при первом заходе, и стандартных
+  test("закрытые СТРАНИЦЫ не открываются — уводят на /machines", async ({ page }) => {
+    // Много навигаций подряд: в dev каждая страница компилируется при первом заходе, и стандартных
     // 30 секунд на весь тест не хватает (в прод-сборке он проходит за секунды).
     test.setTimeout(120_000);
     await login(page, "maxim");
     await expect(page).toHaveURL(/\/machines$/); // стартовый экран роли
 
-    for (const path of EXISTING_PAGES) {
+    for (const path of FORBIDDEN_PAGES) {
       await page.goto(path);
       // requireRole/requireAnyRole уводят чужую роль на homeForRole — для Максима это /machines.
       await expect(page, `страница ${path} не должна открываться менеджеру-сервиснику`).toHaveURL(
@@ -100,18 +112,74 @@ test.describe("Изоляция роли: менеджер-сервисник �
     }
   });
 
-  test("ни одна существующая РУЧКА не отдаёт данные (включая деньги)", async ({ page }) => {
+  test("страницы заявок, наоборот, открываются (граница 11.08.2026)", async ({ page }) => {
+    test.setTimeout(120_000);
+    await login(page, "maxim");
+    for (const path of ALLOWED_PAGES) {
+      await page.goto(path);
+      await expect(page, `страница ${path} должна открываться`).toHaveURL(new RegExp(`${path}$`));
+    }
+  });
+
+  test("ни одна закрытая РУЧКА не отдаёт данные (деньги, смены, KPI, админка)", async ({ page }) => {
     await login(page, "maxim");
 
     const leaked: string[] = [];
-    for (const [method, url] of EXISTING_API) {
+    for (const [method, url] of FORBIDDEN_API) {
       const res = await page.request.fetch(url, {
         method,
         ...(method === "GET" ? {} : { data: {} }),
       });
       if (res.status() < 400) leaked.push(`${method} ${url} → ${res.status()}`);
     }
-    expect(leaked, "новая роль не должна получать доступ ни к одной существующей ручке").toEqual([]);
+    expect(leaked, "менеджер-сервисник не должен попадать в смены, KPI, деньги и админку").toEqual([]);
+  });
+
+  test("ручки заявок ему доступны — иначе он не сможет работать", async ({ page }) => {
+    await login(page, "maxim");
+    for (const url of ALLOWED_API) {
+      const res = await page.request.get(url);
+      expect(res.status(), `${url} должен быть доступен`).toBe(200);
+    }
+  });
+
+  test("заводит заявку и ведёт её: создать → назначить → отменить", async ({ page }) => {
+    await login(page, "maxim");
+    const types = await (await page.request.get("/api/tasks")).json();
+    expect(Array.isArray(types.data)).toBe(true);
+
+    // Справочник типов ему закрыт (админка), поэтому typeId берём из уже существующей заявки.
+    const anyTask = (types.data as { type: { id: string } }[])[0];
+    test.skip(!anyTask, "в базе нет ни одной заявки — нечем взять typeId");
+
+    const created = await page.request.post("/api/tasks", {
+      data: {
+        typeId: anyTask.type.id,
+        title: `Заявка Максима ${Date.now()}`,
+        address: "Москва, Ленина 1",
+        orgName: "ООО Тест",
+        contactName: "Иван",
+        contactPhone: "+7 900 000-00-00",
+      },
+    });
+    expect(created.status(), "менеджер-сервисник должен уметь создать заявку").toBe(201);
+    const task = (await created.json()).data as { id: string };
+
+    const patched = await page.request.patch(`/api/tasks/${task.id}`, {
+      data: { op: "edit", description: "правка от Максима" },
+    });
+    expect(patched.status()).toBe(200);
+
+    const cancelled = await page.request.post(`/api/tasks/${task.id}/transition`, {
+      data: { toStatus: "CANCELLED", comment: "тестовая отмена" },
+    });
+    expect(cancelled.status()).toBe(200);
+
+    // Убираем за собой: заявка уходит в архив (та же ручка, что и кнопка «В архив»).
+    const archived = await page.request.patch(`/api/tasks/${task.id}`, {
+      data: { op: "archive", reason: "e2e" },
+    });
+    expect(archived.status()).toBe(200);
   });
 
   test("денежные ручки отказывают адресно (403/404, без тела с данными)", async ({ page }) => {

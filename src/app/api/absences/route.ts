@@ -1,16 +1,17 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireDispatcher, errorResponse, readJson } from "@/lib/api-route";
+import { requireDispatcher, requireTaskManager, errorResponse, readJson } from "@/lib/api-route";
 import { listAbsencesInRange, createAbsence } from "@/domain/absence-service";
 import { Errors } from "@/domain/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// GET /api/absences?from=YYYY-MM-DD&to=YYYY-MM-DD — отпуска/больничные в период. Только Д/А.
+// GET /api/absences?from=YYYY-MM-DD&to=YYYY-MM-DD — отпуска/больничные в период. Просмотр — всем,
+// кто ведёт заявки (без этого не спланируешь неделю); заводит и удаляет отсутствия только Д/А.
 export async function GET(req: Request) {
   try {
-    await requireDispatcher();
+    await requireTaskManager();
     const url = new URL(req.url);
     const from = url.searchParams.get("from");
     const to = url.searchParams.get("to");
