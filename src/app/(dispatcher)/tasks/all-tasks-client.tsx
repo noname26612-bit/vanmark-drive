@@ -183,6 +183,9 @@ export function AllTasksClient({
           <thead className="border-b border-neutral-200 text-xs text-neutral-400">
             <tr>
               <th className="px-3 py-2">№</th>
+              {/* Счёт (11.08.2026): по нему чаще всего и ищут заявку — держим рядом с № заявки,
+                  чтобы номер можно было сверить глазами, не открывая карточку. */}
+              <th className="whitespace-nowrap px-3 py-2">Счёт №</th>
               <th className="px-3 py-2">Тип</th>
               <th className="px-3 py-2">Название</th>
               <th className="px-3 py-2">Адрес</th>
@@ -197,7 +200,7 @@ export function AllTasksClient({
           <tbody>
             {error && tasks.length === 0 ? (
               <tr>
-                <td colSpan={scope === "archive" ? 10 : 9} className="px-3 py-8 text-center">
+                <td colSpan={scope === "archive" ? 11 : 10} className="px-3 py-8 text-center">
                   <p className="text-sm text-red-600">Не удалось загрузить список.</p>
                   <button
                     type="button"
@@ -210,7 +213,7 @@ export function AllTasksClient({
               </tr>
             ) : tasks.length === 0 && !isLoading ? (
               <tr>
-                <td colSpan={scope === "archive" ? 10 : 9} className="px-3 py-8 text-center text-neutral-400">
+                <td colSpan={scope === "archive" ? 11 : 10} className="px-3 py-8 text-center text-neutral-400">
                   Задач не найдено
                 </td>
               </tr>
@@ -230,6 +233,16 @@ export function AllTasksClient({
                       {t.priority ? <span className="mr-1 text-red-500">●</span> : null}№
                       <Highlighted text={String(t.number)} query={searchQuery} />
                     </Link>
+                  </td>
+                  <td
+                    className="max-w-32 truncate px-3 py-2 tabular-nums text-neutral-600"
+                    title={t.invoiceNumber ?? undefined}
+                  >
+                    {t.invoiceNumber ? (
+                      <Highlighted text={t.invoiceNumber} query={searchQuery} />
+                    ) : (
+                      <span className="text-neutral-300">—</span>
+                    )}
                   </td>
                   <td className="px-3 py-2">
                     <span className="inline-flex items-center gap-1 text-neutral-600">
