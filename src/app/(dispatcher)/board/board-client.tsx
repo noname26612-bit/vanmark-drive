@@ -36,6 +36,7 @@ import { actState } from "@/domain/act";
 import { parseQuery, taskMatches, firstHiddenMatch, type ParsedQuery } from "@/lib/task-search";
 import { TypeIcon } from "@/components/type-icon";
 import { StatusBadge } from "@/components/status-badge";
+import { AuthorBadge } from "@/components/author-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CreateTaskModal } from "../_components/create-task-modal";
@@ -45,6 +46,7 @@ import { useTaskDrafts } from "../_components/task-drafts";
 import { StaleShiftsBlock } from "./stale-shifts-block";
 import { ShiftClosePanel } from "../_components/shift-close-panel";
 import { TimeField } from "@/components/ui/time-field";
+import { DateField } from "@/components/ui/date-field";
 import type { FormState } from "@/lib/task-draft";
 
 type DropTarget = { kind: "driver"; driverId: string } | { kind: "undated" };
@@ -89,16 +91,23 @@ export function BoardClient({
   today,
   initialOrder = [],
   initialCollapsed = [],
+  canManageShifts = true,
 }: {
   drivers: DriverDTO[];
   types: TaskTypeDTO[];
   today: string;
   initialOrder?: string[];
   initialCollapsed?: string[];
+  /** Смены — диспетчерский контур (11.08.2026). У менеджера-сервисника флаг false: блоки смен,
+   *  подтверждение прихода, зависшие смены и пометки простоя не показываем и данные по ним не
+   *  запрашиваем (сервер ему всё равно ответит 403). Роль в клиент не передаём — только флаг. */
+  canManageShifts?: boolean;
 }) {
   // Выборка для доски: задачи сегодня…+2 + пул «Без даты» (одним запросом, фильтрация — на клиенте).
   const horizonEnd = addDaysISO(today, HORIZON_DAYS);
-  const key = `/api/tasks?dateFrom=${today}&dateTo=${horizonEnd}&includeUndated=1`;
+  // hideCancelled (11.08.2026): отменённые заявки на доске не показываем — ни в колонках водителей,
+  // ни в пулах, ни в счётчике «Всего». Найти отменённую можно во «Все задачи» фильтром по статусу.
+  const key = `/api/tasks?dateFrom=${today}&dateTo=${horizonEnd}&includeUndated=1&hideCancelled=1`;
   const { data: tasks, isLoading, error: loadError, mutate } = useSWR<TaskDTO[]>(key, fetcher, LIVE);
   const { data: attention, mutate: mutateAttention } = useSWR<AttentionDTO>(
     `/api/board/attention?date=${today}`,
@@ -106,8 +115,9 @@ export function BoardClient({
     LIVE,
   );
   // Смены за день (этап C): запросы на открытие, которые диспетчер подтверждает.
+  // Ключ null отключает запрос целиком — у кого нет прав на смены, тот их и не грузит.
   const { data: shifts, mutate: mutateShifts } = useSWR<ShiftDTO[]>(
-    `/api/shifts?date=${today}`,
+    canManageShifts ? `/api/shifts?date=${today}` : null,
     fetcher,
     LIVE,
   );
@@ -315,12 +325,16 @@ export function BoardClient({
         <Stat label="Не назначено сегодня" value={unassignedTodayCount} tone="muted" />
       </div>
 
-      {/* Незакрытые смены прошлых дней (03.08): доска показывает только сегодняшний день, поэтому
-          забытая смена иначе остаётся невидимой — и день выпадает из сводки и расчёта. */}
-      <StaleShiftsBlock onChanged={refresh} />
-
-      {/* Смены водителей (№5): по каждому — статус смены, время открытия и полоса «в работе/простой». */}
-      <ShiftWorkloadBlock drivers={drivers} shifts={shifts ?? []} today={today} onChange={refresh} />
+      {/* Смены — только диспетчерский контур (11.08.2026): менеджеру-сервиснику этих блоков не видно.
+          Незакрытые смены прошлых дней (03.08): доска показывает только сегодняшний день, поэтому
+          забытая смена иначе остаётся невидимой — и день выпадает из сводки и расчёта.
+          Смены водителей (№5): по каждому — статус смены, время открытия и полоса «в работе/простой». */}
+      {canManageShifts ? (
+        <>
+          <StaleShiftsBlock onChanged={refresh} />
+          <ShiftWorkloadBlock drivers={drivers} shifts={shifts ?? []} today={today} onChange={refresh} />
+        </>
+      ) : null}
 
       {actionError ? <p className="mb-3 text-sm text-red-600">{actionError}</p> : null}
       {staleError ? (
@@ -336,7 +350,7 @@ export function BoardClient({
         <ErrorState onRetry={() => void refresh()} />
       ) : (
         <>
-          {requestedShifts.length > 0 ? (
+          {canManageShifts && requestedShifts.length > 0 ? (
             <ShiftsBlock shifts={requestedShifts} onChange={refresh} />
           ) : null}
 
@@ -1085,12 +1099,9 @@ function IdleNotesModal({
         <div className="flex flex-wrap items-end gap-2">
           <label className="flex flex-col gap-1">
             <span className="text-xs text-neutral-500">Дата</span>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="h-9 rounded-lg border border-neutral-300 px-2 text-sm outline-none"
-            />
+            {/* Единственное место, где оставался нативный input[type=date] — привели к общему
+                DateField (11.08.2026): пресеты «вчера/сегодня» и разбор «16.04» как везде. */}
+            <DateField value={date} onChange={setDate} className="w-40" />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-xs text-neutral-500">Минуты</span>
@@ -1632,8 +1643,10 @@ function BoardCard({
           <Highlighted text={hiddenMatch.text} query={query} phone={hiddenMatch.phone} />
         </p>
       ) : null}
-      {task.passStatus !== "NOT_NEEDED" || act || pay || pairBadge ? (
+      {task.passStatus !== "NOT_NEEDED" || act || pay || pairBadge || task.createdBy?.name ? (
         <div className="mt-1 flex flex-wrap items-center gap-1">
+          {/* Кто поставил заявку (11.08.2026) — постановщиков двое, Милена и Максим. */}
+          <AuthorBadge name={task.createdBy?.name} />
           {pairBadge ? (
             <Badge
               data-testid="pair-badge"

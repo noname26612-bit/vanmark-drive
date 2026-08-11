@@ -5,13 +5,15 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { Plus } from "lucide-react";
-import { fetcher } from "@/lib/fetcher";
+import { fetcher, apiSend } from "@/lib/fetcher";
 import type { DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
 import { actState } from "@/domain/act";
 import { STATUS_LABEL, STATUS_ORDER, actBadge, formatDate, paymentBadge } from "@/lib/task-ui";
 import { parseQuery } from "@/lib/task-search";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { StatusBadge } from "@/components/status-badge";
+import { AuthorBadge } from "@/components/author-badge";
+import { cn } from "@/lib/cn";
 import { TypeIcon } from "@/components/type-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,6 +40,7 @@ export function AllTasksClient({
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [scope, setScope] = useState<"active" | "archive">("active");
 
   // Черновики свёрнутых заявок (доработка №1) — общий стек с доской, живёт в лейауте диспетчера.
   const drafts = useTaskDrafts();
@@ -68,15 +71,55 @@ export function AllTasksClient({
   if (typeId) params.set("typeId", typeId);
   if (dateFrom) params.set("dateFrom", dateFrom);
   if (dateTo) params.set("dateTo", dateTo);
+  // Область просмотра (11.08.2026): по умолчанию активные заявки, «Архив» — убранные дубли и
+  // ошибочные заявки, откуда их можно вернуть. Фильтры и поиск работают в обеих областях.
+  if (scope === "archive") params.set("scope", "archive");
   const key = `/api/tasks?${params.toString()}`;
   const { data: tasks = [], isLoading, error, mutate } = useSWR<TaskDTO[]>(key, fetcher, {
     keepPreviousData: true,
   });
 
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  async function restore(id: string) {
+    setRestoring(id);
+    setRestoreError(null);
+    try {
+      await apiSend(`/api/tasks/${id}`, "PATCH", { op: "unarchive" });
+      await mutate();
+    } catch (e) {
+      // Отказ бывает по делу — например, заявка из закрытого расчётного месяца. Молчать нельзя:
+      // без сообщения кнопка выглядит сломанной.
+      setRestoreError((e as Error).message);
+    } finally {
+      setRestoring(null);
+    }
+  }
+
   return (
     <div className="p-4">
       <div className="mb-3 flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-neutral-900">Все задачи</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-xl font-semibold text-neutral-900">Все задачи</h1>
+          {/* Область просмотра (11.08.2026): архив держим на виду, но неярко — это редкий сценарий
+              «убрали дубль, надо вернуть», а не рабочий режим. */}
+          <div className="flex rounded-lg border border-neutral-300 p-0.5 text-xs">
+            {(["active", "archive"] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                data-testid={`tasks-scope-${s}`}
+                onClick={() => setScope(s)}
+                className={cn(
+                  "rounded-md px-2.5 py-1 font-medium transition-colors",
+                  scope === s ? "bg-neutral-900 text-white" : "text-neutral-500 hover:text-neutral-800",
+                )}
+              >
+                {s === "active" ? "Активные" : "Архив"}
+              </button>
+            ))}
+          </div>
+        </div>
         <Button
           onClick={() => {
             setEditingDraft(null);
@@ -133,6 +176,8 @@ export function AllTasksClient({
         </p>
       ) : null}
 
+      {restoreError ? <p className="mb-2 text-sm text-red-600">{restoreError}</p> : null}
+
       <div className="overflow-x-auto rounded-xl border border-neutral-200 bg-white">
         <table className="w-full text-left text-sm">
           <thead className="border-b border-neutral-200 text-xs text-neutral-400">
@@ -146,12 +191,13 @@ export function AllTasksClient({
               <th className="px-3 py-2">Статус</th>
               <th className="px-3 py-2">Оплата</th>
               <th className="px-3 py-2">Акт</th>
+              {scope === "archive" ? <th className="px-3 py-2" /> : null}
             </tr>
           </thead>
           <tbody>
             {error && tasks.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-3 py-8 text-center">
+                <td colSpan={scope === "archive" ? 10 : 9} className="px-3 py-8 text-center">
                   <p className="text-sm text-red-600">Не удалось загрузить список.</p>
                   <button
                     type="button"
@@ -164,7 +210,7 @@ export function AllTasksClient({
               </tr>
             ) : tasks.length === 0 && !isLoading ? (
               <tr>
-                <td colSpan={9} className="px-3 py-8 text-center text-neutral-400">
+                <td colSpan={scope === "archive" ? 10 : 9} className="px-3 py-8 text-center text-neutral-400">
                   Задач не найдено
                 </td>
               </tr>
@@ -199,6 +245,9 @@ export function AllTasksClient({
                     >
                       <Highlighted text={t.title} query={searchQuery} />
                     </Link>
+                    {/* Автор заявки (11.08.2026) — в этой же колонке, отдельной колонки не заводим:
+                        ширина таблицы уже плотная, а colSpan пришлось бы править в двух местах. */}
+                    <AuthorBadge name={t.createdBy?.name} className="ml-2" />
                   </td>
                   <td className="max-w-48 truncate px-3 py-2 text-neutral-500">
                     <Highlighted text={t.address} query={searchQuery} />
@@ -228,6 +277,24 @@ export function AllTasksClient({
                   <td className="px-3 py-2">
                     <ActCell task={t} />
                   </td>
+                  {/* В архиве — своя колонка с возвратом: чтобы вернуть заявку, не открывая её,
+                      и чтобы кнопка не липла к бейджу акта. */}
+                  {scope === "archive" ? (
+                    <td className="px-3 py-2">
+                      <button
+                        type="button"
+                        data-testid="task-restore"
+                        disabled={restoring === t.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void restore(t.id);
+                        }}
+                        className="rounded-md border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-50"
+                      >
+                        Вернуть
+                      </button>
+                    </td>
+                  ) : null}
                 </tr>
               ))
             )}

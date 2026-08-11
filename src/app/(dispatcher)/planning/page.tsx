@@ -8,7 +8,7 @@ import { PlanningClient } from "./planning-client";
 export const dynamic = "force-dynamic";
 
 export default async function PlanningPage() {
-  const user = await requireAnyRole("DISPATCHER", "ADMIN");
+  const user = await requireAnyRole("DISPATCHER", "ADMIN", "SERVICE_MANAGER");
   const [drivers, settings, prefs] = await Promise.all([
     listActiveDrivers(),
     getCapacitySettings(),

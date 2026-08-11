@@ -5,7 +5,7 @@
 import { useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { Navigation, Camera, X, FileText, Banknote } from "lucide-react";
+import { Navigation, Camera, X, FileText, Banknote, Archive } from "lucide-react";
 import { PhoneLinks } from "@/components/phone-call";
 import { fetcher, apiSend, apiUpload } from "@/lib/fetcher";
 import { compressImage } from "@/lib/image-compress";
@@ -103,6 +103,8 @@ export function TaskDetailClient({
   const docRef = useRef<HTMLInputElement | null>(null); // input для акта (этап 14): фото или PDF
   const [repriceOpen, setRepriceOpen] = useState(false); // правка цены после подписания акта (B2)
   const [estimateInput, setEstimateInput] = useState(""); // ручная оценка времени (Фаза 2, §14)
+  const [archiveOpen, setArchiveOpen] = useState(false); // переспрос перед архивацией (11.08)
+  const [archiveReason, setArchiveReason] = useState("");
 
   if (isLoading) return <p className="p-6 text-sm text-neutral-400">Загрузка…</p>;
   if (error || !task)
@@ -223,6 +225,12 @@ export function TaskDetailClient({
     });
   const forward = NEXT_FORWARD[task.status];
   const isTerminal = task.status === "DONE" || task.status === "CANCELLED";
+  // Оценка устарела: авто-снимок меньше текущей нормы типа — значит норму подняли уже после расчёта
+  // (11.08.2026: доставкам добавили 30 мин на выгрузку). Разбивку в этом случае не показываем.
+  const estimateStale =
+    !task.estimateIsManual &&
+    task.estimatedMinutes != null &&
+    task.estimatedMinutes < task.type.onSiteMinutes;
   // Расценка ведомостей скрыта под флагом (06.07): весь блок расценки/итога по услугам не показываем.
   // Вернуть — включить PRICING_ENABLED в src/lib/features.ts. Акт (ниже) от расценки не зависит.
   const pricingVisible =
@@ -320,6 +328,8 @@ export function TaskDetailClient({
         ) : null}
         <Row label="Исполнитель">{task.assignee?.name ?? "Не назначено"}</Row>
         {task.coDriver ? <Row label="Напарник">{task.coDriver.name}</Row> : null}
+        {/* Кто поставил заявку (11.08.2026): раньше это было видно только в истории внизу. */}
+        <Row label="Заявку создал">{task.createdBy.name}</Row>
         {task.paymentType === "ON_SITE" && !isTerminal ? (
           /* Деньги на точке, вопрос открыт (17.07): янтарная плашка на всю ширину — видна сразу,
              как у водителя. После завершения гаснет в обычную строку с итогом «Оплачено/Не оплачено». */
@@ -482,12 +492,22 @@ export function TaskDetailClient({
             </Badge>
           </div>
           {!task.estimateIsManual && task.estimatedMinutes != null ? (
-            <p className="mt-1 text-xs text-neutral-500">
-              работа {formatMinutes(task.type.onSiteMinutes)}
-              {task.lat != null && task.lng != null
-                ? ` + дорога ${formatMinutes(Math.max(0, task.estimatedMinutes - task.type.onSiteMinutes))}`
-                : " · дорога не учтена (адрес не распознан геокодером)"}
-            </p>
+            estimateStale ? (
+              /* Оценка — снимок на момент расчёта, а норма типа с тех пор изменилась (11.08.2026:
+                 доставкам добавили 30 минут на выгрузку). Разбивку «работа + дорога» в этом случае
+                 не показываем: она считается вычитанием и дала бы отрицательную дорогу. */
+              <p className="mt-1 text-xs text-amber-700" data-testid="estimate-stale">
+                Оценка посчитана по прежней норме типа (сейчас работа{" "}
+                {formatMinutes(task.type.onSiteMinutes)}) — нажмите «Пересчитать».
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-neutral-500">
+                работа {formatMinutes(task.type.onSiteMinutes)}
+                {task.lat != null && task.lng != null
+                  ? ` + дорога ${formatMinutes(Math.max(0, task.estimatedMinutes - task.type.onSiteMinutes))}`
+                  : " · дорога не учтена (адрес не распознан геокодером)"}
+              </p>
+            )
           ) : null}
           {!isTerminal ? (
             <div className="mt-3 flex flex-wrap items-end gap-2">
@@ -511,9 +531,10 @@ export function TaskDetailClient({
               >
                 Сохранить
               </Button>
-              {task.estimateIsManual ? (
+              {/* «Пересчитать авто» нужна и когда оценка устарела после смены нормы типа. */}
+              {task.estimateIsManual || estimateStale ? (
                 <Button variant="ghost" disabled={busy} onClick={recomputeEstimate} data-testid="estimate-recompute">
-                  Пересчитать авто
+                  Пересчитать{task.estimateIsManual ? " авто" : ""}
                 </Button>
               ) : null}
             </div>
@@ -724,6 +745,83 @@ export function TaskDetailClient({
           Отправить комментарий
         </Button>
       </div>
+
+      {/* Архив (решение Артёма 11.08.2026) — в самом низу, отдельно от рабочих кнопок: это не шаг
+          процесса, а способ убрать дубль или ошибочно заведённую заявку. Не удаление: заявка и её
+          история остаются, номер сохраняется, вернуть можно во «Все задачи» → «Архив». */}
+      <div className="mt-8 border-t border-neutral-200 pt-4">
+        {task.archivedAt ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-sm text-neutral-600" data-testid="task-archived-note">
+              <Archive className="mr-1 inline h-4 w-4 text-neutral-400" />
+              Заявка в архиве · {formatDateTime(task.archivedAt)}
+              {task.archivedByName ? ` · ${task.archivedByName}` : ""}
+            </p>
+            <Button
+              variant="secondary"
+              className="h-9 px-3 text-sm"
+              disabled={busy}
+              data-testid="task-unarchive"
+              onClick={() => void run(() => apiSend(key, "PATCH", { op: "unarchive" }))}
+            >
+              Вернуть из архива
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="ghost"
+              className="h-9 px-3 text-sm text-neutral-500 hover:text-red-700"
+              disabled={busy}
+              data-testid="task-archive"
+              onClick={() => setArchiveOpen(true)}
+            >
+              <Archive className="mr-1.5 h-4 w-4" /> В архив
+            </Button>
+            <span className="text-xs text-neutral-400">
+              Убрать дубль или ошибочную заявку из всех списков. Вернуть можно во «Все задачи» → «Архив».
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Переспрос перед архивацией: действие незаметное на экране (заявка просто исчезает), поэтому
+          подтверждение обязательно. Причина по желанию — уходит в журнал. */}
+      <Modal open={archiveOpen} onClose={() => setArchiveOpen(false)} title="Убрать заявку в архив?">
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-neutral-600">
+            Заявка №{task.number} исчезнет из «Сегодня», «Планирования», «Календаря», из списков
+            водителя и из отчётов. История сохранится, номер останется за ней. Вернуть можно во
+            «Все задачи» → «Архив».
+          </p>
+          <Field label="Причина (по желанию)">
+            <Textarea
+              autoFocus
+              rows={2}
+              value={archiveReason}
+              onChange={(e) => setArchiveReason(e.target.value)}
+              placeholder="Дубль заявки №…, завели по ошибке"
+              data-testid="task-archive-reason"
+            />
+          </Field>
+          {actionError ? <p className="text-sm text-red-600">{actionError}</p> : null}
+          <Button
+            variant="danger"
+            disabled={busy}
+            data-testid="task-archive-confirm"
+            className="self-start"
+            onClick={() =>
+              void run(async () => {
+                await apiSend(key, "PATCH", { op: "archive", reason: archiveReason.trim() || null });
+                setArchiveOpen(false);
+                setArchiveReason("");
+              })
+            }
+          >
+            Убрать в архив
+          </Button>
+        </div>
+      </Modal>
 
       {/* Модалка причины (Ждёт/Отмена) */}
       <Modal

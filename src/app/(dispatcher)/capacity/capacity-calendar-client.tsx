@@ -12,6 +12,7 @@ import { Modal } from "@/components/ui/modal";
 import { CalendarPlus, CheckCircle2, Circle, XCircle } from "lucide-react";
 import { STATUS_LABEL } from "@/lib/task-ui";
 import { DateField } from "@/components/ui/date-field";
+import { AuthorBadge } from "@/components/author-badge";
 
 const HORIZON_DAYS = 14; // 2 недели (PRD §14.4)
 
@@ -434,7 +435,11 @@ function DayDetail({
   workdayMinutes: number;
 }) {
   const { data: tasks } = useSWR<TaskDTO[]>(
-    sel ? `/api/tasks?dateFrom=${sel.day}&dateTo=${sel.day}&assigneeId=${sel.driverId}` : null,
+    // hideCancelled (11.08.2026): раньше окно дня показывало отменённые (и завышало итог), а сама
+    // ячейка календаря их уже не считала — цифры расходились. Теперь и там, и там одинаково.
+    sel
+      ? `/api/tasks?dateFrom=${sel.day}&dateTo=${sel.day}&assigneeId=${sel.driverId}&hideCancelled=1`
+      : null,
     fetcher,
   );
   const total = (tasks ?? []).reduce((s, t) => s + (t.estimatedMinutes ?? 0), 0);
@@ -480,7 +485,10 @@ function DayDetail({
                     >
                       №{t.number} · {t.title}
                     </div>
-                    <div className={`text-xs ${v.labelCls}`}>{STATUS_LABEL[t.status]}</div>
+                    <div className={`flex items-center gap-1.5 text-xs ${v.labelCls}`}>
+                      {STATUS_LABEL[t.status]}
+                      <AuthorBadge name={t.createdBy?.name} />
+                    </div>
                   </Link>
                   <span className="shrink-0 text-xs text-neutral-500">
                     {t.timeFrom ? `${t.timeFrom} · ` : ""}

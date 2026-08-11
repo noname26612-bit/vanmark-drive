@@ -11,6 +11,7 @@ import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DateField } from "@/components/ui/date-field";
+import { TimeField } from "@/components/ui/time-field";
 import { Textarea } from "@/components/ui/textarea";
 import { Select } from "@/components/ui/select";
 import { Field } from "@/components/ui/field";
@@ -480,11 +481,14 @@ export function CreateTaskModal({
               <Field label="Счёт №">
                 <Input value={form.invoiceNumber} onChange={(e) => set("invoiceNumber", e.target.value)} />
               </Field>
+              {/* Окно времени — тот же умный ввод, что и в сменах (11.08.2026): «9» → 09:00,
+                  «1730» → 17:30. Раньше это были свободные текстовые поля без разбора, и в заявку
+                  могло уехать что угодно. Свободная формулировка живёт в «Комментарии ко времени». */}
               <Field label="Окно с">
-                <Input value={form.timeFrom} onChange={(e) => set("timeFrom", e.target.value)} placeholder="09:00" />
+                <TimeField value={form.timeFrom} onChange={(v) => set("timeFrom", v)} className="w-full" />
               </Field>
               <Field label="Окно до">
-                <Input value={form.timeTo} onChange={(e) => set("timeTo", e.target.value)} placeholder="17:00" />
+                <TimeField value={form.timeTo} onChange={(v) => set("timeTo", v)} className="w-full" />
               </Field>
             </div>
             <Field label="Комментарий ко времени">
