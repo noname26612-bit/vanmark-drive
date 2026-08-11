@@ -479,7 +479,11 @@ export function CreateTaskModal({
             </Field>
             <div className="grid grid-cols-3 gap-3">
               <Field label="Счёт №">
-                <Input value={form.invoiceNumber} onChange={(e) => set("invoiceNumber", e.target.value)} />
+                <Input
+                  data-testid="create-invoice"
+                  value={form.invoiceNumber}
+                  onChange={(e) => set("invoiceNumber", e.target.value)}
+                />
               </Field>
               {/* Окно времени — тот же умный ввод, что и в сменах (11.08.2026): «9» → 09:00,
                   «1730» → 17:30. Раньше это были свободные текстовые поля без разбора, и в заявку

@@ -141,3 +141,34 @@ test("«Все задачи»: клик по любой части строки 
   await page.waitForURL(/\/tasks\/[0-9a-f-]+$/);
   await expect(page.getByText(/№\d+ ·/).first()).toBeVisible();
 });
+
+// Доработка (11.08.2026): в «Все задачи» выведена колонка «Счёт №» — по счёту заявку ищут чаще всего,
+// и номер должен читаться прямо в строке, без открытия карточки.
+test("«Все задачи»: колонка «Счёт №» показывает номер и подсвечивает совпадение", async ({ page }) => {
+  test.slow();
+  await login(page, "milena");
+  await page.goto("/tasks");
+
+  // Колонка есть независимо от данных.
+  await expect(page.getByRole("columnheader", { name: "Счёт №" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Задача" }).click();
+  const invoice = String(Date.now()).slice(-8); // счёт в проекте — короткое число («948», «261»)
+  const title = `E2E счёт ${invoice}`;
+  await page.getByPlaceholder("ЛБМ 200 + нож, 0,7 мм").fill(title);
+  await page.getByPlaceholder("Москва, ул. ..., д. ...").fill("Адрес счёта e2e");
+  // Счёт живёт в свёрнутом блоке «Дополнительно» — раскрываем его.
+  await page.getByRole("button", { name: /Дополнительно/ }).click();
+  await page.locator('[data-testid="create-invoice"]').fill(invoice);
+  await page.getByRole("button", { name: "Создать", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
+
+  // Ищем по номеру счёта (серверный поиск ?q=) — заявка находится, номер виден в своей ячейке.
+  await page.getByTestId("task-search").fill(invoice);
+  const row = page.getByRole("row").filter({ hasText: title });
+  await expect(row).toBeVisible();
+  // exact: ячейка счёта содержит ровно номер (в названии он идёт вместе с текстом, не exact).
+  const invoiceCell = row.getByRole("cell", { name: invoice, exact: true });
+  await expect(invoiceCell).toBeVisible();
+  await expect(invoiceCell.locator("mark")).toBeVisible();
+});
