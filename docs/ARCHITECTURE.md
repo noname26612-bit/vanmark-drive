@@ -370,6 +370,8 @@ enum DriverSpecialization { REPAIR DELIVERY ANY }   // подсказка «кт
 // Task     += lat Float?                              // геокод адреса (один раз при создании/правке)
 //          += lng Float?
 //          += estimatedMinutes  Int?                  // оценка времени задачи (снимок; null — не посчитана)
+// Task    += archivedAt   DateTime?                     // архив заявки (11.08.2026): мягкое удаление дубля
+//          += archivedById String?                      // кто убрал (uuid без навигации, как принято)
 //          += estimateIsManual  Boolean @default(false) // диспетчер задал вручную → не пересчитывать
 ```
 
@@ -515,6 +517,10 @@ model MachineAttachment {
 
 Уточнено с Артёмом 04.06.2026 (реализовано в `src/domain/task-status.ts`): диспетчер/админ может выполнить ЛЮБОЙ валидный переход матрицы (включая «водительские» шаги вперёд) — это нужно, чтобы вести статусы за внешнего исполнителя (Султан, без приложения) и исправлять ошибки. Водитель — только разрешённые ему рёбра и только по своей задаче. Сами рёбра матрицы не меняются.
 
+**Архив (11.08.2026): это НЕ статус.** Мягкое удаление живёт отдельными полями `Task.archivedAt/archivedById` и матрицу не трогает: заявка любого статуса может быть архивной, переходы при этом не меняются. Домен — `archiveTask`/`unarchiveTask` (`task-service.ts`), API — `PATCH /api/tasks/:id {op:"archive"|"unarchive"}`, право — `isTaskManagerRole`. Каждое действие пишет событие (`kind:"archive"|"unarchive"`), строка и журнал остаются, номер не переиспользуется. Гейт: завершённая заявка из закрытого месяца (`PayrollStatement` за период `completedAt`) не архивируется и не возвращается — `PERIOD_CLOSED`. Нерешённые `KpiMark` (`status=CANDIDATE`) по архивируемой заявке удаляются, решённые — нет. Исключение архивных — в КАЖДОЙ выборке задач: `listTasks` (кроме `scope=archive`), `myTasksWhere`, `attention`, `buildWorkloadCalendar`, `summary-service`, детекторы KPI, утренние пуши. Забыть один такой запрос = архивная заявка «выныривает» в отчёте.
+
+**Отменённые вне рабочих экранов (11.08.2026).** `ListFilters.hideCancelled` → `status: { not: "CANCELLED" }`; параметр `hideCancelled=1` шлют доска, «Планирование» и окно дня календаря (ячейки календаря фильтровали и раньше — `capacity-service.ts`). У водителя отменённые убраны в `myTasksWhere` для обеих вкладок. Во «Все задачи» флага нет: там отмена ищется фильтром по статусу.
+
 **Напарник (20.07.2026): матрица НЕ менялась.** Для матрицы и правила «одна активная задача» исполнитель — строго `assigneeId` (`authz.isAssignee`); напарник (`coDriverId`) переходы делать не может (для него `isAssignee=false` → FORBIDDEN), ведомость работ ему тоже закрыта (гейт в `work-service`: DRAFT-мутации — только `assigneeId`). При смене ответственного пара живёт по правилу `resolveCoDriverOnAssign` (`src/domain/co-driver.ts`): назначение на напарника — swap ролей; на третьего/снятие — напарник снимается; события `kind:"assist"` пишутся в журнал. Пуши изменений/переносов/отмен приходят обоим; при добавлении в пару напарнику уходит отдельный «Ты напарник по заявке №N». Занятость учитывается обоим (календарь загрузки, полоса «В работе/Простой» — union интервалов, сводка «в паре»); деньги/расценка/бонус за акты — только ответственному.
 
 ## 6. Авторизация и изоляция (критично)
@@ -528,6 +534,12 @@ model MachineAttachment {
 - Rate limit на `/api/auth/*` (брутфорс), пароли — argon2id.
 - Обязательные e2e-тесты изоляции (см. skill security-check): водитель A не видит и не может изменить задачу водителя B ни одним эндпоинтом.
 - KPI (Фаза 1.5): `GET /api/my/kpi` и расчёт водителя берут `driverId` ТОЛЬКО из сессии; чужой расчёт по прямой ссылке/ID — **404**. Подтверждение нарушений, ручные отметки, настройки оплаты и закрытие месяца — только диспетчер/админ (водитель эти ручки не видит). Каждый KPI-эндпоинт проходит security-check (та же дисциплина, что и задачи).
+- **Права роли SERVICE_MANAGER: два белых списка (11.08.2026).** Роль перестала быть «только станки»: Артём открыл ей ЗАЯВКИ, оставив закрытыми смены, KPI/нарушения, пометки простоя, «Сводку», расценку и админку. Одного предиката для этого мало, поэтому права расщеплены:
+  - `isTaskManagerRole` (`src/domain/task-access.ts`) = ADMIN | DISPATCHER | SERVICE_MANAGER — заявки: `canViewTask`, `createTask`/`updateTaskFields`/`assignTask`/`planTask`/`archiveTask`, свободная смена статуса в `checkTransition`, guard `requireTaskManager()` на `/api/tasks*`, `/api/board/attention`, `/api/capacity/calendar`, `GET /api/absences`.
+  - `isDispatcherRole` (`task-status.ts`) = ADMIN | DISPATCHER — без изменений: `requireDispatcher()` на сменах, KPI, простое, сводке, расценке; `requireAdmin()` — админка.
+  Разделение обязано быть видно и в интерфейсе: `DispatcherNav` фильтрует вкладки белым списком по роли (показать вкладку, ведущую на redirect, — баг), блок «Смены водителей» на доске скрыт флагом `canManageShifts` (роль в клиент не передаётся, как и с `payrollVisible`), у `/pricing` появился собственный guard — layout сюда пускает и менеджера-сервисника. Цены ведомости для него вырезаются на сервере (`stripWorkPrices`), а `carrierCost` остаётся: это поле заявки, а не аналитика.
+  Попутно исправлены два места «от противного», которые при расширении роли отдали бы ей лишнее: `transitionTask` снимал деньги только с DRIVER (теперь белый список), `loadTaskForWorksheet` проверял владение только у DRIVER (теперь `canEditWorksheet`). `/api/work-catalog` переписан с отрицаний на перечисление ролей.
+
 - **Роль SERVICE_MANAGER (05.08.2026, §4г).** Права роли — БЕЛЫЙ список, а не «всё кроме»: доступ к модулю станков дают три роли (`isMachineRole` = SERVICE_MANAGER | DISPATCHER | ADMIN, `src/domain/machine-access.ts`), всё остальное для новой роли закрыто по умолчанию. Ключевое требование при её вводе — **проверить существующие guard'ы на допущение «роль не DRIVER ⇒ штаб»**: `requireDispatcher` опирается на `isDispatcherRole` (белый список ADMIN|DISPATCHER — новая роль не проходит), `requireAdmin`/`requireDriver` — точное сравнение, страницы — `requireRole`/`requireAnyRole` с редиректом на `homeForRole`. Отдельно проверяются эндпоинты с одним лишь `requireApiUser()` (без роли): `canViewTask` для SERVICE_MANAGER возвращает false → чужая карточка/вложение отдают 404. Маршруты новой роли: `homeForRole('SERVICE_MANAGER') = '/machines'`; `exhaustive switch` в `src/domain/roles.ts` заставляет типизацию упасть, если роль забыли учесть.
   - Модуль станков изоляции «по владельцу» не имеет by design (все три роли видят весь парк — это общая картотека, а не личные задачи), поэтому вся его защита — ролевая: `requireMachineUser()` в каждом handler'е, включая раздачу фото `GET /api/machines/photos/:id`. Водитель к любому `/api/machines/*` получает **404** (не 403 — не раскрываем существование модуля).
   - Участие в KPI/зарплате = наличие АКТИВНОГО денежного профиля (`DriverPayProfile.isActive`). Водители без профиля (подменный Николай, внешний перевозчик) исключены из детектора нарушений, списка кандидатов, ручных отметок и расчёта; экран «Мой расчёт» им не показывается (`isPayrollDriver`). Это единственный признак участия — отдельного флага в схеме нет.
@@ -537,9 +549,9 @@ model MachineAttachment {
 | Метод и путь | Кто | Что |
 |---|---|---|
 | POST /api/auth/[...nextauth] | все | вход/выход |
-| GET /api/tasks?date&status&assigneeId&q | Д | список с фильтрами. `q` (20.07.2026): ILIKE по title/orgName/invoiceNumber/contactName/address/description/equipment/contactPhone + № заявки (короткие числа, включая «№615»); ≥3 цифр в запросе — доп. поиск по цифрам телефона (`regexp_replace`, «8…»≈«+7…», параметризованный $queryRaw) |
-| POST /api/tasks | Д | создать (номер выдаёт сервер) |
-| PATCH /api/tasks/:id | Д | редактирование полей (op:edit, в т.ч. напарник coDriverId — 20.07), назначение (op:assign, swap-правило пары), перенос |
+| GET /api/tasks?date&status&assigneeId&q&hideCancelled&scope | Д, С | список с фильтрами. `hideCancelled=1` — без отменённых (доска, планирование, окно дня календаря, 11.08); `scope=archive` — раздел «Архив» (11.08). `q` (20.07.2026): ILIKE по title/orgName/invoiceNumber/contactName/address/description/equipment/contactPhone + № заявки (короткие числа, включая «№615»); ≥3 цифр в запросе — доп. поиск по цифрам телефона (`regexp_replace`, «8…»≈«+7…», параметризованный $queryRaw) |
+| POST /api/tasks | Д, С | создать (номер выдаёт сервер) |
+| PATCH /api/tasks/:id | Д, С | редактирование полей (op:edit, в т.ч. напарник coDriverId — 20.07), назначение (op:assign, swap-правило пары), перенос, **архив/возврат** (op:archive\|unarchive, 11.08: мягкое удаление дубля; закрытый месяц — PERIOD_CLOSED) |
 | GET /api/my/tasks?date&scope=today\|upcoming | В | только свои: ответственный ИЛИ напарник, владение из сессии (myTasksWhere). today: на сегодня + просроченные открытые + без даты; upcoming: завтра+ |
 | GET /api/tasks/:id | Д, В(своя) | карточка + события + вложения |
 | POST /api/tasks/:id/transition {toStatus, comment?, lat?, lng?, paymentConfirmed?, paymentAmount?} | по матрице | смена статуса + событие + пуш; DONE: фото (requiresPhoto) и «деньги получены» (ON_SITE) — серверные гейты |
