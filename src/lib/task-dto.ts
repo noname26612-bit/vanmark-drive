@@ -1,11 +1,33 @@
 // Формы данных задачи, как они приходят клиенту по JSON (даты — строки ISO).
 // Держим отдельно от Prisma-типов, чтобы не тащить серверный клиент в браузерный бандл.
-import type { AttachmentKind, PassStatus, PaymentType, TaskStatus, WorksheetStatus } from "@/generated/prisma/enums";
+import type {
+  AttachmentKind,
+  PassStatus,
+  PaymentType,
+  TaskKind,
+  TaskStatus,
+  WorksheetStatus,
+} from "@/generated/prisma/enums";
+
+/**
+ * Контур задачи в клиентском коде. Читать ВСЕГДА через `taskKindOf(task)`: в кэше service worker и
+ * в открытых старых вкладках лежат задачи, сохранённые до появления поля, — у них kind нет вовсе,
+ * и это доставки.
+ */
+export function taskKindOf(task: { kind?: TaskKind | null }): TaskKind {
+  return task.kind ?? "DELIVERY";
+}
+
+/** Задача сотрудникам (цех/снабжение): без адреса, денег и актов. */
+export function isStaffTask(task: { kind?: TaskKind | null }): boolean {
+  return taskKindOf(task) === "STAFF";
+}
 
 export type TaskTypeDTO = {
   id: string;
   name: string;
   icon: string | null;
+  kind: TaskKind; // контур: заявки водителям (DELIVERY) или задачи сотрудникам (STAFF)
   requiresSignedDoc: boolean; // тип с актом: дефолт требования акта для новых задач (PRD §3)
   requiresPricing: boolean; // нужна ли ведомость работ + расценка (этап 12, PRD §13)
   onSiteMinutes: number; // норма работы на объекте, мин (Фаза 2, PRD §14.2)
@@ -23,6 +45,11 @@ export type DriverDTO = { id: string; name: string; canLogin: boolean; isExterna
 export type TaskDTO = {
   id: string;
   number: number;
+  /**
+   * Контур задачи. Опционально — в офлайн-кэше и у старых открытых клиентов поля нет; читать через
+   * `taskKindOf`, который трактует отсутствие как доставку (так оно и было до 15.08.2026).
+   */
+  kind?: TaskKind;
   title: string;
   description: string | null;
   equipment: string | null;

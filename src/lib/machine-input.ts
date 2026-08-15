@@ -63,9 +63,13 @@ export function parseMachineFields(body: Record<string, unknown>): EditMachineIn
     }
   }
   if (typeof body.isUrgent === "boolean") out.isUrgent = body.isUrgent;
-  if ("ourNumber" in body) {
-    const v = body.ourNumber;
-    out.ourNumber = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
+  // Две схемы учётного номера: «77-N» у своего железа, «К-N» у клиентского. Какое поле принимать
+  // для этой категории, решает домен — здесь только форма значения.
+  for (const key of ["ourNumber", "clientNumber"] as const) {
+    if (key in body) {
+      const v = body[key];
+      out[key] = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
+    }
   }
   // Мусорное значение молча игнорируется (стиль файла); осмысленность проверяет домен.
   if ("kind" in body) {

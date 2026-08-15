@@ -39,7 +39,8 @@ const FORBIDDEN_PAGES = [
 ];
 
 // Страницы заявок, открытые ему с 11.08.2026 (проверяем, что доступ реально появился).
-const ALLOWED_PAGES = ["/board", "/planning", "/capacity", "/tasks"];
+// «Сотрудники» (15.08.2026) — тот же контур постановки задач, что и заявки: открыт вместе с ними.
+const ALLOWED_PAGES = ["/board", "/planning", "/capacity", "/tasks", "/staff"];
 
 // Ручки, закрытые для менеджера-сервисника. Денежные (KPI, зарплата, сводка, админка) и весь
 // контур смен/нарушений — адресно и полным списком: именно они не должны утечь ни при каких
@@ -76,6 +77,7 @@ const FORBIDDEN_API: [string, string][] = [
 // Ручки заявок, открытые ему с 11.08.2026 — обратная половина той же границы.
 const ALLOWED_API: string[] = [
   "/api/tasks",
+  "/api/staff-performers",
   `/api/board/attention?date=${today}`,
   `/api/capacity/calendar?from=${today}&to=${today}`,
   `/api/absences?from=${today}&to=${today}`,

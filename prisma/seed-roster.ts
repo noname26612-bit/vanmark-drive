@@ -5,7 +5,9 @@
 //   2) заводит штатного подменного водителя Николая (login=nikolay), если его ещё нет;
 //   3) заводит ген. директора Михаила (login=mikhail, права ADMIN, должность «Директор»), если его ещё нет;
 //   4) заводит второго подменного водителя Александра (login=alexandr), если его ещё нет;
-//   5) выдаёт Николаю доступ к разделам оборудования (15.08.2026) — существующему пользователю.
+//   5) выдаёт Николаю доступ к разделам оборудования (15.08.2026) — существующему пользователю;
+//   6) выдаёт Николаю и Александру доступ к задачам сотрудникам и заводит служебный тип этих задач
+//      (15.08.2026, вечер) — прод полный seed.ts не гоняет, поэтому тип обязан приехать сюда.
 // Пароль новым пользователям ставится ТОЛЬКО при создании, из SEED_PASSWORD_<LOGIN> (приоритетно)
 // или SEED_PASSWORD. Повторный запуск пароль не меняет. Запуск: `pnpm db:seed:roster`.
 import "dotenv/config";
@@ -17,6 +19,7 @@ const EXTERNAL = { login: "sultan", name: "Внешний перевозчик" 
 const NIKOLAY = { login: "nikolay", name: "Николай" };
 const ALEXANDR = { login: "alexandr", name: "Александр" };
 const MIKHAIL = { login: "mikhail", name: "Михаил", position: "Директор" };
+const STAFF_TASK_TYPE = { name: "Задача сотрудникам", icon: "clipboard-list", sortOrder: 100 };
 
 /**
  * Создаёт пользователя, ТОЛЬКО если его ещё нет. Существующего не трогает (пароль/прочее сохраняем —
@@ -32,6 +35,7 @@ async function ensureUser(
     position?: string | null;
     passwordEnvKey: string;
     equipmentAccess?: boolean;
+    staffTasksAccess?: boolean;
   },
 ): Promise<void> {
   const existing = await prisma.user.findUnique({ where: { login: cfg.login }, select: { id: true } });
@@ -52,6 +56,7 @@ async function ensureUser(
       canLogin: true,
       position: cfg.position ?? null,
       equipmentAccess: cfg.equipmentAccess ?? false,
+      staffTasksAccess: cfg.staffTasksAccess ?? false,
       passwordHash,
     },
   });
@@ -97,6 +102,7 @@ export async function seedRoster(prisma: PrismaClient): Promise<void> {
     role: "DRIVER",
     passwordEnvKey: "SEED_PASSWORD_ALEXANDR",
     equipmentAccess: true,
+    staffTasksAccess: true,
   });
 
   // 5) Доступ к оборудованию Николаю (15.08.2026). Отдельным шагом, а не только при создании:
@@ -110,6 +116,32 @@ export async function seedRoster(prisma: PrismaClient): Promise<void> {
       ? `  ✓ ${NIKOLAY.login}: выдан доступ к разделам оборудования`
       : `  ✓ ${NIKOLAY.login}: доступ к оборудованию уже есть (или пользователь не найден)`,
   );
+
+  // 6) Задачи сотрудникам (15.08.2026, вечер). Вторая половина работы Александра и Николая — цех и
+  // снабжение; доступ выдаём обоим существующим пользователям, пароли не трогаем.
+  const staffed = await prisma.user.updateMany({
+    where: { login: { in: [NIKOLAY.login, ALEXANDR.login] }, staffTasksAccess: false },
+    data: { staffTasksAccess: true },
+  });
+  console.log(
+    staffed.count > 0
+      ? `  ✓ задачи сотрудникам: доступ выдан (${staffed.count})`
+      : "  ✓ задачи сотрудникам: доступ уже есть у обоих",
+  );
+
+  // Служебный тип задач сотрудникам: Task.typeId обязателен, а классификации у этих задач нет —
+  // сервер подставляет этот тип сам. На проде полный seed.ts не запускают, поэтому заводим здесь.
+  await prisma.taskType.upsert({
+    where: { name: STAFF_TASK_TYPE.name },
+    update: { kind: "STAFF", isActive: true },
+    create: {
+      name: STAFF_TASK_TYPE.name,
+      icon: STAFF_TASK_TYPE.icon,
+      kind: "STAFF",
+      sortOrder: STAFF_TASK_TYPE.sortOrder,
+    },
+  });
+  console.log(`  ✓ тип задач «${STAFF_TASK_TYPE.name}» на месте`);
 }
 
 // Standalone-запуск (`pnpm db:seed:roster`) — для прода после деплоя кода.

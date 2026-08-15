@@ -8,6 +8,8 @@ import {
   MACHINE_CATEGORIES,
   MACHINE_STATUSES,
   categoriesForStatus,
+  categoryFollowingStatus,
+  selectableStatuses,
   familyOfKind,
   headKindOf,
   isArchivedStatus,
@@ -72,6 +74,50 @@ describe("machine-status: совместимость состояния и ка�
   it("categoriesForStatus — обратная подсказка при смене категории", () => {
     expect(categoriesForStatus("RENTED")).toEqual(["OUR_RENTAL"]);
     expect(categoriesForStatus("READY")).toEqual(["CLIENT", "OUR_SALE", "OUR_RENTAL"]);
+  });
+});
+
+describe("machine-status: кнопки состояний в карточке (15.08.2026)", () => {
+  it("у своего железа кнопками доступны и «Продан», и «В аренде»", () => {
+    for (const our of ["OUR_SALE", "OUR_RENTAL"] as const) {
+      expect(selectableStatuses(our)).toContain("SOLD");
+      expect(selectableStatuses(our)).toContain("RENTED");
+      expect(selectableStatuses(our)).not.toContain("RELEASED"); // выдают только чужое
+    }
+  });
+
+  it("у клиентского — только «Выдан клиенту»: чужой станок не продают и не сдают", () => {
+    expect(selectableStatuses("CLIENT")).toContain("RELEASED");
+    expect(selectableStatuses("CLIENT")).not.toContain("SOLD");
+    expect(selectableStatuses("CLIENT")).not.toContain("RENTED");
+  });
+
+  it("порядок кнопок — порядок жизненного цикла, без дублей", () => {
+    const list = selectableStatuses("OUR_SALE");
+    expect(list).toEqual([...new Set(list)]);
+    expect(list.indexOf("READY")).toBeLessThan(list.indexOf("SOLD"));
+    expect(list.at(-1)).toBe("VOIDED"); // аннулирование — всегда последним
+  });
+
+  it("категория едет за состоянием: продали арендный — он «наш на продажу»", () => {
+    expect(categoryFollowingStatus("OUR_RENTAL", "SOLD")).toBe("OUR_SALE");
+    expect(categoryFollowingStatus("OUR_SALE", "RENTED")).toBe("OUR_RENTAL");
+  });
+
+  it("менять нечего, когда состояние и так подходит", () => {
+    expect(categoryFollowingStatus("OUR_SALE", "SOLD")).toBeNull();
+    expect(categoryFollowingStatus("OUR_RENTAL", "READY")).toBeNull();
+    expect(categoryFollowingStatus("CLIENT", "RELEASED")).toBeNull();
+  });
+
+  it("клиентский станок не переезжает в наши категории сам", () => {
+    expect(categoryFollowingStatus("CLIENT", "SOLD")).toBeNull();
+    expect(categoryFollowingStatus("CLIENT", "RENTED")).toBeNull();
+  });
+
+  it("«Выдан клиенту» не делает наш станок клиентским", () => {
+    expect(categoryFollowingStatus("OUR_SALE", "RELEASED")).toBeNull();
+    expect(categoryFollowingStatus("OUR_RENTAL", "RELEASED")).toBeNull();
   });
 });
 

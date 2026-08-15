@@ -10,13 +10,15 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { newActionId as newIdempotencyKey } from "@/lib/offline/id";
 import { isHeadKind, isStockKind } from "@/domain/machine-status";
-import { EQUIPMENT_KIND_SHORT, MACHINE_STATUS_LABEL } from "@/lib/machine-ui";
+import { EQUIPMENT_KIND_SHORT, MACHINE_STATUS_LABEL, formatMachineNumber } from "@/lib/machine-ui";
 import type { MachineDetail } from "@/lib/machine-dto";
-import type { EquipmentKind } from "@/generated/prisma/enums";
+import type { EquipmentKind, MachineCategory } from "@/generated/prisma/enums";
 
 type Candidate = {
   id: string;
   ourNumber: number | null;
+  clientNumber: number | null;
+  category: MachineCategory;
   kind: EquipmentKind;
   model: string;
   free: number;
@@ -113,7 +115,7 @@ export function KitPanel({
           {machine.kitHeads.map((h) => (
             <li key={h.id}>
               <Link href={`${basePath}/${h.id}`} className="text-neutral-800 underline underline-offset-2">
-                {h.ourNumber ? `77-${h.ourNumber} · ` : ""}
+                {formatMachineNumber(h) ? `${formatMachineNumber(h)} · ` : ""}
                 {h.model}
               </Link>
               {h.qty > 1 ? <span className="text-neutral-500"> — {h.qty} шт</span> : null}
@@ -163,7 +165,7 @@ export function KitPanel({
       {parts.length > 0 ? (
         <ul className="flex flex-col gap-1.5 text-sm" data-testid="kit-parts">
           {parts.map((p) => {
-            const label = p.ourNumber ? `77-${p.ourNumber}` : p.model;
+            const label = formatMachineNumber(p) ?? p.model;
             return (
               <li
                 key={p.id}
@@ -214,7 +216,7 @@ export function KitPanel({
             <option value="">Выберите комплектующую…</option>
             {(candidates ?? []).map((c) => (
               <option key={c.id} value={c.id}>
-                {c.ourNumber ? `77-${c.ourNumber} · ` : ""}
+                {formatMachineNumber(c) ? `${formatMachineNumber(c)} · ` : ""}
                 {c.model}
                 {isStockKind(c.kind) ? ` — свободно ${c.free} шт` : ""}
               </option>

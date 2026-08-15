@@ -12,7 +12,10 @@ import {
   MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_LABEL,
 } from "@/domain/machine-status";
+import { formatMachineNumber, type NumberedMachine } from "@/domain/machine-number";
 import type { DueState } from "@/domain/machine-flags";
+
+export { formatMachineNumber, formatNumberIn, NUMBER_PREFIX, numberSchemeFor } from "@/domain/machine-number";
 
 export {
   EQUIPMENT_FAMILY_LABEL,
@@ -34,6 +37,22 @@ export const MACHINE_STATUS_BADGE: Record<MachineStatus, string> = {
   VOIDED: "border border-red-600 text-red-700", // ошибочная карточка
 };
 
+/**
+ * Заливка ВЫБРАННОЙ кнопки состояния в карточке (решение Артёма 15.08.2026: состояния переключаются
+ * кнопками, а не выпадашкой). Смысл тот же, что у бейджей, но насыщенный: из ряда одинаковых плашек
+ * текущее состояние должно читаться мгновенно, с телефона и на вытянутой руке.
+ */
+export const MACHINE_STATUS_ACTIVE: Record<MachineStatus, string> = {
+  ACCEPTED: "border-slate-600 bg-slate-600 text-white",
+  NEEDS_REPAIR: "border-amber-600 bg-amber-600 text-white", // ждёт действия — в ремонт его
+  IN_REPAIR: "border-blue-600 bg-blue-600 text-white", // работа идёт прямо сейчас
+  READY: "border-green-600 bg-green-600 text-white",
+  RENTED: "border-slate-700 bg-slate-700 text-white",
+  RELEASED: "border-slate-500 bg-slate-500 text-white",
+  SOLD: "border-slate-700 bg-slate-700 text-white",
+  VOIDED: "border-red-600 bg-red-600 text-white", // ошибочная карточка
+};
+
 // Левый «корешок» строки списка (3px), как у карточек задач.
 export const MACHINE_STATUS_BAR: Record<MachineStatus, string> = {
   ACCEPTED: "bg-slate-300",
@@ -53,19 +72,21 @@ export const MACHINE_CATEGORY_SHORT: Record<MachineCategory, string> = {
 };
 
 /**
- * Заголовок карточки — учётный номер «77-N», который пишут маркером на железе (решение Артёма
- * 15.08.2026). Сквозной системный номер (Machine.number) из интерфейса убран совсем: две нумерации
- * рядом («77-5 · №9») путали, а вторую никто не использовал.
+ * Заголовок карточки — учётный номер, который пишут маркером на железе (решение Артёма 15.08.2026):
+ * «77-N» у своего парка, «К-N» у клиентского. Сквозной системный номер (Machine.number) из
+ * интерфейса убран совсем: две нумерации рядом («77-5 · №9») путали, а вторую никто не использовал.
  *
  * Карточка без номера подписывается моделью — номер необязателен, и заголовок «—» был бы хуже
  * пустого места. № заказа 1С остаётся приметой клиентских станков.
  */
-export function machineTitle(m: {
-  ourNumber: number | null;
-  model?: string;
-  invoice1C: string | null;
-}): string {
-  if (m.ourNumber !== null) return `77-${m.ourNumber}`;
+export function machineTitle(
+  m: NumberedMachine & {
+    model?: string;
+    invoice1C: string | null;
+  },
+): string {
+  const number = formatMachineNumber(m);
+  if (number) return number;
   const order = m.invoice1C?.trim();
   if (order) return `заказ ${order}`;
   return m.model?.trim() || "Без номера";

@@ -6,6 +6,7 @@ import {
   setDriverEquipmentAccess,
   setDriverLoginAccess,
   setDriverExternal,
+  setDriverStaffTasksAccess,
 } from "@/domain/users";
 import { Errors } from "@/domain/errors";
 
@@ -27,7 +28,9 @@ export async function GET() {
 //    здесь осознанно);
 //  • { driverId, isExternal } — пометить внешним перевозчиком / вернуть в штат (03.08);
 //  • { driverId, equipmentAccess } — выдать/снять доступ к разделам оборудования (15.08: Николай
-//    и Александр; роль при этом остаётся DRIVER).
+//    и Александр; роль при этом остаётся DRIVER);
+//  • { driverId, staffTasksAccess } — выдать/снять доступ к задачам сотрудникам, цех и снабжение
+//    (15.08, вечер): кому их можно ставить и кто видит их у себя в телефоне.
 // Роль проверяется в домене: менять можно только пользователя с ролью DRIVER.
 export async function PATCH(req: Request) {
   try {
@@ -38,9 +41,15 @@ export async function PATCH(req: Request) {
     const hasLogin = typeof body.canLogin === "boolean";
     const hasExternal = typeof body.isExternal === "boolean";
     const hasEquipment = typeof body.equipmentAccess === "boolean";
+    const hasStaffTasks = typeof body.staffTasksAccess === "boolean";
     // Ровно одно действие за запрос: иначе пришлось бы решать, что делать, если половина применилась.
-    if ([hasLogin, hasExternal, hasEquipment].filter(Boolean).length > 1) {
+    if ([hasLogin, hasExternal, hasEquipment, hasStaffTasks].filter(Boolean).length > 1) {
       throw Errors.validation("Укажите одно действие");
+    }
+    if (hasStaffTasks) {
+      return NextResponse.json(
+        ok(await setDriverStaffTasksAccess(driverId, body.staffTasksAccess as boolean)),
+      );
     }
     if (hasEquipment) {
       return NextResponse.json(

@@ -189,6 +189,9 @@ export async function buildWorkloadCalendar(fromKey: string, toKey: string): Pro
         assigneeId: { not: null },
         status: { not: "CANCELLED" },
         archivedAt: null, // архивная заявка не занимает день (11.08.2026)
+        // Календарь загрузки — про маршруты: у задач сотрудникам нет ни адреса, ни оценки времени,
+        // и «свободный день» здесь означает «свободен для доставки» (15.08.2026).
+        kind: "DELIVERY",
         scheduledDate: { gte: from, lte: to },
       },
       select: {

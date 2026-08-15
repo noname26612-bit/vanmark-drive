@@ -10,6 +10,15 @@ import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
 import { assertMachineAccess, isMachineRole } from "./machine-access";
 import {
+  NUMBER_PREFIX,
+  formatMachineNumber,
+  formatNumberIn,
+  numberFieldFor,
+  numberSchemeFor,
+  type NumberScheme,
+} from "./machine-number";
+import {
+  categoryFollowingStatus,
   isArchivedStatus,
   isStatusAllowedForCategory,
   isKindInFamily,
@@ -67,6 +76,7 @@ const ARCHIVE_PAGE = 30;
 
 export type MachineFields = {
   ourNumber: number | null;
+  clientNumber: number | null;
   kind: EquipmentKind;
   /** Остаток на складе — принимается только у складских видов (размотчик, частотник). */
   quantity: number;
@@ -108,7 +118,17 @@ const kitSelect = {
     select: {
       qty: true,
       consumedAt: true,
-      part: { select: { id: true, ourNumber: true, kind: true, model: true, status: true } },
+      part: {
+        select: {
+          id: true,
+          ourNumber: true,
+          clientNumber: true,
+          category: true,
+          kind: true,
+          model: true,
+          status: true,
+        },
+      },
     },
     orderBy: { createdAt: "asc" },
   },
@@ -116,7 +136,9 @@ const kitSelect = {
     select: {
       qty: true,
       consumedAt: true,
-      head: { select: { id: true, ourNumber: true, model: true } },
+      head: {
+        select: { id: true, ourNumber: true, clientNumber: true, category: true, model: true },
+      },
     },
     orderBy: { createdAt: "asc" },
   },
@@ -126,6 +148,7 @@ const listSelect = {
   id: true,
   number: true,
   ourNumber: true,
+  clientNumber: true,
   family: true,
   kind: true,
   quantity: true,
@@ -177,6 +200,8 @@ type KitPartRow = {
   part: {
     id: string;
     ourNumber: number | null;
+    clientNumber: number | null;
+    category: MachineCategory;
     kind: EquipmentKind;
     model: string;
     status: MachineStatus;
@@ -186,13 +211,20 @@ type KitPartRow = {
 type KitHeadRow = {
   qty: number;
   consumedAt: Date | null;
-  head: { id: string; ourNumber: number | null; model: string };
+  head: {
+    id: string;
+    ourNumber: number | null;
+    clientNumber: number | null;
+    category: MachineCategory;
+    model: string;
+  };
 };
 
 type ListRow = {
   id: string;
   number: number;
   ourNumber: number | null;
+  clientNumber: number | null;
   family: EquipmentFamily;
   kind: EquipmentKind;
   quantity: number;
@@ -228,6 +260,8 @@ function toKitPart(r: KitPartRow): KitPartView {
   return {
     id: r.part.id,
     ourNumber: r.part.ourNumber,
+    clientNumber: r.part.clientNumber,
+    category: r.part.category,
     kind: r.part.kind,
     model: r.part.model,
     status: r.part.status,
@@ -237,7 +271,14 @@ function toKitPart(r: KitPartRow): KitPartView {
 }
 
 function toKitHead(r: KitHeadRow): KitHeadView {
-  return { id: r.head.id, ourNumber: r.head.ourNumber, model: r.head.model, qty: r.qty };
+  return {
+    id: r.head.id,
+    ourNumber: r.head.ourNumber,
+    clientNumber: r.head.clientNumber,
+    category: r.head.category,
+    model: r.head.model,
+    qty: r.qty,
+  };
 }
 
 function toListItem(m: ListRow): MachineListItem {
@@ -246,6 +287,7 @@ function toListItem(m: ListRow): MachineListItem {
     id: m.id,
     number: m.number,
     ourNumber: m.ourNumber,
+    clientNumber: m.clientNumber,
     family: m.family,
     kind: m.kind,
     quantity: m.quantity,
@@ -400,18 +442,25 @@ async function buildFields(
     patch.quantity = q;
   }
 
-  if ("ourNumber" in input) {
-    const raw = input.ourNumber;
+  // Учётный номер живёт в поле своей схемы: «77-N» у своего железа, «К-N» у клиентского
+  // (решение Артёма 15.08.2026, вечер). Категорию берём из карточки — форма шлёт номер той схемы,
+  // которую показывает; чужое поле принять нельзя, иначе номер разъедется с категорией.
+  for (const field of ["ourNumber", "clientNumber"] as const) {
+    if (!(field in input)) continue;
+    const raw = input[field];
     if (raw === null || raw === undefined) {
-      patch.ourNumber = null;
-    } else {
-      if (!Number.isInteger(raw) || raw < 1 || raw > 100_000) {
-        throw Errors.validation("Учётный номер — целое число больше нуля");
-      }
-      // С 15.08.2026 номер доступен ЛЮБОЙ категории, включая клиентскую (решение Артёма): системный
-      // сквозной номер убран из интерфейса, и учётный «77-N» остался единственной подписью карточки.
-      patch.ourNumber = raw;
+      patch[field] = null;
+      continue;
     }
+    if (!Number.isInteger(raw) || raw < 1 || raw > 100_000) {
+      throw Errors.validation("Учётный номер — целое число больше нуля");
+    }
+    if (field !== numberFieldFor(ctx.category)) {
+      throw Errors.validation(
+        `Номер «${NUMBER_PREFIX[numberSchemeFor(ctx.category)]}N» — для категории «${MACHINE_CATEGORY_LABEL[ctx.category]}»`,
+      );
+    }
+    patch[field] = raw;
   }
 
   if ("responsibleId" in input) {
@@ -441,7 +490,8 @@ const TRACKED: { field: keyof MachineFields | "category"; label: string }[] = [
   { field: "category", label: "Категория" },
   { field: "location", label: "Место на площадке" },
   { field: "responsibleId", label: "Ответственный" },
-  { field: "ourNumber", label: "Наш номер" },
+  { field: "ourNumber", label: "Номер" },
+  { field: "clientNumber", label: "Номер" },
   { field: "model", label: "Модель" },
   { field: "configuration", label: "Комплектация" },
   { field: "metalThickness", label: "Толщина металла" },
@@ -464,7 +514,8 @@ function displayValue(field: string, value: unknown, names: Map<string, string>)
   if (field === "kind") return EQUIPMENT_KIND_LABEL[value as EquipmentKind];
   if (field === "category") return MACHINE_CATEGORY_LABEL[value as MachineCategory];
   if (field === "responsibleId") return names.get(String(value)) ?? "—";
-  if (field === "ourNumber") return `77-${String(value)}`;
+  if (field === "ourNumber") return formatNumberIn("OUR", Number(value));
+  if (field === "clientNumber") return formatNumberIn("CLIENT", Number(value));
   if (field === "isUrgent") return value === true ? "да" : "нет";
   if (value instanceof Date) {
     const [y, m, d] = utcDateKey(value).split("-");
@@ -558,16 +609,28 @@ export async function createMachine(input: CreateMachineInput, actor: Actor): Pr
     });
     return getMachine(created.id, actor);
   } catch (e) {
-    if (isUniqueViolation(e)) throw Errors.validation(duplicateNumberMessage(family, input.ourNumber));
+    if (isUniqueViolation(e)) {
+      throw Errors.validation(duplicateNumberMessage(family, category, input));
+    }
     throw e;
   }
 }
 
-/** Дубль «77-N» ловится составным индексом (family, ourNumber) — говорим, в каком разделе занят. */
-function duplicateNumberMessage(family: EquipmentFamily, ourNumber: number | null | undefined): string {
+/**
+ * Дубль номера ловится составным индексом (family, ourNumber) / (family, clientNumber) — говорим,
+ * какой именно номер занят и в каком разделе. Это человеческая ошибка ввода при инвентаризации.
+ */
+function duplicateNumberMessage(
+  family: EquipmentFamily,
+  category: MachineCategory,
+  input: { ourNumber?: number | null; clientNumber?: number | null },
+): string {
   const where = EQUIPMENT_FAMILY_LABEL[family].toLowerCase();
-  return ourNumber
-    ? `Номер 77-${ourNumber} уже занят в разделе «${where}»`
+  const scheme = numberSchemeFor(category);
+  const value = scheme === "OUR" ? input.ourNumber : input.clientNumber;
+  const label = formatNumberIn(scheme, value);
+  return label
+    ? `Номер ${label} уже занят в разделе «${where}»`
     : `Такой учётный номер уже занят в разделе «${where}»`;
 }
 
@@ -607,6 +670,7 @@ export async function listMachines(params: ListParams, actor: Actor): Promise<Ma
   // Складские позиции (размотчики/частотники) состояний не имеют и в архив не уходят: держим их в
   // области «на площадке» и убираем из архива, иначе фильтр по состоянию прятал бы весь склад.
   const stockKinds: EquipmentKind[] = ["UNCOILER", "INVERTER"];
+  const archive = scope === "archive";
   const scopeFilter =
     scope === "archive"
       ? { status: { in: archivedStatuses }, kind: { notIn: stockKinds } }
@@ -629,7 +693,19 @@ export async function listMachines(params: ListParams, actor: Actor): Promise<Ma
       // заявки она вылетает наверх»). Номер — число, поэтому 77-10 идёт после 77-9, а не между
       // 77-1 и 77-2, как было бы при строковой сортировке. Карточки без номера — в конце, между
       // собой по дате заведения. Группировку и направление выбирает клиент, порядок стабилен.
-      orderBy: [{ ourNumber: { sort: "asc", nulls: "last" } }, { createdAt: "asc" }],
+      //
+      // Схемы нумерации идут блоками: сначала свой парк «77-N», следом клиентские «К-N» (у станка
+      // заполнено ровно одно поле, поэтому сортировка по двум ключам подряд их и раскладывает).
+      //
+      // Архив — исключение: он грузится порциями по 30, и там ищут недавнее («куда делся станок,
+      // который вчера выдали»), а не первый по номеру. Поэтому в архиве сверху свежие.
+      orderBy: archive
+        ? [{ updatedAt: "desc" as const }]
+        : [
+            { ourNumber: { sort: "asc" as const, nulls: "last" as const } },
+            { clientNumber: { sort: "asc" as const, nulls: "last" as const } },
+            { createdAt: "asc" as const },
+          ],
     }),
     prisma.machine.findMany({ where: { family }, select: flagSelect }),
     prisma.machine.findMany({
@@ -783,17 +859,29 @@ export async function editMachine(
     });
   } catch (e) {
     if (isUniqueViolation(e)) {
-      throw Errors.validation(duplicateNumberMessage(before.family, patch.ourNumber as number | null));
+      throw Errors.validation(
+        duplicateNumberMessage(before.family, before.category, {
+          ourNumber: patch.ourNumber as number | null,
+          clientNumber: patch.clientNumber as number | null,
+        }),
+      );
     }
     throw e;
   }
   return getMachine(id, actor);
 }
 
-/** Совместимость нового состояния с категорией — общая проверка changeStatus и sendShopTask. */
+/**
+ * Совместимость нового состояния с категорией — общая проверка changeStatus и sendShopTask.
+ * Своё железо может переехать в подходящую категорию само (`categoryFollowingStatus`), и тогда
+ * несовместимости нет; запрет остаётся там, где он про суть: чужой станок не продают и не сдают.
+ */
 function assertStatusAllowed(category: MachineCategory, status: MachineStatus): void {
   if (!MACHINE_STATUS_LABEL[status]) throw Errors.validation("Неизвестное состояние");
-  if (!isStatusAllowedForCategory(category, status)) {
+  if (
+    !isStatusAllowedForCategory(category, status) &&
+    categoryFollowingStatus(category, status) === null
+  ) {
     throw Errors.machineStatusCategory(
       `«${MACHINE_STATUS_LABEL[status]}» не подходит категории «${MACHINE_CATEGORY_LABEL[category]}»`,
     );
@@ -806,15 +894,21 @@ function assertStatusAllowed(category: MachineCategory, status: MachineStatus): 
  */
 async function applyStatusChangeTx(
   tx: Prisma.TransactionClient,
-  before: { id: string; status: MachineStatus },
+  before: { id: string; status: MachineStatus; category?: MachineCategory },
   toStatus: MachineStatus,
   reason: string | null,
   actorId: string,
 ): Promise<void> {
+  // Своё железо переезжает между «на продажу» и «арендный» вслед за состоянием: на площадке
+  // «продали арендный» — одно событие, а не смена категории плюс смена состояния.
+  const nextCategory =
+    before.category === undefined ? null : categoryFollowingStatus(before.category, toStatus);
+
   await tx.machine.update({
     where: { id: before.id },
     data: {
       status: toStatus,
+      ...(nextCategory ? { category: nextCategory } : {}),
       // Причина аннулирования живёт на карточке (её показываем в архиве); при выходе из VOIDED — снимаем.
       voidReason: toStatus === "VOIDED" ? reason : null,
     },
@@ -829,6 +923,25 @@ async function applyStatusChangeTx(
       comment: reason,
     },
   });
+  // Смена категории — отдельная строка журнала: иначе «почему станок стал арендным» пришлось бы
+  // выводить из состояния, а журнал должен читаться как история.
+  if (nextCategory && before.category) {
+    await tx.machineEvent.create({
+      data: {
+        machineId: before.id,
+        actorId,
+        kind: "edit",
+        changes: [
+          {
+            field: "category",
+            label: "Категория",
+            from: MACHINE_CATEGORY_LABEL[before.category],
+            to: MACHINE_CATEGORY_LABEL[nextCategory],
+          },
+        ],
+      },
+    });
+  }
 }
 
 /**
@@ -880,14 +993,14 @@ export async function changeStatus(
             machineId: link.partId,
             actorId: actor.id,
             kind: "comment",
-            comment: `Списано ${link.qty} шт в составе комплекта ${headLabel(link.headOurNumber)} (${MACHINE_STATUS_LABEL[input.status]})`,
+            comment: `Списано ${link.qty} шт в составе комплекта ${headLabel(link.head)} (${MACHINE_STATUS_LABEL[input.status]})`,
           },
         });
         continue;
       }
       await applyStatusChangeTx(
         tx,
-        { id: link.partId, status: link.partStatus },
+        { id: link.partId, status: link.partStatus, category: link.partCategory },
         input.status,
         reason,
         actor.id,
@@ -897,7 +1010,7 @@ export async function changeStatus(
           machineId: link.partId,
           actorId: actor.id,
           kind: "comment",
-          comment: `Состояние изменено вместе с комплектом ${headLabel(link.headOurNumber)}`,
+          comment: `Состояние изменено вместе с комплектом ${headLabel(link.head)}`,
         },
       });
     }
@@ -905,8 +1018,17 @@ export async function changeStatus(
   return getMachine(id, actor);
 }
 
-function headLabel(ourNumber: number | null): string {
-  return ourNumber === null ? "станка" : `77-${ourNumber}`;
+type NumberedRef = { category: MachineCategory; ourNumber: number | null; clientNumber: number | null };
+
+/** Подпись станка в комментариях комплекта: его номер или нейтральное «станка». */
+function headLabel(head: NumberedRef | null): string {
+  return (head && formatMachineNumber(head)) ?? "станка";
+}
+
+/** Подпись комплектующей: «К-5 (ЛБМ 200)» или просто модель, если номера нет. */
+function partLabel(part: NumberedRef & { model: string }): string {
+  const number = formatMachineNumber(part);
+  return number ? `${number} (${part.model})` : part.model;
 }
 
 type TransferLink = {
@@ -914,7 +1036,9 @@ type TransferLink = {
   qty: number;
   stock: boolean;
   partStatus: MachineStatus;
-  headOurNumber: number | null;
+  /** Категория комплектующей — чтобы она переехала вслед за состоянием так же, как головной. */
+  partCategory?: MachineCategory;
+  head: NumberedRef;
 };
 
 /**
@@ -927,12 +1051,22 @@ async function loadKitForTransfer(headId: string, status: MachineStatus): Promis
     where: { id: headId },
     select: {
       ourNumber: true,
+      clientNumber: true,
+      category: true,
       kitParts: {
         where: { consumedAt: null },
         select: {
           qty: true,
           part: {
-            select: { id: true, ourNumber: true, kind: true, model: true, status: true, category: true },
+            select: {
+              id: true,
+              ourNumber: true,
+              clientNumber: true,
+              kind: true,
+              model: true,
+              status: true,
+              category: true,
+            },
           },
         },
       },
@@ -945,12 +1079,23 @@ async function loadKitForTransfer(headId: string, status: MachineStatus): Promis
     const stock = isStockKind(link.part.kind);
     if (stock) {
       if (!consumesStock(status)) continue; // аренда и ремонт остаток не трогают — он уже занят
-      out.push({ partId: link.part.id, qty: link.qty, stock: true, partStatus: link.part.status, headOurNumber: head.ourNumber });
+      out.push({
+        partId: link.part.id,
+        qty: link.qty,
+        stock: true,
+        partStatus: link.part.status,
+        head,
+      });
       continue;
     }
     if (!transfersStatus(status) || link.part.status === status) continue;
-    if (!isStatusAllowedForCategory(link.part.category, status)) {
-      const name = link.part.ourNumber ? `77-${link.part.ourNumber}` : link.part.model;
+    // Своя комплектующая переезжает в подходящую категорию вместе с головным (комплект продают
+    // целиком). Чужая — нет: клиентский нож нельзя продать вместе с нашим станком.
+    if (
+      !isStatusAllowedForCategory(link.part.category, status) &&
+      categoryFollowingStatus(link.part.category, status) === null
+    ) {
+      const name = formatMachineNumber(link.part) ?? link.part.model;
       throw Errors.machineStatusCategory(
         `«${MACHINE_STATUS_LABEL[status]}» не подходит комплектующей ${name} (${MACHINE_CATEGORY_LABEL[link.part.category]}) — смените её категорию или снимите галочку`,
       );
@@ -960,7 +1105,8 @@ async function loadKitForTransfer(headId: string, status: MachineStatus): Promis
       qty: link.qty,
       stock: false,
       partStatus: link.part.status,
-      headOurNumber: head.ourNumber,
+      partCategory: link.part.category,
+      head,
     });
   }
   return out;
@@ -984,11 +1130,28 @@ export async function attachKitPart(
   const [head, part] = await Promise.all([
     prisma.machine.findUnique({
       where: { id: headId },
-      select: { id: true, family: true, kind: true, quantity: true, ourNumber: true },
+      select: {
+        id: true,
+        family: true,
+        kind: true,
+        quantity: true,
+        ourNumber: true,
+        clientNumber: true,
+        category: true,
+      },
     }),
     prisma.machine.findUnique({
       where: { id: partId },
-      select: { id: true, family: true, kind: true, quantity: true, ourNumber: true, model: true },
+      select: {
+        id: true,
+        family: true,
+        kind: true,
+        quantity: true,
+        ourNumber: true,
+        clientNumber: true,
+        category: true,
+        model: true,
+      },
     }),
   ]);
   if (!head) throw Errors.notFound();
@@ -1003,7 +1166,7 @@ export async function attachKitPart(
   });
   assertAttachable(head, part, qty, otherLinks);
 
-  const label = part.ourNumber ? `77-${part.ourNumber} (${part.model})` : part.model;
+  const label = partLabel(part);
   await prisma.$transaction(async (tx) => {
     await tx.machineKitPart.upsert({
       where: { headId_partId: { headId, partId } },
@@ -1025,7 +1188,7 @@ export async function attachKitPart(
         machineId: partId,
         actorId: actor.id,
         kind: "comment",
-        comment: `Поставлено в комплект ${headLabel(head.ourNumber)}`,
+        comment: `Поставлено в комплект ${headLabel(head)}`,
       },
     });
   });
@@ -1043,8 +1206,8 @@ export async function detachKitPart(
     where: { headId_partId: { headId, partId } },
     select: {
       consumedAt: true,
-      head: { select: { ourNumber: true } },
-      part: { select: { ourNumber: true, model: true } },
+      head: { select: { ourNumber: true, clientNumber: true, category: true } },
+      part: { select: { ourNumber: true, clientNumber: true, category: true, model: true } },
     },
   });
   if (!link) throw Errors.notFound();
@@ -1052,7 +1215,7 @@ export async function detachKitPart(
     throw Errors.validation("Этот комплект уже уехал — связь остаётся в истории");
   }
 
-  const label = link.part.ourNumber ? `77-${link.part.ourNumber} (${link.part.model})` : link.part.model;
+  const label = partLabel(link.part);
   await prisma.$transaction(async (tx) => {
     await tx.machineKitPart.delete({ where: { headId_partId: { headId, partId } } });
     await tx.machineEvent.create({
@@ -1068,7 +1231,7 @@ export async function detachKitPart(
         machineId: partId,
         actorId: actor.id,
         kind: "comment",
-        comment: `Убрано из комплекта ${headLabel(link.head.ourNumber)}`,
+        comment: `Убрано из комплекта ${headLabel(link.head)}`,
       },
     });
   });
@@ -1082,7 +1245,17 @@ export async function detachKitPart(
 export async function listKitCandidates(
   headId: string,
   actor: Actor,
-): Promise<{ id: string; ourNumber: number | null; kind: EquipmentKind; model: string; free: number }[]> {
+): Promise<
+  {
+    id: string;
+    ourNumber: number | null;
+    clientNumber: number | null;
+    category: MachineCategory;
+    kind: EquipmentKind;
+    model: string;
+    free: number;
+  }[]
+> {
   assertMachineAccess(actor);
   const head = await prisma.machine.findUnique({
     where: { id: headId },
@@ -1100,6 +1273,8 @@ export async function listKitCandidates(
     select: {
       id: true,
       ourNumber: true,
+      clientNumber: true,
+      category: true,
       kind: true,
       model: true,
       quantity: true,
@@ -1116,7 +1291,15 @@ export async function listKitCandidates(
         : links.some((l) => l.consumedAt === null)
           ? 0
           : 1;
-      return { id: r.id, ourNumber: r.ourNumber, kind: r.kind, model: r.model, free };
+      return {
+        id: r.id,
+        ourNumber: r.ourNumber,
+        clientNumber: r.clientNumber,
+        category: r.category,
+        kind: r.kind,
+        model: r.model,
+        free,
+      };
     })
     .filter((r) => r.free > 0);
 }
@@ -1130,7 +1313,15 @@ export async function changeCategory(
   assertMachineAccess(actor);
   const before = await prisma.machine.findUnique({
     where: { id },
-    select: { id: true, status: true, category: true, ourNumber: true, kind: true },
+    select: {
+      id: true,
+      status: true,
+      category: true,
+      ourNumber: true,
+      clientNumber: true,
+      kind: true,
+      family: true,
+    },
   });
   if (!before) throw Errors.notFound();
   if (!MACHINE_CATEGORY_LABEL[input.category]) throw Errors.validation("Неизвестная категория");
@@ -1142,27 +1333,58 @@ export async function changeCategory(
       `Сначала смените состояние: «${MACHINE_STATUS_LABEL[before.status]}» не бывает у категории «${MACHINE_CATEGORY_LABEL[input.category]}»`,
     );
   }
-  // Прежнее требование «снимите 77-N при переводе в клиентские» снято 15.08.2026: учётный номер
-  // теперь ведут у любой категории — он единственная подпись карточки после того, как системный
-  // сквозной номер убрали из интерфейса.
+
+  // Номер следует за категорией (решение Артёма 15.08.2026, вечер): станок переехал из своего парка
+  // в клиентские — «77-N» с него снимается, и он получает следующий свободный «К-N». Внутри одной
+  // схемы (продажа ↔ аренда) номер остаётся на месте: это то же железо того же парка.
+  const renumber = await planRenumber(before, input.category);
 
   const names = new Map<string, string>();
   const changes = buildChanges(
-    { category: before.category },
-    { category: input.category },
+    { category: before.category, ourNumber: before.ourNumber, clientNumber: before.clientNumber },
+    { category: input.category, ...renumber },
     names,
   );
 
   await prisma.$transaction(async (tx) => {
     await tx.machine.update({
       where: { id },
-      data: { category: input.category },
+      data: { category: input.category, ...renumber },
     });
     await tx.machineEvent.create({
       data: { machineId: id, actorId: actor.id, kind: "edit", changes },
     });
   });
   return getMachine(id, actor);
+}
+
+/**
+ * Что станет с номером при переезде в другую категорию: пусто — если схема та же (продажа ↔ аренда),
+ * иначе освобождаем старое поле и выдаём следующий свободный номер новой схемы.
+ *
+ * Карточка без номера номер и не получает: незаполненный номер — осознанное состояние (станок ещё не
+ * маркирован), и выдавать его молча при смене категории значило бы придумать за человека.
+ */
+async function planRenumber(
+  before: {
+    family: EquipmentFamily;
+    category: MachineCategory;
+    ourNumber: number | null;
+    clientNumber: number | null;
+  },
+  next: MachineCategory,
+): Promise<{ ourNumber?: number | null; clientNumber?: number | null }> {
+  const from = numberSchemeFor(before.category);
+  const to = numberSchemeFor(next);
+  if (from === to) return {};
+
+  const had = from === "OUR" ? before.ourNumber : before.clientNumber;
+  if (had === null) return {};
+
+  const free = await nextFreeNumber(before.family, to);
+  return to === "OUR"
+    ? { ourNumber: free, clientNumber: null }
+    : { clientNumber: free, ourNumber: null };
 }
 
 /** Отметка «Диагностика проведена» / «Подтверждён на месте» — снимает соответствующий индикатор. */
@@ -1239,11 +1461,30 @@ export async function addComment(id: string, text: string, actor: Actor): Promis
   return getMachine(id, actor);
 }
 
-/** Подсказка следующего свободного «77-N» — своя в каждом разделе (нумерация не сквозная). */
-export async function nextOurNumber(actor: Actor, family: EquipmentFamily = "BENDER"): Promise<number> {
+/** Следующий свободный номер схемы в разделе. Нумерация не сквозная — своя в каждом разделе. */
+async function nextFreeNumber(family: EquipmentFamily, scheme: NumberScheme): Promise<number> {
+  const max = await prisma.machine.aggregate({
+    where: { family },
+    _max: { ourNumber: true, clientNumber: true },
+  });
+  const last = scheme === "OUR" ? max._max.ourNumber : max._max.clientNumber;
+  return (last ?? 0) + 1;
+}
+
+/**
+ * Подсказки следующего свободного номера для формы — сразу по обеим схемам: категорию в форме ещё
+ * переключают, и подсказка обязана меняться вместе с ней, без второго запроса.
+ */
+export async function nextNumbers(
+  actor: Actor,
+  family: EquipmentFamily = "BENDER",
+): Promise<{ ourNumber: number; clientNumber: number }> {
   assertMachineAccess(actor);
-  const max = await prisma.machine.aggregate({ where: { family }, _max: { ourNumber: true } });
-  return (max._max.ourNumber ?? 0) + 1;
+  const [ourNumber, clientNumber] = await Promise.all([
+    nextFreeNumber(family, "OUR"),
+    nextFreeNumber(family, "CLIENT"),
+  ]);
+  return { ourNumber, clientNumber };
 }
 
 /** Сотрудники офиса, которых можно назначить ответственными (Милена/Максим/Михаил/Артём). */

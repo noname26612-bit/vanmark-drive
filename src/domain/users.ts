@@ -30,6 +30,28 @@ export async function listActiveDrivers(): Promise<DriverDTO[]> {
   }));
 }
 
+/**
+ * Исполнители задач сотрудникам (цех и снабжение, 15.08.2026) — все, кому открыт этот доступ.
+ * Роль не фильтруем: сегодня это водители Александр с Николаем, завтра — сотрудники цеха, которых
+ * заведут тем же флагом. Список отдаётся только тем, кто ставит задачи (guard в route).
+ */
+export async function listStaffPerformers(): Promise<{ id: string; name: string }[]> {
+  return prisma.user.findMany({
+    where: { isActive: true, staffTasksAccess: true },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
+}
+
+/** Есть ли у пользователя доступ к задачам сотрудникам. Признак из БД, никогда из сессии. */
+export async function hasStaffTasksAccess(userId: string): Promise<boolean> {
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { staffTasksAccess: true, isActive: true },
+  });
+  return (u?.isActive && u.staffTasksAccess) === true;
+}
+
 /** Внешний (наёмный) исполнитель? Признак из БД (User.isExternal), никогда из запроса. */
 export async function isExternalDriver(userId: string): Promise<boolean> {
   const u = await prisma.user.findUnique({ where: { id: userId }, select: { isExternal: true } });
@@ -59,6 +81,8 @@ export type DriverAccessView = {
   onPayroll: boolean;
   /** Персональный допуск к разделам оборудования (Листогибы/Фальцепрокатники), 15.08.2026. */
   equipmentAccess: boolean;
+  /** Персональный допуск к задачам сотрудникам (цех/снабжение), 15.08.2026. */
+  staffTasksAccess: boolean;
 };
 
 /** Список водителей с признаками доступа — только для админа (guard в route). */
@@ -72,6 +96,7 @@ export async function listDriverAccess(): Promise<DriverAccessView[]> {
       canLogin: true,
       isExternal: true,
       equipmentAccess: true,
+      staffTasksAccess: true,
       payProfile: { select: { isActive: true } },
     },
     orderBy: { name: "asc" },
@@ -84,6 +109,7 @@ export async function listDriverAccess(): Promise<DriverAccessView[]> {
     isExternal: u.isExternal,
     onPayroll: u.payProfile?.isActive ?? false,
     equipmentAccess: u.equipmentAccess,
+    staffTasksAccess: u.staffTasksAccess,
   }));
 }
 
@@ -95,6 +121,7 @@ const ACCESS_SELECT = {
   canLogin: true,
   isExternal: true,
   equipmentAccess: true,
+  staffTasksAccess: true,
   payProfile: { select: { isActive: true } },
 } as const;
 
@@ -105,6 +132,7 @@ type AccessRow = {
   canLogin: boolean;
   isExternal: boolean;
   equipmentAccess: boolean;
+  staffTasksAccess: boolean;
   payProfile: { isActive: boolean } | null;
 };
 
@@ -117,6 +145,7 @@ function toAccessView(u: AccessRow): DriverAccessView {
     isExternal: u.isExternal,
     onPayroll: u.payProfile?.isActive ?? false,
     equipmentAccess: u.equipmentAccess,
+    staffTasksAccess: u.staffTasksAccess,
   };
 }
 
@@ -177,6 +206,25 @@ export async function setDriverEquipmentAccess(
   const updated = await prisma.user.update({
     where: { id: driverId },
     data: { equipmentAccess },
+    select: ACCESS_SELECT,
+  });
+  return toAccessView(updated);
+}
+
+/**
+ * Выдать или снять доступ к задачам сотрудникам (цех и снабжение, 15.08.2026). Это второй
+ * персональный флаг после equipmentAccess: роль остаётся DRIVER — Александр с Николаем возят и
+ * доставки, — а флаг решает, можно ли ставить им задачи по цеху и видят ли они их в телефоне.
+ * Тем же флагом позже заведут сотрудников цеха, не трогая ролевую модель.
+ */
+export async function setDriverStaffTasksAccess(
+  driverId: string,
+  staffTasksAccess: boolean,
+): Promise<DriverAccessView> {
+  await requireDriverUser(driverId);
+  const updated = await prisma.user.update({
+    where: { id: driverId },
+    data: { staffTasksAccess },
     select: ACCESS_SELECT,
   });
   return toAccessView(updated);

@@ -22,13 +22,17 @@ import {
   isArchivedStatus,
   isStockKind,
   reasonRequiredFor,
-  statusesForCategory,
+  selectableStatuses,
 } from "@/domain/machine-status";
 import { machineDueState } from "@/domain/machine-flags";
+import { machineNumberValue, numberFieldFor } from "@/domain/machine-number";
 import {
   EVENT_LABEL,
   MACHINE_CATEGORY_LABEL,
+  MACHINE_STATUS_ACTIVE,
   MACHINE_STATUS_LABEL,
+  NUMBER_PREFIX,
+  numberSchemeFor,
   dueBadgeClass,
   formatDay,
   formatMoment,
@@ -246,21 +250,38 @@ export function MachineCardClient({
       ) : (
         /* ── Состояние и категория ── */
       <section className="flex flex-col gap-3 rounded-lg border border-neutral-200 bg-white p-4">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Состояние">
-            <Select
-              value={machine.status}
-              disabled={busy}
-              onChange={(e) => changeStatus(e.target.value as MachineStatus)}
-              data-testid="machine-status-select"
-            >
-              {statusesForCategory(machine.category).map((s) => (
-                <option key={s} value={s}>
+        {/* Состояние — ряд кнопок (Артём 15.08.2026): весь путь станка виден сразу, «Продан» и
+            «В аренде» не приходится искать в выпадашке, и попасть пальцем проще, чем в список.
+            У своего железа доступны и «Продан», и «В аренде» — категория переедет сама. */}
+        <Field label="Состояние">
+          <div className="flex flex-wrap gap-2" data-testid="machine-status-buttons">
+            {selectableStatuses(machine.category).map((s) => {
+              const active = s === machine.status;
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  disabled={busy}
+                  aria-pressed={active}
+                  onClick={() => changeStatus(s)}
+                  data-testid={`machine-status-btn-${s}`}
+                  className={cn(
+                    "inline-flex min-h-11 items-center rounded-lg border px-4 text-sm font-medium transition-colors disabled:opacity-50",
+                    active
+                      ? MACHINE_STATUS_ACTIVE[s]
+                      : s === "VOIDED"
+                        ? "border-neutral-200 bg-white text-red-700 hover:border-red-400"
+                        : "border-neutral-200 bg-white text-neutral-700 hover:border-neutral-400",
+                  )}
+                >
                   {MACHINE_STATUS_LABEL[s]}
-                </option>
-              ))}
-            </Select>
-          </Field>
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+
+        <div className="sm:w-1/2 sm:pr-1.5">
           <Field label="Категория">
             <Select
               value={machine.category}
@@ -414,7 +435,7 @@ export function MachineCardClient({
                     src={`/api/machines/photos/${a.id}`}
                     alt=""
                     loading="lazy"
-                    className="h-24 w-24 rounded-lg border border-neutral-200 object-cover"
+                    className="h-32 w-32 rounded-lg border border-neutral-200 object-cover sm:h-40 sm:w-40"
                   />
                 </button>
                 <button
@@ -746,7 +767,7 @@ function MachineEditForm({
     model: machine.model,
     kind: machine.kind,
     responsibleId: machine.responsibleId ?? "",
-    ourNumber: machine.ourNumber === null ? "" : String(machine.ourNumber),
+    number: machineNumberValue(machine) === null ? "" : String(machineNumberValue(machine)),
     configuration: machine.configuration ?? "",
     metalThickness: machine.metalThickness ?? "",
     serialNumber: machine.serialNumber ?? "",
@@ -786,14 +807,15 @@ function MachineEditForm({
           ))}
         </Select>
       </Field>
-      {/* Учётный номер доступен любой категории (15.08.2026): системный сквозной номер убран,
-          и «77-N» остался единственной подписью карточки. */}
-      <Field label="Учётный номер (77-N)">
+      {/* Номер — в схеме своей категории: «77-N» у своего парка, «К-N» у клиентского. Переезд
+          между схемами делает смена категории (она же выдаёт следующий свободный), здесь номер
+          только правится вручную. */}
+      <Field label={`Учётный номер (${NUMBER_PREFIX[numberSchemeFor(machine.category)]}N)`}>
         <Input
           type="number"
           inputMode="numeric"
-          value={f.ourNumber}
-          onChange={(e) => set({ ourNumber: e.target.value })}
+          value={f.number}
+          onChange={(e) => set({ number: e.target.value })}
         />
       </Field>
       <Field label="Комплектация">
@@ -869,7 +891,7 @@ function MachineEditForm({
             onSave({
               ...f,
               responsibleId: f.responsibleId || null,
-              ourNumber: f.ourNumber ? Number(f.ourNumber) : null,
+              [numberFieldFor(machine.category)]: f.number ? Number(f.number) : null,
             })
           }
         >

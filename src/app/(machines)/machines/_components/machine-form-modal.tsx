@@ -15,7 +15,8 @@ import { DateField } from "@/components/ui/date-field";
 import { newActionId as newIdempotencyKey } from "@/lib/offline/id";
 import { KINDS_BY_FAMILY, MACHINE_CATEGORIES, headKindOf, isStockKind } from "@/domain/machine-status";
 import { modelSuggestionPool } from "@/domain/machine-models";
-import { EQUIPMENT_KIND_LABEL, MACHINE_CATEGORY_LABEL } from "@/lib/machine-ui";
+import { EQUIPMENT_KIND_LABEL, MACHINE_CATEGORY_LABEL, NUMBER_PREFIX, numberSchemeFor } from "@/lib/machine-ui";
+import { numberFieldFor } from "@/domain/machine-number";
 import {
   EMPTY_MACHINE_FORM,
   clearMachineDraft,
@@ -32,7 +33,12 @@ import type { EquipmentFamily, EquipmentKind, MachineCategory } from "@/generate
 // Кто обычно привозит станки — подсказки, а не жёсткий список (PRD §16.4).
 const DELIVERED_BY = ["Каширский", "Писарев", "Султан", "Заказчик", "Яндекс"];
 
-type Meta = { nextOurNumber: number; responsibles: { id: string; name: string }[]; models: string[] };
+type Meta = {
+  nextOurNumber: number;
+  nextClientNumber: number;
+  responsibles: { id: string; name: string }[];
+  models: string[];
+};
 
 // Структура формы живёт в machine-draft.ts — её же сохраняет и восстанавливает черновик.
 const EMPTY = EMPTY_MACHINE_FORM;
@@ -155,10 +161,14 @@ export function MachineFormModal({
   }
 
   // Подсказываем следующий свободный номер раздела, но он остаётся правимым: при инвентаризации
-  // номер уже написан маркером на железе и может быть любым (PRD §16.2). С 15.08.2026 номер
-  // доступен любой категории — системный сквозной номер из интерфейса убран.
-  const suggestedOurNumber = meta ? String(meta.nextOurNumber) : "";
-  const ourNumberValue = ourNumberEdited ? form.ourNumber : suggestedOurNumber;
+  // номер уже написан маркером на железе и может быть любым (PRD §16.2). Схема зависит от категории
+  // («77-N» у своего парка, «К-N» у клиентского), поэтому подсказка перещёлкивается вместе с ней —
+  // ровно до тех пор, пока человек не ввёл номер руками.
+  const scheme = numberSchemeFor(category);
+  const suggestedNumber = meta
+    ? String(scheme === "OUR" ? meta.nextOurNumber : meta.nextClientNumber)
+    : "";
+  const numberValue = ourNumberEdited ? form.ourNumber : suggestedNumber;
 
   function addFiles(list: FileList | null) {
     if (!list) return;
@@ -180,7 +190,7 @@ export function MachineFormModal({
     const key = idempotencyKey ?? newIdempotencyKey();
     if (!idempotencyKey) setIdempotencyKey(key);
     try {
-      const ourNumber = ourNumberValue.trim();
+      const number = numberValue.trim();
       const created = await apiSend<MachineDetail>(
         "/api/machines",
         "POST",
@@ -190,7 +200,9 @@ export function MachineFormModal({
           kind,
           ...(stock ? { quantity: Number(quantity) || 0 } : {}),
           model: form.model.trim(),
-          ourNumber: ourNumber ? Number(ourNumber) : null,
+          // Номер уезжает в поле своей схемы — сервер принимает только его (иначе номер разъедется
+          // с категорией).
+          [numberFieldFor(category)]: number ? Number(number) : null,
           configuration: form.configuration,
           metalThickness: form.metalThickness,
           serialNumber: form.serialNumber,
@@ -317,11 +329,13 @@ export function MachineFormModal({
         {stock ? null : (
           <Field label="Учётный номер" hint="Подсказан следующий свободный — можно исправить">
             <div className="flex items-center gap-2">
-              <span className="text-sm text-neutral-500">77-</span>
+              <span className="text-sm text-neutral-500" data-testid="machine-number-prefix">
+                {NUMBER_PREFIX[scheme]}
+              </span>
               <Input
                 type="number"
                 inputMode="numeric"
-                value={ourNumberValue}
+                value={numberValue}
                 onChange={(e) => {
                   setOurNumberEdited(true);
                   set({ ourNumber: e.target.value });

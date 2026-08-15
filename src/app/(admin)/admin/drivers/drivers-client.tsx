@@ -19,6 +19,7 @@ type DriverAccessView = {
   isExternal: boolean;
   onPayroll: boolean;
   equipmentAccess: boolean; // доступ к разделам «Листогибы» и «Фальцепрокатники» (15.08.2026)
+  staffTasksAccess: boolean; // задачи сотрудникам: цех и снабжение (15.08.2026)
 };
 
 // «Водители — доступ» (02.07): вход вкл/выкл. С 03.08 здесь же — признак «внешний перевозчик» и
@@ -57,6 +58,28 @@ export function DriversClient() {
       await mutate();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Не удалось изменить признак");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  // Доступ к задачам сотрудникам (15.08.2026, вечер): цех и снабжение — вторая половина работы
+  // Александра и Николая. Роль остаётся DRIVER: доставки они возят по-прежнему.
+  async function toggleStaffTasks(d: DriverAccessView) {
+    const question = d.staffTasksAccess
+      ? `Убрать у «${d.name}» задачи сотрудникам? Уже поставленные останутся у него в телефоне.`
+      : `Разрешить ставить «${d.name}» задачи сотрудникам (цех, снабжение)? Доставки и смены не изменятся.`;
+    if (!confirm(question)) return;
+    setError(null);
+    setBusyId(d.id);
+    try {
+      await apiSend("/api/admin/drivers", "PATCH", {
+        driverId: d.id,
+        staffTasksAccess: !d.staffTasksAccess,
+      });
+      await mutate();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Не удалось изменить доступ");
     } finally {
       setBusyId(null);
     }
@@ -119,6 +142,9 @@ export function DriversClient() {
                   {d.equipmentAccess ? (
                     <Badge className="border border-slate-300 text-slate-600">Оборудование</Badge>
                   ) : null}
+                  {d.staffTasksAccess ? (
+                    <Badge className="border border-slate-300 text-slate-600">Задачи сотрудникам</Badge>
+                  ) : null}
                 </div>
                 <div className="text-sm text-neutral-500">логин: {d.login}</div>
               </div>
@@ -151,6 +177,15 @@ export function DriversClient() {
                   onClick={() => void toggleEquipment(d)}
                 >
                   {d.equipmentAccess ? "Убрать оборудование" : "Дать оборудование"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  data-testid="driver-staff-tasks"
+                  className="h-9 px-3 text-sm"
+                  disabled={busyId === d.id}
+                  onClick={() => void toggleStaffTasks(d)}
+                >
+                  {d.staffTasksAccess ? "Убрать задачи сотрудникам" : "Дать задачи сотрудникам"}
                 </Button>
                 <Button
                   variant="ghost"

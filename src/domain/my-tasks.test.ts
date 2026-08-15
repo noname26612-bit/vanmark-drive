@@ -33,6 +33,16 @@ describe("myTasksWhere — изоляция водителя (ARCHITECTURE §6)"
   });
 });
 
+describe("myTasksWhere — контуры вместе (15.08.2026)", () => {
+  it("телефон показывает и доставки, и задачи сотрудникам: по контуру НЕ фильтруем", () => {
+    // У Александра с Николаем в один день бывают и заявки, и работа в цехе — экран «Сегодня» обязан
+    // показывать всё сразу. Ассерт защитный: услужливый фильтр kind здесь спрячет половину работы.
+    for (const scope of ["today", "upcoming"] as const) {
+      expect(JSON.stringify(myTasksWhere(ME, TODAY, scope))).not.toContain("kind");
+    }
+  });
+});
+
 describe("myTasksWhere — наполнение вкладок", () => {
   it("today: сегодняшние + просроченные открытые + без даты открытые", () => {
     const w = myTasksWhere(ME, TODAY, "today");

@@ -3,6 +3,8 @@ import { buildShopTaskText, type ShopTaskMachine } from "./machine-shop-task";
 
 const machine = (over: Partial<ShopTaskMachine> = {}): ShopTaskMachine => ({
   ourNumber: 3,
+  clientNumber: null,
+  category: "OUR_SALE",
   invoice1C: null,
   kind: "MACHINE",
   model: "ЛБМ 200",

@@ -19,6 +19,11 @@ describe("overdueWhere — просроченные задачи", () => {
     const w = overdueWhere(TODAY);
     expect(w.passStatus).toBeUndefined();
   });
+
+  it("берёт только доставки: просрочка задач сотрудникам живёт на своей вкладке (15.08.2026)", () => {
+    expect(overdueWhere(TODAY).kind).toBe("DELIVERY");
+    expect(tomorrowPassWhere(TOMORROW).kind).toBe("DELIVERY");
+  });
 });
 
 describe("tomorrowPassWhere — незаказанные пропуска на завтра (PRD §6)", () => {

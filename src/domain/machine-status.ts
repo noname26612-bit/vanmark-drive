@@ -66,9 +66,44 @@ export function isStatusAllowedForCategory(
   return only === undefined || only === category;
 }
 
-/** Состояния, доступные категории — для выпадашки в карточке (не даём выбрать заведомо неверное). */
+/** Состояния, доступные категории — строгий инвариант (сервер, фильтры списка). */
 export function statusesForCategory(category: MachineCategory): MachineStatus[] {
   return MACHINE_STATUSES.filter((s) => isStatusAllowedForCategory(category, s));
+}
+
+/**
+ * Состояния, которые предлагаются кнопками в карточке (Артём 15.08.2026: «точно должны быть кнопки
+ * Продан, В аренде»).
+ *
+ * Отличие от `statusesForCategory` — только у СВОЕГО железа: наш станок можно и продать, и сдать в
+ * аренду, независимо от того, для чего он заводился. Прежде это требовало сначала переключить
+ * категорию, а потом состояние — два действия там, где на площадке одно событие. Категорию система
+ * теперь подставляет сама (см. `categoryFollowingStatus`).
+ *
+ * Клиентское железо остаётся неприкосновенным: чужой станок нельзя ни продать, ни сдать — ему
+ * доступен только «Выдан клиенту».
+ */
+export function selectableStatuses(category: MachineCategory): MachineStatus[] {
+  if (!isOurCategory(category)) return statusesForCategory(category);
+  return MACHINE_STATUSES.filter(
+    (s) => isStatusAllowedForCategory(category, s) || s === "SOLD" || s === "RENTED",
+  );
+}
+
+/**
+ * Категория, в которую переезжает станок вместе с состоянием, или null — если менять нечего.
+ * Продали арендный → он «наш на продажу» и продан; сдали продажный → «наш арендный» и в аренде.
+ * Для клиентского железа всегда null: там несовместимость — настоящая ошибка, а не смена планов.
+ */
+export function categoryFollowingStatus(
+  current: MachineCategory,
+  next: MachineStatus,
+): MachineCategory | null {
+  if (isStatusAllowedForCategory(current, next)) return null;
+  if (!isOurCategory(current)) return null;
+  if (next === "SOLD") return "OUR_SALE";
+  if (next === "RENTED") return "OUR_RENTAL";
+  return null;
 }
 
 /** Категории, в которых состояние допустимо — для подсказки при смене категории. */

@@ -82,6 +82,7 @@ enum Role        { ADMIN DISPATCHER DRIVER SERVICE_MANAGER }
 enum TaskStatus  { NEW ASSIGNED IN_PROGRESS DONE ON_HOLD RESCHEDULED CANCELLED  /* legacy: */ ACCEPTED EN_ROUTE ON_SITE }
 enum ShiftStatus { REQUESTED OPEN CLOSED }   // смена водителя: открыта → подтверждена → закрыта
 enum PassStatus  { NOT_NEEDED NEEDED ORDERED }
+enum TaskKind    { DELIVERY STAFF }   // контур: заявки водителям / задачи сотрудникам (PRD §17)
 enum PaymentType { NONE OFFICE ON_SITE }
 enum AttachmentKind { PHOTO DOCUMENT }
 enum WorksheetStatus { DRAFT PRICING PRICED SIGNED }   // ведомость работ (этап 12, PRD §13.4)
@@ -132,6 +133,10 @@ model Task {
   number        Int        @unique        // сквозной, sequence (старт задаёт сид)
   typeId        String
   type          TaskType   @relation(fields: [typeId], references: [id])
+  // Контур (15.08.2026, PRD §17): DELIVERY — заявки водителям, STAFF — задачи сотрудникам (цех и
+  // снабжение). Снимок с типа на момент создания: тип могут переименовать, а раскладка экранов по
+  // контурам меняться не должна. Экраны доставок фильтруют kind=DELIVERY, телефон — оба вместе.
+  kind          TaskKind   @default(DELIVERY)
   requiresSignedDoc Boolean @default(false) // требование акта НА ЗАДАЧЕ (этап 11): снимок из типа, диспетчер снимает галочкой
   actWaivedNote String?                    // причина снятия акта на заявке (этап 11)
   worksheetStatus WorksheetStatus?         // ведомость работ (этап 12): null — не нужна для типа
@@ -419,13 +424,17 @@ enum MachineStatus   { ACCEPTED NEEDS_REPAIR IN_REPAIR READY RENTED RELEASED SOL
 enum EquipmentFamily { BENDER SEAMER }                           // раздел: Листогибы / Фальцепрокатники (15.08.2026)
 enum EquipmentKind   { MACHINE ROLLER_KNIFE SEAMER UNCOILER INVERTER } // вид внутри раздела
 
-// Карточка станка. number — сквозной учётный № ВСЕХ станков (Postgres sequence machine_number_seq),
-// пишется маркером на железо. ourNumber — привычная маркировка «77-N» только наших: подсказка
-// следующего + ручной ввод при инвентаризации (дубль ловится @unique и отдаётся человеческой ошибкой).
+// Карточка станка. number — сквозной системный № (Postgres sequence machine_number_seq), УБРАН из
+// интерфейса 15.08.2026. Учётный номер, который пишут маркером на железе, ведётся двумя схемами по
+// происхождению: ourNumber «77-N» у своего парка, clientNumber «К-N» у клиентского. Заполнено не
+// больше одного поля; при смене категории номер переезжает в схему новой категории
+// (src/domain/machine-number.ts + changeCategory). Дубль ловится @@unique и отдаётся человеческой
+// ошибкой ввода.
 model Machine {
   id             String          @id @default(uuid())
   number         Int             @unique @default(dbgenerated("nextval('machine_number_seq'::regclass)")) // УБРАН из интерфейса 15.08.2026
-  ourNumber      Int?                                 // «77-N»; уникален внутри family, вводится руками
+  ourNumber      Int?                                 // «77-N» у своего железа; уникален внутри family
+  clientNumber   Int?                                 // «К-N» у клиентского железа; уникален внутри family
   family         EquipmentFamily @default(BENDER)     // раздел: он же область уникальности номера
   kind           EquipmentKind   @default(MACHINE)    // своих полей у видов нет — общих хватает (PRD §16.3)
   quantity       Int             @default(1)          // остаток на складе; >1 только у UNCOILER/INVERTER
@@ -457,7 +466,7 @@ model Machine {
   attachments    MachineAttachment[]
   kitParts       MachineKitPart[] @relation("kitHead")
   kitOf          MachineKitPart[] @relation("kitPart")
-  @@unique([family, ourNumber])
+  @@unique([family, ourNumber]) @@unique([family, clientNumber])
   @@index([family, status]) @@index([category, status]) @@index([status]) @@index([updatedAt])
 }
 
@@ -563,6 +572,7 @@ model MachineAttachment {
 
 - **Роль SERVICE_MANAGER (05.08.2026, §4г).** Права роли — БЕЛЫЙ список, а не «всё кроме»: доступ к модулю станков дают три роли (`isMachineRole` = SERVICE_MANAGER | DISPATCHER | ADMIN, `src/domain/machine-access.ts`), всё остальное для новой роли закрыто по умолчанию. Ключевое требование при её вводе — **проверить существующие guard'ы на допущение «роль не DRIVER ⇒ штаб»**: `requireDispatcher` опирается на `isDispatcherRole` (белый список ADMIN|DISPATCHER — новая роль не проходит), `requireAdmin`/`requireDriver` — точное сравнение, страницы — `requireRole`/`requireAnyRole` с редиректом на `homeForRole`. Отдельно проверяются эндпоинты с одним лишь `requireApiUser()` (без роли): `canViewTask` для SERVICE_MANAGER возвращает false → чужая карточка/вложение отдают 404. Маршруты новой роли: `homeForRole('SERVICE_MANAGER') = '/machines'`; `exhaustive switch` в `src/domain/roles.ts` заставляет типизацию упасть, если роль забыли учесть.
   - **Персональный доступ (15.08.2026).** К белому списку ролей добавлен флаг `User.equipmentAccess` — единственное право в системе, выданное не ролью (Николай и Александр). Предикат один: `canAccessEquipment` = роль из списка ИЛИ флаг (`src/domain/machine-access.ts`); guard'ы `requireMachineUser()` (API) и `requireEquipmentUser()` (страницы) читают флаг ИЗ БД, а не из JWT, — выдача и отзыв действуют сразу, без перезахода. Флаг НИЧЕГО не открывает сверх оборудования: задачи, смены, KPI, сводка и админка закрыты своими белыми списками ролей, и это зафиксировано e2e (`machines-access.spec.ts`, describe «Персональный доступ к оборудованию»).
+  - **Второй персональный флаг — `User.staffTasksAccess` (15.08.2026, вечер).** Устроен так же: решает, кому можно ставить задачи сотрудникам (цех и снабжение) и кто видит их у себя в телефоне. Читается из БД (`assertAssignableStaff` в `task-service.ts`, `listStaffPerformers` в `users.ts`), роль при этом не проверяется — сегодня флаг у водителей Александра и Николая, завтра его получат сотрудники цеха, и ролевую модель это не тронет. Изоляция задач не меняется: телефон ходит только в `/api/my/tasks`, чужая задача — 404.
   - Модуль станков изоляции «по владельцу» не имеет by design (все три роли видят весь парк — это общая картотека, а не личные задачи), поэтому вся его защита — ролевая: `requireMachineUser()` в каждом handler'е, включая раздачу фото `GET /api/machines/photos/:id`. Водитель к любому `/api/machines/*` получает **404** (не 403 — не раскрываем существование модуля).
   - Участие в KPI/зарплате = наличие АКТИВНОГО денежного профиля (`DriverPayProfile.isActive`). Водители без профиля (подменный Николай, внешний перевозчик) исключены из детектора нарушений, списка кандидатов, ручных отметок и расчёта; экран «Мой расчёт» им не показывается (`isPayrollDriver`). Это единственный признак участия — отдельного флага в схеме нет.
 
@@ -572,7 +582,8 @@ model MachineAttachment {
 |---|---|---|
 | POST /api/auth/[...nextauth] | все | вход/выход |
 | GET /api/tasks?date&status&assigneeId&q&hideCancelled&scope | Д, С | список с фильтрами. `hideCancelled=1` — без отменённых (доска, планирование, окно дня календаря, 11.08); `scope=archive` — раздел «Архив» (11.08). `q` (20.07.2026): ILIKE по title/orgName/invoiceNumber/contactName/address/description/equipment/contactPhone + № заявки (короткие числа, включая «№615»); ≥3 цифр в запросе — доп. поиск по цифрам телефона (`regexp_replace`, «8…»≈«+7…», параметризованный $queryRaw) |
-| POST /api/tasks | Д, С | создать (номер выдаёт сервер) |
+| POST /api/tasks | Д, С | создать (номер выдаёт сервер). `kind: "STAFF"` — задача сотруднику: тип подставляет сервер, адрес/деньги/акт/напарник не принимаются (PRD §17) |
+| GET /api/staff-performers | Д, С, А | кому можно ставить задачи сотрудникам (`User.staffTasksAccess`) |
 | PATCH /api/tasks/:id | Д, С | редактирование полей (op:edit, в т.ч. напарник coDriverId — 20.07), назначение (op:assign, swap-правило пары), перенос, **архив/возврат** (op:archive\|unarchive, 11.08: мягкое удаление дубля; закрытый месяц — PERIOD_CLOSED) |
 | GET /api/my/tasks?date&scope=today\|upcoming | В | только свои: ответственный ИЛИ напарник, владение из сессии (myTasksWhere). today: на сегодня + просроченные открытые + без даты; upcoming: завтра+ |
 | GET /api/tasks/:id | Д, В(своя) | карточка + события + вложения |
@@ -614,12 +625,12 @@ model MachineAttachment {
 
 | Метод и путь | Кто | Что |
 |---|---|---|
-| GET /api/machines?family=BENDER\|SEAMER&scope=active\|archive&category&status&kind&flag&q&take&skip | С, Д, А | список станков + счётчики сводки. `scope` — область просмотра (площадка/архив), `kind` — вид (`MACHINE`\|`ROLLER_KNIFE`), `flag` — фильтр по плитке сводки (`urgent`, `duePressing`, `awaitingDiagnosis`, `noInvoice1C`, `staleVerification`; при `duePressing` — сортировка по `dueDate` asc). Активные отдаются целиком (десятки), архив — постранично с серверным поиском `q` (номер, «77-N», модель, заказчик, телефон по цифрам, № заказа 1С) |
+| GET /api/machines?family=BENDER\|SEAMER&scope=active\|archive&category&status&kind&flag&q&take&skip | С, Д, А | список станков + счётчики сводки. `scope` — область просмотра (площадка/архив), `kind` — вид (`MACHINE`\|`ROLLER_KNIFE`), `flag` — фильтр по плитке сводки (`urgent`, `duePressing`, `awaitingDiagnosis`, `noInvoice1C`, `staleVerification`; при `duePressing` — сортировка по `dueDate` asc). Активные отдаются целиком (десятки), архив — постранично с серверным поиском `q` (номер в любой схеме и написании — «77-5», «К-5», «k5», модель, заказчик, телефон по цифрам, № заказа 1С) |
 | POST /api/machines | С, Д, А | завести станок. Обязательны только `category` и `model`; `number` выдаёт сервер (sequence), `ourNumber` — подсказка следующего или ручной ввод |
 | GET /api/machines/:id/kit | С, Д, А | свободные комплектующие раздела: ножи вне чужих комплектов и складские позиции с ненулевым остатком |
 | POST /api/machines/:id/kit {partId, qty} | С, Д, А | поставить комплектующую в комплект (повтор с тем же partId = правка количества). Idempotency-Key обязателен по смыслу: повтор после таймаута не должен списывать остаток дважды |
 | DELETE /api/machines/:id/kit/:partId | С, Д, А | разобрать комплект; списанную связь (проданный комплект) разобрать нельзя — она история |
-| GET /api/machines/meta?family=BENDER\|SEAMER | С, Д, А | справочные данные формы одним запросом: подсказка следующего свободного «77-N» + сотрудники офиса для поля «ответственный» + `models` (distinct по картотеке — сырьё подсказок комбобокса) |
+| GET /api/machines/meta?family=BENDER\|SEAMER | С, Д, А | справочные данные формы одним запросом: подсказки следующего свободного номера сразу по обеим схемам (`nextOurNumber` «77-N», `nextClientNumber` «К-N» — категорию в форме переключают, и подсказка меняется без второго запроса) + сотрудники офиса для поля «ответственный» + `models` (distinct по картотеке — сырьё подсказок комбобокса) |
 | GET /api/machines/:id | С, Д, А | карточка + журнал + фото |
 | PATCH /api/machines/:id {op:edit\|status\|category\|diagnosed\|verified, withKit?} | С, Д, А | правка полей, включая `kind` и `dueDate` (журнал пишет «было→стало»), смена состояния (валидация совместимости с категорией; `VOIDED` требует причину), смена категории, отметки «диагностика проведена» / «подтверждён на месте» |
 | POST /api/machines/:id/comments | С, Д, А | комментарий в журнал (лента «Комментарии» карточки) |
@@ -651,7 +662,7 @@ model MachineAttachment {
 ## 10. Тестирование
 
 - Unit (Vitest): статусная матрица (все разрешённые/запрещённые переходы), authz-функции, нумерация. KPI (Фаза 1.5): детекторы нарушений (опоздание/акт/точка на граничных данных), прогрессивный расчёт (0 ошибок = полная премия; прогрессия с 3-го нарушения; штрафы максимум обнуляют премию — итог не ниже оклада; режим ZERO — не ниже 0; сверка с примером PRD §12.3), идемпотентность детектора. Ёмкость (Фаза 2): haversine-расстояние, перевод в минуты с коэффициентами петляния/пробок, выбор окна `TrafficWindow` по `timeFrom` (включая отсутствие времени), оценка задачи на граничных данных; агрегация загрузки по дням.
-- Станки (§4г): совместимость категория×состояние на всех парах, архивные состояния и обязательность причины при `VOIDED`, «было→стало» в журнале правки, счётчики сводки на граничных данных (рабочий день от `arrivedAt`, неделя от `lastVerifiedAt`, пороги срока `machineDueState` включая границу МСК-суток и счётчики по видам), умный поиск (номер/«77-N»/телефон/раскладка, подпись вида у ножей), подбор моделей (транслит кириллица↔латиница, дедуп пула с БД), текст задания в цех (`buildShopTaskText`: состав, «СРОЧНО!», пропуск пустых полей).
+- Станки (§4г): совместимость категория×состояние на всех парах, архивные состояния и обязательность причины при `VOIDED`, «было→стало» в журнале правки, счётчики сводки на граничных данных (рабочий день от `arrivedAt`, неделя от `lastVerifiedAt`, пороги срока `machineDueState` включая границу МСК-суток и счётчики по видам), умный поиск (номер обеих схем «77-N»/«К-N» в любом написании, телефон, раскладка, подпись вида у ножей), схема нумерации по происхождению и переезд номера за категорией (`machine-number.ts`), подбор моделей (транслит кириллица↔латиница, дедуп пула с БД), текст задания в цех (`buildShopTaskText`: состав, «СРОЧНО!», пропуск пустых полей).
 - e2e (Playwright): сценарий «Милена создала → назначила → водитель принял → выехал → на месте → фото → выполнено»; тесты изоляции (обязательно); требование фото при DONE. Изоляция роли SERVICE_MANAGER — **в обе стороны**: смоук «менеджер-сервисник → каждый существующий раздел = 403/404/redirect» (с адресными проверками денежных ручек KPI/зарплаты/сводки) и «водитель → любая ручка станков = 404». KPI: водитель видит только свой расчёт (чужой → 404); водительские ручки KPI не дают подтверждать/настраивать; закрытый месяц не меняется при правке отметок. Офлайн: действие без сети встаёт в очередь (оверлей + «не отправлено»), при возврате связи досылается, статус долетает до сервера (`offline.spec.ts`).
 
 ## 11. Офлайн-режим водителя (Фаза 2)

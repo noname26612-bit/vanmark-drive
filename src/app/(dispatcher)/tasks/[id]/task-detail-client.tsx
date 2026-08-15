@@ -13,6 +13,7 @@ import { actState } from "@/domain/act";
 import { MANUAL_STATUSES } from "@/domain/task-status";
 import { formatMinutes } from "@/domain/capacity";
 import { PRICING_ENABLED } from "@/lib/features";
+import { isStaffTask } from "@/lib/task-dto";
 import type { DriverDTO, TaskDetailDTO, TaskTypeDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
 import {
@@ -90,6 +91,12 @@ export function TaskDetailClient({
 }) {
   const key = `/api/tasks/${taskId}`;
   const { data: task, error, isLoading, mutate } = useSWR<TaskDetailDTO>(key, fetcher);
+  // Исполнители задачи сотрудникам — те, кому открыт этот доступ (это может быть и не водитель).
+  // Ключ null, пока карточка не загружена или она из контура доставок, — запрос не уходит.
+  const { data: staffPerformers = [] } = useSWR<{ id: string; name: string }[]>(
+    task && isStaffTask(task) ? "/api/staff-performers" : null,
+    fetcher,
+  );
 
   const [action, setAction] = useState<ActionKind>(null);
   const [reason, setReason] = useState("");
@@ -225,6 +232,13 @@ export function TaskDetailClient({
     });
   const forward = NEXT_FORWARD[task.status];
   const isTerminal = task.status === "DONE" || task.status === "CANCELLED";
+  // Задача сотрудникам (15.08.2026): ни адреса, ни денег, ни пропуска, ни оценки времени —
+  // соответствующие строки карточки просто не показываем, иначе они стоят пустыми.
+  const staff = isStaffTask(task);
+  const assignableList = staff
+    ? staffPerformers
+    : drivers.map((d) => ({ id: d.id, name: d.name }));
+
   // Оценка устарела: авто-снимок меньше текущей нормы типа — значит норму подняли уже после расчёта
   // (11.08.2026: доставкам добавили 30 мин на выгрузку). Разбивку в этом случае не показываем.
   const estimateStale =
@@ -291,7 +305,7 @@ export function TaskDetailClient({
             <h1 className="mt-1 text-xl font-semibold text-neutral-900">{task.title}</h1>
             <p className="mt-1 truncate text-sm text-neutral-500">
               {task.orgName ? `${task.orgName} · ` : ""}
-              {task.address}
+              {staff ? "Задача сотруднику" : task.address}
             </p>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1.5">
@@ -303,14 +317,21 @@ export function TaskDetailClient({
 
       {/* Поля */}
       <div className="mt-4 grid grid-cols-1 gap-x-6 gap-y-2 rounded-xl border border-neutral-200 bg-white p-4 sm:grid-cols-2">
-        <Row label="Адрес">
-          {task.address}
-          {task.addressLink ? (
-            <a href={task.addressLink} target="_blank" rel="noopener" className="ml-2 inline-flex items-center gap-1 text-blue-600">
-              <Navigation className="h-3.5 w-3.5" /> Навигатор
-            </a>
-          ) : null}
-        </Row>
+        {staff ? null : (
+          <Row label="Адрес">
+            {task.address}
+            {task.addressLink ? (
+              <a
+                href={task.addressLink}
+                target="_blank"
+                rel="noopener"
+                className="ml-2 inline-flex items-center gap-1 text-blue-600"
+              >
+                <Navigation className="h-3.5 w-3.5" /> Навигатор
+              </a>
+            ) : null}
+          </Row>
+        )}
         {task.orgName ? <Row label="Организация">{task.orgName}</Row> : null}
         {task.contactName || task.contactPhone ? (
           <Row label="Контакт">
@@ -364,9 +385,11 @@ export function TaskDetailClient({
         {showFinalServices ? (
           <Row label="Услуги по ведомости">{finalServicesTotal.toLocaleString("ru")} ₽</Row>
         ) : null}
-        <Row label="Пропуск">
-          <Badge className={PASS_BADGE[task.passStatus]}>{PASS_LABEL[task.passStatus]}</Badge>
-        </Row>
+        {staff ? null : (
+          <Row label="Пропуск">
+            <Badge className={PASS_BADGE[task.passStatus]}>{PASS_LABEL[task.passStatus]}</Badge>
+          </Row>
+        )}
         {task.description ? <Row label="Описание">{task.description}</Row> : null}
         {task.holdReason ? <Row label="Причина паузы">{task.holdReason}</Row> : null}
         {task.cancelReason ? <Row label="Причина отмены">{task.cancelReason}</Row> : null}
@@ -409,13 +432,13 @@ export function TaskDetailClient({
             className="w-48"
           >
             <option value="">— не назначено —</option>
-            {drivers.map((d) => (
+            {assignableList.map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
               </option>
             ))}
           </Select>
-          {task.assigneeId ? (
+          {task.assigneeId && !staff ? (
             <Select
               data-testid="card-co-driver"
               value={task.coDriverId ?? ""}
@@ -475,7 +498,9 @@ export function TaskDetailClient({
       {actionError ? <p className="mt-2 text-sm text-red-600">{actionError}</p> : null}
 
       {/* Оценка времени (Фаза 2, PRD §14): авто-расчёт «норма типа + дорога»; диспетчер может
-          задать вручную или вернуть к авто. Подсказка планирования — на загрузку влияет через календарь. */}
+          задать вручную или вернуть к авто. Подсказка планирования — на загрузку влияет через календарь.
+          У задач сотрудникам оценки нет: дороги в них не бывает, в календарь загрузки они не входят. */}
+      {staff ? null : (
       <section className="mt-6" data-testid="estimate-section">
         <h2 className="mb-2 text-sm font-semibold text-neutral-700">Оценка времени</h2>
         <div className="rounded-xl border border-neutral-200 bg-white p-4">
@@ -541,6 +566,7 @@ export function TaskDetailClient({
           ) : null}
         </div>
       </section>
+      )}
 
       {/* Фото — отчётные (от исполнителя) и приложенные при постановке (от диспетчера) */}
       {/* Расценка ведомости — диспетчер ставит цены по позициям (этап 13, PRD §13) */}

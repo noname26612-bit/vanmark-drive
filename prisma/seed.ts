@@ -28,6 +28,7 @@ type SeedUser = {
   isExternal?: boolean; // наёмный перевозчик (02.07): без смен, стоимость поездки в заявке
   equipmentAccess?: boolean; // доступ к разделам оборудования (15.08): Николай и Александр
   position?: string; // должность для отображения в шапке (напр. «Директор»); не право
+  staffTasksAccess?: boolean; // задачи сотрудникам (цех/снабжение) — персональный флаг, не роль
 };
 
 // Команда из ROADMAP этап 1 + внешний перевозчик из PRD §2 (без права входа) + подменный водитель.
@@ -45,11 +46,12 @@ const USERS: SeedUser[] = [
   // Николай — штатный подменный водитель (закрывает задачи Каширского/Писарева на больничном/в
   // отпуске): входит сам, выполняет любые задачи. В KPI/зарплату НЕ входит (нет денежного профиля,
   // см. prisma/seed-kpi.ts) — у него своя система оплаты.
-  { login: "nikolay", name: "Николай", role: "DRIVER", equipmentAccess: true },
+  { login: "nikolay", name: "Николай", role: "DRIVER", equipmentAccess: true, staffTasksAccess: true },
   // Александр — второй подменный водитель (решение Артёма 15.08.2026, полная копия Николая):
-  // входит сам, выполняет любые задачи, в KPI/зарплату не входит. Ему и Николаю выдан доступ
-  // к разделам оборудования — персональным флагом equipmentAccess, роль остаётся DRIVER.
-  { login: "alexandr", name: "Александр", role: "DRIVER", equipmentAccess: true },
+  // входит сам, выполняет любые задачи, в KPI/зарплату не входит. Ему и Николаю выданы персональные
+  // флаги: equipmentAccess (разделы оборудования) и staffTasksAccess (задачи по цеху и снабжению —
+  // вторая половина их работы). Роль у обоих остаётся DRIVER: доставки они тоже возят.
+  { login: "alexandr", name: "Александр", role: "DRIVER", equipmentAccess: true, staffTasksAccess: true },
   // Внешний перевозчик — наёмный, не штатный: задачи на него ведёт диспетчер, сам не входит.
   // Логин (sultan) — исторический внутренний ключ, на нём завязаны демо-задачи; в UI имя нейтральное.
   { login: "sultan", name: "Внешний перевозчик", role: "DRIVER", canLogin: false, isExternal: true },
@@ -75,6 +77,15 @@ const TASK_TYPES: { name: string; icon: string; requiresSignedDoc: boolean; requ
   { name: "Сдача / забор из ТК", icon: "package", requiresSignedDoc: false, requiresPricing: false },
   { name: "Прочее", icon: "ellipsis", requiresSignedDoc: false, requiresPricing: false },
 ];
+
+/**
+ * Служебный тип контура STAFF (15.08.2026). Задачи сотрудникам не классифицируются — Артём решил не
+ * усложнять, пока их только ставят и выполняют, — но `Task.typeId` обязателен, поэтому один тип
+ * нужен: сервер подставляет его сам, в формах доставок он не показывается.
+ *
+ * Ни акта, ни ведомости: у задач цеха и снабжения нет ни документов, ни расценки.
+ */
+const STAFF_TASK_TYPE = { name: "Задача сотрудникам", icon: "clipboard-list", sortOrder: 100 };
 
 // Разделы справочника (группы услуг/товаров). Артём правит/добавляет в /admin/work-catalog.
 const WORK_CATEGORIES: { name: string; sortOrder: number }[] = [
@@ -104,11 +115,12 @@ async function main(defaultPassword: string): Promise<void> {
     const canLogin = u.canLogin ?? true;
     const isExternal = u.isExternal ?? false;
     const equipmentAccess = u.equipmentAccess ?? false;
+    const staffTasksAccess = u.staffTasksAccess ?? false;
     const passwordHash = await hashPassword(passwordFor(u.login, defaultPassword));
     await prisma.user.upsert({
       where: { login: u.login },
-      update: { name: u.name, role: u.role, canLogin, isExternal, equipmentAccess, isActive: true, passwordHash, position: u.position ?? null },
-      create: { login: u.login, name: u.name, role: u.role, canLogin, isExternal, equipmentAccess, passwordHash, position: u.position ?? null },
+      update: { name: u.name, role: u.role, canLogin, isExternal, equipmentAccess, staffTasksAccess, isActive: true, passwordHash, position: u.position ?? null },
+      create: { login: u.login, name: u.name, role: u.role, canLogin, isExternal, equipmentAccess, staffTasksAccess, passwordHash, position: u.position ?? null },
     });
     console.log(`  ✓ ${u.login} — ${u.name} (${u.role}${canLogin ? "" : ", без входа"})`);
   }
@@ -120,6 +132,7 @@ async function main(defaultPassword: string): Promise<void> {
         icon: t.icon,
         requiresSignedDoc: t.requiresSignedDoc,
         requiresPricing: t.requiresPricing,
+        kind: "DELIVERY",
         sortOrder: i + 1,
         isActive: true,
       },
@@ -128,11 +141,30 @@ async function main(defaultPassword: string): Promise<void> {
         icon: t.icon,
         requiresSignedDoc: t.requiresSignedDoc,
         requiresPricing: t.requiresPricing,
+        kind: "DELIVERY",
         sortOrder: i + 1,
       },
     });
   }
-  console.log(`  ✓ типы задач: ${TASK_TYPES.length}`);
+
+  await prisma.taskType.upsert({
+    where: { name: STAFF_TASK_TYPE.name },
+    update: {
+      icon: STAFF_TASK_TYPE.icon,
+      kind: "STAFF",
+      requiresSignedDoc: false,
+      requiresPricing: false,
+      sortOrder: STAFF_TASK_TYPE.sortOrder,
+      isActive: true,
+    },
+    create: {
+      name: STAFF_TASK_TYPE.name,
+      icon: STAFF_TASK_TYPE.icon,
+      kind: "STAFF",
+      sortOrder: STAFF_TASK_TYPE.sortOrder,
+    },
+  });
+  console.log(`  ✓ типы задач: ${TASK_TYPES.length} + служебный «${STAFF_TASK_TYPE.name}»`);
 
   // Разделы справочника (upsert по имени; update не перетирает админские правки сверх порядка/активности).
   for (const c of WORK_CATEGORIES) {

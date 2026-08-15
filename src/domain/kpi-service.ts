@@ -311,6 +311,9 @@ export async function detectCandidatesForDate(
       where: {
         assigneeId: { in: tracked },
         archivedAt: null, // по убранной в архив заявке нарушений не заводим (11.08.2026)
+        // KPI считается по доставкам. Александр с Николаем в KPI и так не входят (нет денежного
+        // профиля), но фильтр нужен на случай задачи сотрудникам у водителя на окладе (15.08.2026).
+        kind: "DELIVERY",
         OR: [{ scheduledDate: scheduledDay }, { completedAt: { gte: completedFrom, lt: dayEnd } }],
       },
       select: {

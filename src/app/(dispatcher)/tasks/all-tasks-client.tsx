@@ -41,6 +41,13 @@ export function AllTasksClient({
   const [dateTo, setDateTo] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [scope, setScope] = useState<"active" | "archive">("active");
+  // Контур (15.08.2026): по умолчанию доставки — это рабочий режим Милены. Задачи цеха и снабжения
+  // лежат во второй половине сегмента, чтобы найти их можно было здесь же, а не только на доске.
+  const [kind, setKind] = useState<"DELIVERY" | "STAFF">("DELIVERY");
+  const delivery = kind === "DELIVERY";
+  // Колонок в контуре сотрудников на пять меньше (счёт, тип, адрес, оплата, акт) — держим colSpan
+  // рядом с их условиями, иначе «Задач не найдено» разъезжается по таблице.
+  const colSpan = (delivery ? 10 : 5) + (scope === "archive" ? 1 : 0);
 
   // Черновики свёрнутых заявок (доработка №1) — общий стек с доской, живёт в лейауте диспетчера.
   const drafts = useTaskDrafts();
@@ -74,6 +81,7 @@ export function AllTasksClient({
   // Область просмотра (11.08.2026): по умолчанию активные заявки, «Архив» — убранные дубли и
   // ошибочные заявки, откуда их можно вернуть. Фильтры и поиск работают в обеих областях.
   if (scope === "archive") params.set("scope", "archive");
+  params.set("kind", kind);
   const key = `/api/tasks?${params.toString()}`;
   const { data: tasks = [], isLoading, error, mutate } = useSWR<TaskDTO[]>(key, fetcher, {
     keepPreviousData: true,
@@ -119,6 +127,27 @@ export function AllTasksClient({
               </button>
             ))}
           </div>
+          {/* Контур: заявки водителям и задачи сотрудникам — разная работа, и мешать их в одном
+              списке значит потерять и то, и другое (15.08.2026). */}
+          <div className="flex rounded-lg border border-neutral-300 p-0.5 text-xs">
+            {(["DELIVERY", "STAFF"] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                data-testid={`tasks-kind-${k}`}
+                onClick={() => {
+                  setKind(k);
+                  if (k === "STAFF") setTypeId(""); // фильтр типов — про доставки
+                }}
+                className={cn(
+                  "rounded-md px-2.5 py-1 font-medium transition-colors",
+                  kind === k ? "bg-neutral-900 text-white" : "text-neutral-500 hover:text-neutral-800",
+                )}
+              >
+                {k === "DELIVERY" ? "Доставки" : "Сотрудники"}
+              </button>
+            ))}
+          </div>
         </div>
         <Button
           onClick={() => {
@@ -154,14 +183,16 @@ export function AllTasksClient({
             </option>
           ))}
         </Select>
-        <Select value={typeId} onChange={(e) => setTypeId(e.target.value)}>
-          <option value="">Любой тип</option>
-          {types.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </Select>
+        {kind === "DELIVERY" ? (
+          <Select value={typeId} onChange={(e) => setTypeId(e.target.value)}>
+            <option value="">Любой тип</option>
+            {types.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </Select>
+        ) : null}
         <DateField value={dateFrom} onChange={setDateFrom} />
         <DateField value={dateTo} onChange={setDateTo} />
       </div>
@@ -184,23 +215,24 @@ export function AllTasksClient({
             <tr>
               <th className="px-3 py-2">№</th>
               {/* Счёт (11.08.2026): по нему чаще всего и ищут заявку — держим рядом с № заявки,
-                  чтобы номер можно было сверить глазами, не открывая карточку. */}
-              <th className="whitespace-nowrap px-3 py-2">Счёт №</th>
-              <th className="px-3 py-2">Тип</th>
+                  чтобы номер можно было сверить глазами, не открывая карточку.
+                  У задач сотрудникам ни счёта, ни типа, ни адреса нет — колонки не показываем. */}
+              {delivery ? <th className="whitespace-nowrap px-3 py-2">Счёт №</th> : null}
+              {delivery ? <th className="px-3 py-2">Тип</th> : null}
               <th className="px-3 py-2">Название</th>
-              <th className="px-3 py-2">Адрес</th>
+              {delivery ? <th className="px-3 py-2">Адрес</th> : null}
               <th className="px-3 py-2">Дата</th>
               <th className="px-3 py-2">Исполнитель</th>
               <th className="px-3 py-2">Статус</th>
-              <th className="px-3 py-2">Оплата</th>
-              <th className="px-3 py-2">Акт</th>
+              {delivery ? <th className="px-3 py-2">Оплата</th> : null}
+              {delivery ? <th className="px-3 py-2">Акт</th> : null}
               {scope === "archive" ? <th className="px-3 py-2" /> : null}
             </tr>
           </thead>
           <tbody>
             {error && tasks.length === 0 ? (
               <tr>
-                <td colSpan={scope === "archive" ? 11 : 10} className="px-3 py-8 text-center">
+                <td colSpan={colSpan} className="px-3 py-8 text-center">
                   <p className="text-sm text-red-600">Не удалось загрузить список.</p>
                   <button
                     type="button"
@@ -213,7 +245,7 @@ export function AllTasksClient({
               </tr>
             ) : tasks.length === 0 && !isLoading ? (
               <tr>
-                <td colSpan={scope === "archive" ? 11 : 10} className="px-3 py-8 text-center text-neutral-400">
+                <td colSpan={colSpan} className="px-3 py-8 text-center text-neutral-400">
                   Задач не найдено
                 </td>
               </tr>
@@ -234,22 +266,26 @@ export function AllTasksClient({
                       <Highlighted text={String(t.number)} query={searchQuery} />
                     </Link>
                   </td>
-                  <td
-                    className="max-w-32 truncate px-3 py-2 tabular-nums text-neutral-600"
-                    title={t.invoiceNumber ?? undefined}
-                  >
-                    {t.invoiceNumber ? (
-                      <Highlighted text={t.invoiceNumber} query={searchQuery} />
-                    ) : (
-                      <span className="text-neutral-300">—</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    <span className="inline-flex items-center gap-1 text-neutral-600">
-                      <TypeIcon name={t.type.icon} className="h-4 w-4" />
-                      <span className="hidden sm:inline">{t.type.name}</span>
-                    </span>
-                  </td>
+                  {delivery ? (
+                    <td
+                      className="max-w-32 truncate px-3 py-2 tabular-nums text-neutral-600"
+                      title={t.invoiceNumber ?? undefined}
+                    >
+                      {t.invoiceNumber ? (
+                        <Highlighted text={t.invoiceNumber} query={searchQuery} />
+                      ) : (
+                        <span className="text-neutral-300">—</span>
+                      )}
+                    </td>
+                  ) : null}
+                  {delivery ? (
+                    <td className="px-3 py-2">
+                      <span className="inline-flex items-center gap-1 text-neutral-600">
+                        <TypeIcon name={t.type.icon} className="h-4 w-4" />
+                        <span className="hidden sm:inline">{t.type.name}</span>
+                      </span>
+                    </td>
+                  ) : null}
                   <td className="px-3 py-2">
                     <Link
                       href={`/tasks/${t.id}`}
@@ -262,9 +298,11 @@ export function AllTasksClient({
                         ширина таблицы уже плотная, а colSpan пришлось бы править в двух местах. */}
                     <AuthorBadge name={t.createdBy?.name} className="ml-2" />
                   </td>
-                  <td className="max-w-48 truncate px-3 py-2 text-neutral-500">
-                    <Highlighted text={t.address} query={searchQuery} />
-                  </td>
+                  {delivery ? (
+                    <td className="max-w-48 truncate px-3 py-2 text-neutral-500">
+                      <Highlighted text={t.address} query={searchQuery} />
+                    </td>
+                  ) : null}
                   <td className="px-3 py-2 text-neutral-500">{formatDate(t.scheduledDate)}</td>
                   <td className="px-3 py-2 text-neutral-600">
                     {t.assignee?.name ? (
@@ -284,12 +322,16 @@ export function AllTasksClient({
                   <td className="px-3 py-2">
                     <StatusBadge status={t.status} />
                   </td>
-                  <td className="px-3 py-2">
-                    <PaymentCell task={t} />
-                  </td>
-                  <td className="px-3 py-2">
-                    <ActCell task={t} />
-                  </td>
+                  {delivery ? (
+                    <td className="px-3 py-2">
+                      <PaymentCell task={t} />
+                    </td>
+                  ) : null}
+                  {delivery ? (
+                    <td className="px-3 py-2">
+                      <ActCell task={t} />
+                    </td>
+                  ) : null}
                   {/* В архиве — своя колонка с возвратом: чтобы вернуть заявку, не открывая её,
                       и чтобы кнопка не липла к бейджу акта. */}
                   {scope === "archive" ? (
