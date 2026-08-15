@@ -670,6 +670,7 @@ export async function listMachines(params: ListParams, actor: Actor): Promise<Ma
   // Складские позиции (размотчики/частотники) состояний не имеют и в архив не уходят: держим их в
   // области «на площадке» и убираем из архива, иначе фильтр по состоянию прятал бы весь склад.
   const stockKinds: EquipmentKind[] = ["UNCOILER", "INVERTER"];
+  const archive = scope === "archive";
   const scopeFilter =
     scope === "archive"
       ? { status: { in: archivedStatuses }, kind: { notIn: stockKinds } }
@@ -695,11 +696,16 @@ export async function listMachines(params: ListParams, actor: Actor): Promise<Ma
       //
       // Схемы нумерации идут блоками: сначала свой парк «77-N», следом клиентские «К-N» (у станка
       // заполнено ровно одно поле, поэтому сортировка по двум ключам подряд их и раскладывает).
-      orderBy: [
-        { ourNumber: { sort: "asc", nulls: "last" } },
-        { clientNumber: { sort: "asc", nulls: "last" } },
-        { createdAt: "asc" },
-      ],
+      //
+      // Архив — исключение: он грузится порциями по 30, и там ищут недавнее («куда делся станок,
+      // который вчера выдали»), а не первый по номеру. Поэтому в архиве сверху свежие.
+      orderBy: archive
+        ? [{ updatedAt: "desc" as const }]
+        : [
+            { ourNumber: { sort: "asc" as const, nulls: "last" as const } },
+            { clientNumber: { sort: "asc" as const, nulls: "last" as const } },
+            { createdAt: "asc" as const },
+          ],
     }),
     prisma.machine.findMany({ where: { family }, select: flagSelect }),
     prisma.machine.findMany({
