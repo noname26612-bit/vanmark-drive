@@ -8,7 +8,6 @@ import {
 } from "./machine-search";
 
 const m = (over: Partial<SearchableMachine> = {}): SearchableMachine => ({
-  number: 213,
   ourNumber: null,
   kind: "MACHINE",
   category: "CLIENT",
@@ -32,15 +31,22 @@ const find = (machine: SearchableMachine, q: string) => machineMatches(machine, 
 
 describe("machine-search: номера", () => {
   it("находит по учётному номеру, в том числе с решёткой", () => {
-    expect(find(m(), "213")).toBe(true);
-    expect(find(m(), "№213")).toBe(true);
-    expect(find(m(), "999")).toBe(false);
+    const our = m({ category: "OUR_SALE", ourNumber: 213 });
+    expect(find(our, "213")).toBe(true);
+    expect(find(our, "№213")).toBe(true);
+    expect(find(our, "999")).toBe(false);
   });
 
-  it("находит наш станок по маркировке «77-N»", () => {
-    const our = m({ category: "OUR_SALE", ourNumber: 5, number: 214 });
+  it("находит станок по маркировке «77-N»", () => {
+    const our = m({ category: "OUR_SALE", ourNumber: 5 });
     expect(find(our, "77-5")).toBe(true);
     expect(find(our, "77-6")).toBe(false);
+  });
+
+  // Сквозной системный номер убран из интерфейса и из поиска (15.08.2026): человек его нигде не
+  // видит, а совпадения по нему выглядели бы как случайные.
+  it("не ищет по сквозному системному номеру", () => {
+    expect(find(m({ ourNumber: null }), "213")).toBe(false);
   });
 
   it("находит по № заказа 1С", () => {

@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { isHeadKind } from "@/domain/machine-status";
 import {
   EQUIPMENT_KIND_SHORT,
   MACHINE_CATEGORY_SHORT,
@@ -31,9 +32,12 @@ export function MachineCategoryBadge({ category }: { category: MachineCategory }
   );
 }
 
-/** Метка вида — только у ножей: «Станок» на каждой строке раздела «Станки» был бы шумом. */
+/**
+ * Метка вида — только у комплектующих: «Листогиб» на каждой строке раздела «Листогибы» (и
+ * «Фальцепрокатник» в своём разделе) был бы шумом. Головной вид узнаётся по самому разделу.
+ */
 export function MachineKindBadge({ kind }: { kind: EquipmentKind }) {
-  if (kind === "MACHINE") return null;
+  if (isHeadKind(kind)) return null;
   return (
     <Badge className="border border-slate-300 text-slate-600">{EQUIPMENT_KIND_SHORT[kind]}</Badge>
   );

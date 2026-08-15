@@ -4,7 +4,7 @@
 // Ни cron, ни пушей, ни хранимых «просрочек» здесь нет — на этапе 1 картотека не должна обрастать
 // фоновой машинерией. Сроки и KPI Максима — этап 3, когда должность приживётся.
 import { dateKeyInTz, utcDateKey, KPI_TZ } from "./kpi";
-import { isArchivedStatus } from "./machine-status";
+import { isArchivedStatus, isStockKind } from "./machine-status";
 import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
 
 /** Норматив диагностики: станок должен быть продиагностирован за один рабочий день (памятка должности). */
@@ -56,6 +56,8 @@ export function daysBetween(fromKey: string, toKey: string): number {
 /** Минимум данных станка, нужный для индикаторов. */
 export type FlaggableMachine = {
   kind: EquipmentKind;
+  /** Всего штук на складе (складские виды). У штучного оборудования всегда 1. */
+  quantity?: number;
   category: MachineCategory;
   status: MachineStatus;
   invoice1C: string | null;
@@ -111,10 +113,12 @@ export function machineDueState(
 
 /**
  * Индикаторы одного станка. Архивные (выдан/продан/аннулирован) не подсвечиваются никогда:
- * станка на площадке уже нет, требовать по нему диагностику или сверку бессмысленно.
+ * станка на площадке уже нет, требовать по нему диагностику или сверку бессмысленно. Складские
+ * позиции (размотчики, частотники) — тоже: это остатки, а не станки; диагностика, сверка на месте
+ * и срок готовности к ним не применяются.
  */
 export function machineFlags(m: FlaggableMachine, now: Date, tz: string = KPI_TZ): MachineFlags {
-  if (isArchivedStatus(m.status)) {
+  if (isArchivedStatus(m.status) || isStockKind(m.kind)) {
     return {
       noInvoice1C: false,
       urgent: false,
@@ -174,7 +178,7 @@ function emptyByCategory(): Record<MachineCategory, number> {
 }
 
 function emptyByKind(): Record<EquipmentKind, number> {
-  return { MACHINE: 0, ROLLER_KNIFE: 0 };
+  return { MACHINE: 0, ROLLER_KNIFE: 0, SEAMER: 0, UNCOILER: 0, INVERTER: 0 };
 }
 
 function emptyByStatus(): Record<MachineStatus, number> {
@@ -212,6 +216,12 @@ export function summarize(machines: FlaggableMachine[], now: Date, tz: string = 
   };
 
   for (const m of machines) {
+    // Складские позиции живут вне состояний и категорий: в счётчике вида показываем ШТУКИ
+    // («Размотчики 5»), а в парк, состояния и индикаторы они не входят вовсе.
+    if (isStockKind(m.kind)) {
+      out.byKind[m.kind] += m.quantity ?? 1;
+      continue;
+    }
     out.byStatus[m.status] += 1;
     if (m.status === "VOIDED") {
       out.voided += 1;

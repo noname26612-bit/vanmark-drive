@@ -85,12 +85,16 @@ const ALLOWED_API: string[] = [
 // не раскрываем, та же логика, что с чужой задачей).
 const MACHINE_API: [string, string][] = [
   ["GET", "/api/machines"],
+  ["GET", "/api/machines?family=SEAMER"],
   ["POST", "/api/machines"],
   ["GET", "/api/machines/meta"],
   ["GET", "/api/machines/00000000-0000-0000-0000-000000000000"],
   ["PATCH", "/api/machines/00000000-0000-0000-0000-000000000000"],
   ["POST", "/api/machines/00000000-0000-0000-0000-000000000000/comments"],
   ["POST", "/api/machines/00000000-0000-0000-0000-000000000000/shop-task"],
+  ["GET", "/api/machines/00000000-0000-0000-0000-000000000000/kit"],
+  ["POST", "/api/machines/00000000-0000-0000-0000-000000000000/kit"],
+  ["DELETE", "/api/machines/00000000-0000-0000-0000-000000000000/kit/00000000-0000-0000-0000-000000000001"],
   ["GET", "/api/machines/photos/00000000-0000-0000-0000-000000000000"],
   ["DELETE", "/api/machines/photos/00000000-0000-0000-0000-000000000000"],
 ];
@@ -202,10 +206,12 @@ test.describe("Изоляция роли: менеджер-сервисник �
 });
 
 test.describe("Изоляция роли: водитель → модуль станков", () => {
-  test("страница /machines водителю не открывается", async ({ page }) => {
+  test("страницы оборудования водителю не открываются", async ({ page }) => {
     await login(page, "kashirskiy");
-    await page.goto("/machines");
-    await expect(page).toHaveURL(/\/m$/); // ушёл на свой экран
+    for (const path of ["/machines", "/seamers"]) {
+      await page.goto(path);
+      await expect(page, `${path} не должен открываться водителю без доступа`).toHaveURL(/\/m$/);
+    }
   });
 
   test("каждая ручка станков отвечает водителю 404 (не 403)", async ({ page }) => {
@@ -254,14 +260,77 @@ test.describe("Доступ к модулю у диспетчера и адми�
   test("Милена работает с картотекой наравне с менеджером-сервисником", async ({ page }) => {
     await login(page, "milena");
     await page.goto("/machines");
-    await expect(page.getByRole("heading", { name: "Станки" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Листогибы" })).toBeVisible();
     expect((await page.request.get("/api/machines")).status()).toBe(200);
   });
 
-  test("админ тоже видит картотеку, и у него в шапке есть вкладка «Станки»", async ({ page }) => {
+  test("админ тоже видит оба раздела, и у него в шапке есть обе вкладки", async ({ page }) => {
     await login(page, "artem");
     await page.goto("/machines");
-    await expect(page.getByRole("link", { name: "Станки" })).toBeVisible();
-    expect((await page.request.get("/api/machines")).status()).toBe(200);
+    await expect(page.getByRole("link", { name: "Листогибы" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Фальцепрокатники" })).toBeVisible();
+    expect((await page.request.get("/api/machines?family=BENDER")).status()).toBe(200);
+    expect((await page.request.get("/api/machines?family=SEAMER")).status()).toBe(200);
+  });
+});
+
+// Персональный доступ к оборудованию (решение Артёма 15.08.2026): Николай и Александр — водители,
+// которым открыты «Листогибы» и «Фальцепрокатники». Это единственное право не по роли, поэтому
+// граница проверяется в ОБЕ стороны: что открылось — работает, что закрыто — по-прежнему закрыто.
+test.describe("Персональный доступ к оборудованию: Александр", () => {
+  test("видит оба раздела и работает с картотекой", async ({ page }) => {
+    test.setTimeout(120_000);
+    await login(page, "alexandr");
+    await page.goto("/machines");
+    await expect(page.getByRole("heading", { name: "Листогибы" })).toBeVisible();
+    await page.goto("/seamers");
+    await expect(page.getByRole("heading", { name: "Фальцепрокатники" })).toBeVisible();
+    expect((await page.request.get("/api/machines?family=BENDER")).status()).toBe(200);
+    expect((await page.request.get("/api/machines?family=SEAMER")).status()).toBe(200);
+  });
+
+  test("в меню у него ТОЛЬКО оборудование — ни задач, ни денег", async ({ page }) => {
+    await login(page, "alexandr");
+    await page.goto("/machines");
+    await expect(page.getByRole("link", { name: "Листогибы" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Фальцепрокатники" })).toBeVisible();
+    for (const label of ["Сегодня", "Планирование", "Все задачи", "Сводка", "KPI / Зарплата", "Управление"]) {
+      await expect(page.getByRole("link", { name: label }), `${label} водителю не положен`).toHaveCount(0);
+    }
+  });
+
+  test("флаг НЕ открывает ему чужие разделы — деньги, смены и админка закрыты", async ({ page }) => {
+    test.setTimeout(120_000);
+    await login(page, "alexandr");
+
+    for (const path of ["/board", "/planning", "/tasks", "/summary", "/kpi", "/admin", "/admin/drivers"]) {
+      await page.goto(path);
+      await expect(page, `${path} водителю с доступом к оборудованию не положен`).toHaveURL(/\/m$/);
+    }
+
+    const leaked: string[] = [];
+    for (const url of [
+      "/api/tasks",
+      `/api/kpi/overview?period=${thisPeriod}`,
+      `/api/summary/overview?granularity=day&date=${today}`,
+      "/api/admin/drivers",
+      `/api/shifts?date=${today}`,
+    ]) {
+      const res = await page.request.get(url);
+      if (res.status() < 400) leaked.push(`${url} → ${res.status()}`);
+    }
+    expect(leaked, "доступ к оборудованию не должен открывать ничего сверх него").toEqual([]);
+  });
+
+  test("из своего приложения он попадает в оборудование по ссылке", async ({ page }) => {
+    await login(page, "alexandr");
+    await page.goto("/m");
+    await expect(page.getByTestId("driver-equipment-link")).toBeVisible();
+  });
+
+  test("у водителя без доступа такой ссылки нет", async ({ page }) => {
+    await login(page, "kashirskiy");
+    await page.goto("/m");
+    await expect(page.getByTestId("driver-equipment-link")).toHaveCount(0);
   });
 });

@@ -4,11 +4,14 @@
 // раз, а плашка «Восстановлен черновик» с кнопкой «Начать заново» живёт прямо в форме.
 //
 // Фото в черновик не входят: File в localStorage не живёт; сохраняются только поля (PRD §16.5).
-import { EquipmentKind, MachineCategory } from "@/generated/prisma/enums";
+import { EquipmentFamily, EquipmentKind, MachineCategory } from "@/generated/prisma/enums";
 
 // Ключ версионирован (образец DRAFTS_STORAGE_KEY у задач): поменяется структура — старый
 // черновик просто не прочитается, а не уронит форму.
-const KEY = "vanmark:machine-draft:v1";
+// Черновик свой у каждого раздела (15.08.2026): начатый листогиб не должен всплывать в форме
+// фальцепрокатника — там другие виды и другая нумерация.
+const KEY_PREFIX = "vanmark:machine-draft:v2:";
+const keyFor = (family: EquipmentFamily): string => KEY_PREFIX + family;
 
 export const EMPTY_MACHINE_FORM = {
   model: "",
@@ -67,27 +70,27 @@ export function hasHiddenFieldValues(form: MachineFormState): boolean {
   return HIDDEN_KEYS.some((k) => form[k].trim() !== "");
 }
 
-export function saveMachineDraft(draft: Omit<MachineDraft, "savedAt">): void {
+export function saveMachineDraft(family: EquipmentFamily, draft: Omit<MachineDraft, "savedAt">): void {
   try {
     const payload: MachineDraft = { ...draft, savedAt: new Date().toISOString() };
-    localStorage.setItem(KEY, JSON.stringify(payload));
+    localStorage.setItem(keyFor(family), JSON.stringify(payload));
   } catch {
     // приватный режим/переполненное хранилище — черновик не критичен, форму не роняем
   }
 }
 
-export function clearMachineDraft(): void {
+export function clearMachineDraft(family: EquipmentFamily): void {
   try {
-    localStorage.removeItem(KEY);
+    localStorage.removeItem(keyFor(family));
   } catch {
     // см. saveMachineDraft
   }
 }
 
 /** Прочитать черновик; битый/чужой формат → null (обоснованный unknown-парсинг localStorage). */
-export function loadMachineDraft(): MachineDraft | null {
+export function loadMachineDraft(family: EquipmentFamily): MachineDraft | null {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(keyFor(family));
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return null;

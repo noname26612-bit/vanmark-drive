@@ -6,24 +6,27 @@ import { withIdempotency } from "@/domain/idempotency";
 import {
   parseCategory,
   parseEquipmentKind,
+  parseFamily,
   parseFlag,
   parseInt0,
   parseMachineFields,
   parseMachineStatus,
 } from "@/lib/machine-input";
-import { Errors } from "@/domain/errors";
+import type { MachineCategory } from "@/generated/prisma/enums";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// GET /api/machines?scope=active|archive&category&status&kind&flag&q&take&skip — картотека +
-// счётчики сводки. Доступ: менеджер-сервисник / диспетчер / админ (водителю — 404, см. requireMachineUser).
+// GET /api/machines?family=BENDER|SEAMER&scope=active|archive&category&status&kind&flag&q&take&skip —
+// картотека раздела + счётчики сводки. Разделы не смешиваются: family фильтрует и список, и счётчики.
+// Доступ: роль из белого списка ИЛИ персональный флаг допуска (см. requireMachineUser).
 export async function GET(req: Request) {
   try {
     const user = await requireMachineUser();
     const url = new URL(req.url);
     const result = await listMachines(
       {
+        family: parseFamily(url.searchParams.get("family")),
         scope: url.searchParams.get("scope") === "archive" ? "archive" : "active",
         category: parseCategory(url.searchParams.get("category")),
         status: parseMachineStatus(url.searchParams.get("status")),
@@ -48,14 +51,15 @@ export async function POST(req: Request) {
   try {
     const user = await requireMachineUser();
     const body = await readJson(req);
+    const family = parseFamily(body.family);
     const category = parseCategory(body.category);
-    if (!category) throw Errors.validation("Выберите категорию станка");
-
+    const kind = parseEquipmentKind(body.kind);
+    // Категорию требует домен — он же знает, что складским позициям она не нужна.
     const machine = await withIdempotency(
       idempotencyKey(req),
       user,
       "machine-create",
-      () => createMachine({ ...parseMachineFields(body), category }, user),
+      () => createMachine({ ...parseMachineFields(body), category: category as MachineCategory, family, kind }, user),
       occurredAt(req),
     );
     return NextResponse.json(ok(machine), { status: 201 });

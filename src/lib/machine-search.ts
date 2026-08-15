@@ -18,13 +18,13 @@ import {
   EQUIPMENT_KIND_LABEL,
   MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_LABEL,
+  isHeadKind,
 } from "@/domain/machine-status";
 import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
 
 export { parseQuery, highlightRanges, phoneHighlightRanges, type MatchRange, type ParsedQuery };
 
 export type SearchableMachine = {
-  number: number;
   ourNumber: number | null;
   kind: EquipmentKind;
   category: MachineCategory;
@@ -43,7 +43,7 @@ export type SearchableMachine = {
   notes?: string | null;
 };
 
-/** Отображение нашего номера: «77-5». Наши станки маркируются так же на железе. */
+/** Отображение учётного номера: «77-5» — так же, как он написан маркером на железе. */
 export function formatOurNumber(ourNumber: number | null | undefined): string | null {
   return ourNumber === null || ourNumber === undefined ? null : `77-${ourNumber}`;
 }
@@ -68,14 +68,15 @@ function textFields(m: SearchableMachine): string[] {
     MACHINE_CATEGORY_LABEL[m.category],
     // Подпись вида — только у ножей: «нож»/«роликовый» находит их, а слово «станок» не
     // превращается в запрос-пустышку, матчащий всю картотеку.
-    m.kind !== "MACHINE" ? EQUIPMENT_KIND_LABEL[m.kind] : null,
+    !isHeadKind(m.kind) ? EQUIPMENT_KIND_LABEL[m.kind] : null,
   ].filter((v): v is string => typeof v === "string" && v.length > 0);
 }
 
-// Числовые «стога»: учётный №, наш номер (и как «5», и как «775» — чтобы находился запрос «77-5»),
-// цифры № заказа 1С и серийника.
+// Числовые «стога»: учётный номер (и как «5», и как «775» — чтобы находился запрос «77-5»), цифры
+// № заказа 1С и серийника. Сквозной системный номер из поиска убран вместе с его показом (15.08.2026):
+// искать по числу, которого человек больше нигде не видит, — только ложные совпадения.
 function numberHaystacks(m: SearchableMachine): string[] {
-  const out = [String(m.number)];
+  const out: string[] = [];
   if (m.ourNumber !== null && m.ourNumber !== undefined) {
     out.push(String(m.ourNumber), `77${m.ourNumber}`);
   }
@@ -117,7 +118,7 @@ export function firstHiddenMachineMatch(
   visibleTexts: string[],
 ): HiddenMatch | null {
   if (!q.active) return null;
-  const visible = [...visibleTexts, String(m.number), formatOurNumber(m.ourNumber) ?? ""];
+  const visible = [...visibleTexts, formatOurNumber(m.ourNumber) ?? ""];
   if (visible.some((v) => v && highlightRanges(v, q).length > 0)) return null;
   for (const f of HIDDEN_FIELDS) {
     const value = m[f.key];

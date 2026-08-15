@@ -7,7 +7,12 @@
 //
 // Статусная матрица ЗАДАЧ (src/domain/task-status.ts, CLAUDE.md правило 2) этим модулем не
 // используется и не менялась ни на строку.
-import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
+import type {
+  EquipmentFamily,
+  EquipmentKind,
+  MachineCategory,
+  MachineStatus,
+} from "@/generated/prisma/enums";
 
 export const MACHINE_CATEGORIES: readonly MachineCategory[] = [
   "CLIENT",
@@ -97,24 +102,104 @@ export const MACHINE_STATUS_LABEL: Record<MachineStatus, string> = {
   VOIDED: "Аннулирован",
 };
 
-/** Наши станки (продажа/аренда) — им положен номер «77-N»; клиентским он не нужен. */
+/** Наши станки (продажа/аренда). Учётный номер «77-N» с 15.08.2026 доступен ЛЮБОЙ категории. */
 export function isOurCategory(category: MachineCategory): boolean {
   return category === "OUR_SALE" || category === "OUR_RENTAL";
 }
 
-// ─────────────────────────────── Вид оборудования ───────────────────────────────
-// Б/у роликовые ножи ведутся в ТОЙ ЖЕ картотеке (решение Артёма 07.08.2026): своих полей у ножей
-// нет, общих хватает; вид ортогонален категории и состоянию. Раздел по-прежнему зовётся «Станки».
+// ─────────────────────────────── Разделы и виды оборудования ───────────────────────────────
+// Всё оборудование живёт в ОДНОЙ картотеке (решение Артёма 07.08.2026, расширено 15.08.2026):
+// своих полей ни у ножей, ни у складских позиций нет — общих хватает. Разделяют два измерения:
+//
+//   family — вкладка интерфейса и область уникальности номера «77-N»;
+//   kind   — что это за железо внутри раздела.
+//
+// Складские виды (размотчики, частотники) ведутся КОЛИЧЕСТВОМ: одна карточка на модель, поле
+// quantity. Состояний, категорий и сроков у них нет — они «просто остатки на складе».
 
-export const EQUIPMENT_KINDS: readonly EquipmentKind[] = ["MACHINE", "ROLLER_KNIFE"] as const;
+export const EQUIPMENT_FAMILIES: readonly EquipmentFamily[] = ["BENDER", "SEAMER"] as const;
+
+export const EQUIPMENT_FAMILY_LABEL: Record<EquipmentFamily, string> = {
+  BENDER: "Листогибы",
+  SEAMER: "Фальцепрокатники",
+};
+
+/** Виды раздела. Первый — головной: он идёт по умолчанию в форме и держит комплект. */
+export const KINDS_BY_FAMILY: Record<EquipmentFamily, readonly EquipmentKind[]> = {
+  BENDER: ["MACHINE", "ROLLER_KNIFE"],
+  SEAMER: ["SEAMER", "UNCOILER", "INVERTER"],
+};
+
+const FAMILY_OF_KIND: Record<EquipmentKind, EquipmentFamily> = {
+  MACHINE: "BENDER",
+  ROLLER_KNIFE: "BENDER",
+  SEAMER: "SEAMER",
+  UNCOILER: "SEAMER",
+  INVERTER: "SEAMER",
+};
+
+/** Раздел, которому принадлежит вид. Источник правды для валидации «вид не из этого раздела». */
+export function familyOfKind(kind: EquipmentKind): EquipmentFamily {
+  return FAMILY_OF_KIND[kind];
+}
+
+export function isKindInFamily(family: EquipmentFamily, kind: EquipmentKind): boolean {
+  return FAMILY_OF_KIND[kind] === family;
+}
+
+/** Головной вид раздела — тот, к которому собирается комплект (листогиб, фальцепрокатник). */
+export function headKindOf(family: EquipmentFamily): EquipmentKind {
+  return KINDS_BY_FAMILY[family][0];
+}
+
+export function isHeadKind(kind: EquipmentKind): boolean {
+  return kind === "MACHINE" || kind === "SEAMER";
+}
+
+/**
+ * Складская позиция: карточка = модель, а не экземпляр. Ведётся количеством, состояния и категория
+ * к ней не применяются (сервер держит их фиксированными), в счётчики состояний она не попадает.
+ */
+export function isStockKind(kind: EquipmentKind): boolean {
+  return kind === "UNCOILER" || kind === "INVERTER";
+}
+
+export const EQUIPMENT_KINDS: readonly EquipmentKind[] = [
+  "MACHINE",
+  "ROLLER_KNIFE",
+  "SEAMER",
+  "UNCOILER",
+  "INVERTER",
+] as const;
 
 export const EQUIPMENT_KIND_LABEL: Record<EquipmentKind, string> = {
-  MACHINE: "Станок",
+  MACHINE: "Листогиб",
   ROLLER_KNIFE: "Роликовый нож",
+  SEAMER: "Фальцепрокатник",
+  UNCOILER: "Размотчик",
+  INVERTER: "Частотник",
 };
 
-/** Короткая подпись для бейджа и чипов. Бейдж вида показываем только ножам: «Станок» на каждой строке — шум. */
+/** Короткая подпись для бейджа. Головным видам бейдж не рисуем: «Листогиб» на каждой строке — шум. */
 export const EQUIPMENT_KIND_SHORT: Record<EquipmentKind, string> = {
-  MACHINE: "Станок",
+  MACHINE: "Листогиб",
   ROLLER_KNIFE: "Нож",
+  SEAMER: "Фальцепрокатник",
+  UNCOILER: "Размотчик",
+  INVERTER: "Частотник",
 };
+
+/** Подпись плашки раздела над списком: «Листогибы · Ножи», «Фальцепрокатники · Размотчики · Частотники». */
+export const EQUIPMENT_KIND_PLURAL: Record<EquipmentKind, string> = {
+  MACHINE: "Листогибы",
+  ROLLER_KNIFE: "Ножи",
+  SEAMER: "Фальцепрокатники",
+  UNCOILER: "Размотчики",
+  INVERTER: "Частотники",
+};
+
+// Складские позиции держатся на фиксированных значениях: у «остатков на складе» нет ни состояния,
+// ни владельца. Значения не выдуманы на месте, а собраны здесь — сервер ставит их принудительно,
+// интерфейс эти поля не показывает.
+export const STOCK_STATUS: MachineStatus = "READY";
+export const STOCK_CATEGORY: MachineCategory = "OUR_SALE";

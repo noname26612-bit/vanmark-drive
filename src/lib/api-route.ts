@@ -5,11 +5,19 @@ import { auth } from "@/lib/auth";
 import { fail } from "@/lib/api";
 import { DomainError, Errors } from "@/domain/errors";
 import { isDispatcherRole } from "@/domain/task-status";
-import { assertMachineAccess } from "@/domain/machine-access";
+import { assertMachineAccess, isMachineRole } from "@/domain/machine-access";
+import { hasEquipmentAccess } from "@/domain/users";
 import { isTaskManagerRole } from "@/domain/task-access";
 import type { Role } from "@/domain/roles";
 
-export type ApiUser = { id: string; login: string; role: Role; name?: string | null };
+export type ApiUser = {
+  id: string;
+  login: string;
+  role: Role;
+  name?: string | null;
+  /** Персональный допуск к оборудованию; подкладывает requireMachineUser, прочитав из БД. */
+  equipmentAccess?: boolean;
+};
 
 export async function requireApiUser(): Promise<ApiUser> {
   const session = await auth();
@@ -49,14 +57,22 @@ export async function requireDriver(): Promise<ApiUser> {
 }
 
 /**
- * Модуль «Станки» (ARCHITECTURE §4г): менеджер-сервисник, диспетчер, админ. Белый список ролей —
- * см. domain/machine-access. Водителю отдаём 404 (как чужую задачу), а не 403: существование
- * модуля не раскрываем. Обязателен в КАЖДОМ handler'е /api/machines/*, включая раздачу фото.
+ * Разделы оборудования — «Листогибы» и «Фальцепрокатники» (ARCHITECTURE §4г): менеджер-сервисник,
+ * диспетчер, админ по роли плюс те, кому Артём выдал персональный флаг equipmentAccess (Николай,
+ * Александр — решение 15.08.2026). Недопущенному отдаём 404 (как чужую задачу), а не 403:
+ * существование модуля не раскрываем. Обязателен в КАЖДОМ handler'е /api/machines/*, включая
+ * раздачу фото.
+ *
+ * Флаг читаем ИЗ БД, а не из JWT: выдача и отзыв доступа должны действовать сразу, иначе Николай
+ * ходил бы в раздел до истечения тридцатидневной сессии после того, как доступ сняли. Запрос
+ * делается только для ролей вне белого списка — у штаба лишнего похода в базу нет.
  */
 export async function requireMachineUser(): Promise<ApiUser> {
   const user = await requireApiUser();
-  assertMachineAccess(user);
-  return user;
+  if (isMachineRole(user.role)) return user;
+  const equipmentAccess = await hasEquipmentAccess(user.id);
+  assertMachineAccess({ role: user.role, equipmentAccess });
+  return { ...user, equipmentAccess };
 }
 
 /** Единый маппинг ошибок: доменные — со своим кодом/статусом, прочие — 500 без утечек. */

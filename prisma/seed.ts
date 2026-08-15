@@ -26,6 +26,7 @@ type SeedUser = {
   role: Role;
   canLogin?: boolean; // по умолчанию true
   isExternal?: boolean; // наёмный перевозчик (02.07): без смен, стоимость поездки в заявке
+  equipmentAccess?: boolean; // доступ к разделам оборудования (15.08): Николай и Александр
   position?: string; // должность для отображения в шапке (напр. «Директор»); не право
 };
 
@@ -44,7 +45,11 @@ const USERS: SeedUser[] = [
   // Николай — штатный подменный водитель (закрывает задачи Каширского/Писарева на больничном/в
   // отпуске): входит сам, выполняет любые задачи. В KPI/зарплату НЕ входит (нет денежного профиля,
   // см. prisma/seed-kpi.ts) — у него своя система оплаты.
-  { login: "nikolay", name: "Николай", role: "DRIVER" },
+  { login: "nikolay", name: "Николай", role: "DRIVER", equipmentAccess: true },
+  // Александр — второй подменный водитель (решение Артёма 15.08.2026, полная копия Николая):
+  // входит сам, выполняет любые задачи, в KPI/зарплату не входит. Ему и Николаю выдан доступ
+  // к разделам оборудования — персональным флагом equipmentAccess, роль остаётся DRIVER.
+  { login: "alexandr", name: "Александр", role: "DRIVER", equipmentAccess: true },
   // Внешний перевозчик — наёмный, не штатный: задачи на него ведёт диспетчер, сам не входит.
   // Логин (sultan) — исторический внутренний ключ, на нём завязаны демо-задачи; в UI имя нейтральное.
   { login: "sultan", name: "Внешний перевозчик", role: "DRIVER", canLogin: false, isExternal: true },
@@ -98,11 +103,12 @@ async function main(defaultPassword: string): Promise<void> {
   for (const u of USERS) {
     const canLogin = u.canLogin ?? true;
     const isExternal = u.isExternal ?? false;
+    const equipmentAccess = u.equipmentAccess ?? false;
     const passwordHash = await hashPassword(passwordFor(u.login, defaultPassword));
     await prisma.user.upsert({
       where: { login: u.login },
-      update: { name: u.name, role: u.role, canLogin, isExternal, isActive: true, passwordHash, position: u.position ?? null },
-      create: { login: u.login, name: u.name, role: u.role, canLogin, isExternal, passwordHash, position: u.position ?? null },
+      update: { name: u.name, role: u.role, canLogin, isExternal, equipmentAccess, isActive: true, passwordHash, position: u.position ?? null },
+      create: { login: u.login, name: u.name, role: u.role, canLogin, isExternal, equipmentAccess, passwordHash, position: u.position ?? null },
     });
     console.log(`  ✓ ${u.login} — ${u.name} (${u.role}${canLogin ? "" : ", без входа"})`);
   }

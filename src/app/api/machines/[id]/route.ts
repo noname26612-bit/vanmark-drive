@@ -47,7 +47,10 @@ export async function PATCH(req: Request, { params }: Ctx) {
         const status = parseMachineStatus(body.status);
         if (!status) throw Errors.validation("Неизвестное состояние");
         const reason = typeof body.reason === "string" ? body.reason : null;
-        return NextResponse.json(ok(await changeStatus(id, { status, reason }, user)));
+        // withKit приходит только по явной галочке в переспросе: комплект едет вместе с головным
+        // (15.08.2026), но никогда молча — молчаливая правка чужих карточек незаметна.
+        const withKit = body.withKit === true;
+        return NextResponse.json(ok(await changeStatus(id, { status, reason, withKit }, user)));
       }
       case "category": {
         const category = parseCategory(body.category);

@@ -11,7 +11,6 @@ import { machineTitle, formatDay } from "./machine-ui";
 import type { EquipmentKind } from "@/generated/prisma/enums";
 
 export type ShopTaskMachine = {
-  number: number;
   ourNumber: number | null;
   invoice1C: string | null;
   kind: EquipmentKind;
