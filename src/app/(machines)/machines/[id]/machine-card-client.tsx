@@ -25,11 +25,14 @@ import {
   selectableStatuses,
 } from "@/domain/machine-status";
 import { machineDueState } from "@/domain/machine-flags";
+import { machineNumberValue, numberFieldFor } from "@/domain/machine-number";
 import {
   EVENT_LABEL,
   MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_ACTIVE,
   MACHINE_STATUS_LABEL,
+  NUMBER_PREFIX,
+  numberSchemeFor,
   dueBadgeClass,
   formatDay,
   formatMoment,
@@ -764,7 +767,7 @@ function MachineEditForm({
     model: machine.model,
     kind: machine.kind,
     responsibleId: machine.responsibleId ?? "",
-    ourNumber: machine.ourNumber === null ? "" : String(machine.ourNumber),
+    number: machineNumberValue(machine) === null ? "" : String(machineNumberValue(machine)),
     configuration: machine.configuration ?? "",
     metalThickness: machine.metalThickness ?? "",
     serialNumber: machine.serialNumber ?? "",
@@ -804,14 +807,15 @@ function MachineEditForm({
           ))}
         </Select>
       </Field>
-      {/* Учётный номер доступен любой категории (15.08.2026): системный сквозной номер убран,
-          и «77-N» остался единственной подписью карточки. */}
-      <Field label="Учётный номер (77-N)">
+      {/* Номер — в схеме своей категории: «77-N» у своего парка, «К-N» у клиентского. Переезд
+          между схемами делает смена категории (она же выдаёт следующий свободный), здесь номер
+          только правится вручную. */}
+      <Field label={`Учётный номер (${NUMBER_PREFIX[numberSchemeFor(machine.category)]}N)`}>
         <Input
           type="number"
           inputMode="numeric"
-          value={f.ourNumber}
-          onChange={(e) => set({ ourNumber: e.target.value })}
+          value={f.number}
+          onChange={(e) => set({ number: e.target.value })}
         />
       </Field>
       <Field label="Комплектация">
@@ -887,7 +891,7 @@ function MachineEditForm({
             onSave({
               ...f,
               responsibleId: f.responsibleId || null,
-              ourNumber: f.ourNumber ? Number(f.ourNumber) : null,
+              [numberFieldFor(machine.category)]: f.number ? Number(f.number) : null,
             })
           }
         >

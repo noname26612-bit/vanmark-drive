@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/ui/field";
 import { isStockKind } from "@/domain/machine-status";
-import { MACHINE_STATUS_LABEL } from "@/lib/machine-ui";
+import { MACHINE_STATUS_LABEL, formatMachineNumber } from "@/lib/machine-ui";
 import type { KitPartView } from "@/lib/machine-dto";
 import type { MachineStatus } from "@/generated/prisma/enums";
 
@@ -59,7 +59,7 @@ export function StatusKitModal({
           {parts.map((p) => (
             <li key={p.id} className="flex items-center justify-between gap-2">
               <span className="truncate text-neutral-800">
-                {p.ourNumber ? `77-${p.ourNumber} · ` : ""}
+                {formatMachineNumber(p) ? `${formatMachineNumber(p)} · ` : ""}
                 {p.model}
               </span>
               <span className="shrink-0 text-neutral-500">

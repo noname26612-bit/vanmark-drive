@@ -24,6 +24,7 @@ import {
   EQUIPMENT_KIND_PLURAL,
   MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_LABEL,
+  formatMachineNumber,
 } from "@/lib/machine-ui";
 import {
   GROUP_OPTIONS,
@@ -126,7 +127,7 @@ export function EquipmentClient({
   async function handleCreated(machine: MachineDetail, photos: File[]) {
     await mutate();
     if (photos.length === 0) return;
-    const label = machine.ourNumber ? `77-${machine.ourNumber}` : machine.model;
+    const label = formatMachineNumber(machine) ?? machine.model;
     setPhotoJob({ title: label, done: 0, total: photos.length, failed: 0 });
     const failed = await uploadMachinePhotos(machine.id, photos, (p) =>
       setPhotoJob({ title: label, ...p }),

@@ -8,10 +8,13 @@
 import { utcDateKey } from "@/domain/kpi";
 import { EQUIPMENT_KIND_LABEL } from "@/domain/machine-status";
 import { machineTitle, formatDay } from "./machine-ui";
-import type { EquipmentKind } from "@/generated/prisma/enums";
+import type { EquipmentKind, MachineCategory } from "@/generated/prisma/enums";
 
 export type ShopTaskMachine = {
   ourNumber: number | null;
+  clientNumber: number | null;
+  /** Номер станка читается по категории: «77-N» у своего парка, «К-N» у клиентского. */
+  category: MachineCategory;
   invoice1C: string | null;
   kind: EquipmentKind;
   model: string;

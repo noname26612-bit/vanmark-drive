@@ -20,12 +20,19 @@ import {
   MACHINE_STATUS_LABEL,
   isHeadKind,
 } from "@/domain/machine-status";
+import {
+  formatMachineNumber,
+  machineNumberSearchVariants,
+  machineNumberValue,
+  type NumberedMachine,
+} from "@/domain/machine-number";
 import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
 
 export { parseQuery, highlightRanges, phoneHighlightRanges, type MatchRange, type ParsedQuery };
 
 export type SearchableMachine = {
   ourNumber: number | null;
+  clientNumber?: number | null;
   kind: EquipmentKind;
   category: MachineCategory;
   status: MachineStatus;
@@ -43,9 +50,9 @@ export type SearchableMachine = {
   notes?: string | null;
 };
 
-/** Отображение учётного номера: «77-5» — так же, как он написан маркером на железе. */
-export function formatOurNumber(ourNumber: number | null | undefined): string | null {
-  return ourNumber === null || ourNumber === undefined ? null : `77-${ourNumber}`;
+/** Отображение учётного номера: «77-5» у своего железа, «К-5» у чужого. */
+export function formatOurNumber(m: NumberedMachine): string | null {
+  return formatMachineNumber(m);
 }
 
 // Текстовые поля станка (телефон отдельно — он сравнивается по цифрам). Подписи категории и
@@ -63,7 +70,9 @@ function textFields(m: SearchableMachine): string[] {
     m.deliveredBy,
     m.defectNotes,
     m.notes,
-    formatOurNumber(m.ourNumber),
+    formatOurNumber(m),
+    // «к5», «k-5» и прочие написания клиентского номера — человек ищет как набралось.
+    ...machineNumberSearchVariants(m),
     MACHINE_STATUS_LABEL[m.status],
     MACHINE_CATEGORY_LABEL[m.category],
     // Подпись вида — только у ножей: «нож»/«роликовый» находит их, а слово «станок» не
@@ -77,8 +86,11 @@ function textFields(m: SearchableMachine): string[] {
 // искать по числу, которого человек больше нигде не видит, — только ложные совпадения.
 function numberHaystacks(m: SearchableMachine): string[] {
   const out: string[] = [];
-  if (m.ourNumber !== null && m.ourNumber !== undefined) {
-    out.push(String(m.ourNumber), `77${m.ourNumber}`);
+  const value = machineNumberValue(m);
+  if (value !== null) {
+    // «5» — сам номер; «775» — чтобы находился запрос «77-5» (дефис поиск не различает).
+    out.push(String(value));
+    if (m.category !== "CLIENT") out.push(`77${value}`);
   }
   for (const raw of [m.invoice1C, m.serialNumber]) {
     if (!raw) continue;
@@ -118,7 +130,7 @@ export function firstHiddenMachineMatch(
   visibleTexts: string[],
 ): HiddenMatch | null {
   if (!q.active) return null;
-  const visible = [...visibleTexts, formatOurNumber(m.ourNumber) ?? ""];
+  const visible = [...visibleTexts, formatOurNumber(m) ?? ""];
   if (visible.some((v) => v && highlightRanges(v, q).length > 0)) return null;
   for (const f of HIDDEN_FIELDS) {
     const value = m[f.key];

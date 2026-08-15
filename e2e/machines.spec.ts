@@ -47,19 +47,28 @@ test("Максим заводит станок с телефона: катего
   await expect(row).toContainText("Без заказа 1С");
 });
 
-test("учётный номер 77-N подсказывается любой категории (15.08.2026)", async ({ page }) => {
+test("номер подсказывается по происхождению: своё — «77-», чужое — «К-» (15.08.2026)", async ({
+  page,
+}) => {
   await login(page, "maxim");
   await page.getByTestId("machine-create").click();
 
-  // Раньше номер был только у наших станков. Теперь сквозной системный номер убран из интерфейса,
-  // и «77-N» — единственная подпись карточки, поэтому он доступен и клиентским (решение Артёма).
-  const ourNumber = page.getByTestId("machine-our-number");
-  await expect(ourNumber).toBeVisible();
-  await expect(ourNumber).not.toHaveValue("");
+  const number = page.getByTestId("machine-our-number");
+  const prefix = page.getByTestId("machine-number-prefix");
+  await expect(number).toBeVisible();
+  await expect(number).not.toHaveValue("");
 
+  // Клиентский станок нумеруется своей схемой…
+  await page.getByTestId("machine-category").selectOption("CLIENT");
+  await expect(prefix).toHaveText("К-");
+  const clientSuggestion = await number.inputValue();
+
+  // …а свой — привычным «77-». Подсказка перещёлкивается вместе с категорией, пока её не правили.
   await page.getByTestId("machine-category").selectOption("OUR_SALE");
-  await expect(ourNumber).toBeVisible();
-  await expect(ourNumber).not.toHaveValue("");
+  await expect(prefix).toHaveText("77-");
+  const ourSuggestion = await number.inputValue();
+  expect(ourSuggestion).not.toBe("");
+  expect(ourSuggestion).not.toBe(clientSuggestion); // схемы считаются раздельно
 });
 
 test("умный поиск находит станок по телефону в другом формате записи", async ({ page }) => {
@@ -195,7 +204,25 @@ test("дубль номера 77-N — понятная ошибка, а не с
     data: { category: "OUR_SALE", model: `${model}-дубль`, ourNumber },
   });
   expect(dup.status()).toBe(422);
-  expect((await dup.json()).error.message).toContain("уже занят");
+  expect((await dup.json()).error.message).toContain(`Номер 77-${ourNumber} уже занят`);
+
+  // У клиентской схемы своя нумерация: тот же номер занимается независимо и о дубле говорит «К-N».
+  const clientNumber = 90000 + Math.floor(Math.random() * 9000);
+  const first = await page.request.post("/api/machines", {
+    data: { category: "CLIENT", model: `${model}-клиент`, clientNumber },
+  });
+  expect(first.status()).toBe(201);
+  const dupClient = await page.request.post("/api/machines", {
+    data: { category: "CLIENT", model: `${model}-клиент-дубль`, clientNumber },
+  });
+  expect(dupClient.status()).toBe(422);
+  expect((await dupClient.json()).error.message).toContain(`Номер К-${clientNumber} уже занят`);
+
+  // Схемы не пересекаются: «77-N» и «К-N» с одинаковым числом живут рядом.
+  const sameDigits = await page.request.post("/api/machines", {
+    data: { category: "CLIENT", model: `${model}-параллель`, clientNumber: ourNumber },
+  });
+  expect(sameDigits.status()).toBe(201);
 });
 
 test("комментарий появляется в ленте «Комментарии», а не тонет в истории", async ({ page }) => {
@@ -256,22 +283,65 @@ test("фильтр по состоянию не выводит архивные 
   expect(data.machines.some((m: { id: string }) => m.id === machine.id)).toBe(false);
 });
 
-test("учётный номер переживает смену категории (15.08.2026)", async ({ page }) => {
+test("номер следует за категорией: «77-N» ↔ «К-N» при переезде (15.08.2026)", async ({ page }) => {
   await login(page, "maxim");
   const model = unique("Номер-категория");
   const ourNumber = 80000 + Math.floor(Math.random() * 9000);
   const machine = await createMachine(page, { category: "OUR_SALE", model, ourNumber });
 
-  // Прежний запрет «77-N только нашим» снят: номер написан маркером на железе и не зависит от
-  // того, чей это станок. Перевод в клиентские теперь проходит, а номер остаётся на карточке.
+  // Свой станок отдали клиенту — он нумеруется чужой схемой, а «77-N» освобождается.
   const res = await page.request.patch(`/api/machines/${machine.id}`, {
     data: { op: "category", category: "CLIENT" },
   });
   expect(res.status()).toBe(200);
 
   const after = (await (await page.request.get(`/api/machines/${machine.id}`)).json()).data;
-  expect(after.ourNumber).toBe(ourNumber);
   expect(after.category).toBe("CLIENT");
+  expect(after.ourNumber).toBeNull();
+  expect(after.clientNumber).toBeGreaterThan(0);
+
+  // В карточке он теперь подписан «К-N», и переезд номера виден в журнале.
+  await page.goto(`/machines/${machine.id}`);
+  await expect(page.getByTestId("machine-title")).toHaveText(`К-${after.clientNumber}`);
+  await page.getByTestId("machine-history-toggle").click();
+  await expect(page.getByTestId("machine-events")).toContainText(`77-${ourNumber}`);
+  await expect(page.getByTestId("machine-events")).toContainText(`К-${after.clientNumber}`);
+
+  // Обратный переезд возвращает станок в свою схему (номер выдаётся следующий свободный).
+  const back = await page.request.patch(`/api/machines/${machine.id}`, {
+    data: { op: "category", category: "OUR_RENTAL" },
+  });
+  expect(back.status()).toBe(200);
+  const returned = (await back.json()).data;
+  expect(returned.clientNumber).toBeNull();
+  expect(returned.ourNumber).toBeGreaterThan(0);
+});
+
+test("внутри своей схемы номер не трогается: продажа ↔ аренда — тот же «77-N»", async ({ page }) => {
+  await login(page, "maxim");
+  const model = unique("Номер-внутри");
+  const ourNumber = 70000 + Math.floor(Math.random() * 9000);
+  const machine = await createMachine(page, { category: "OUR_SALE", model, ourNumber });
+
+  const res = await page.request.patch(`/api/machines/${machine.id}`, {
+    data: { op: "category", category: "OUR_RENTAL" },
+  });
+  expect(res.status()).toBe(200);
+  expect((await res.json()).data.ourNumber).toBe(ourNumber);
+});
+
+test("клиентский станок ищется по «К-N» в любом написании", async ({ page }) => {
+  await login(page, "maxim");
+  const model = unique("Поиск-К");
+  const clientNumber = 60000 + Math.floor(Math.random() * 9000); // свой диапазон, БД общая
+  await createMachine(page, { category: "CLIENT", model, clientNumber });
+
+  await page.goto("/machines");
+  const list = page.getByTestId("machine-list");
+  for (const query of [`К-${clientNumber}`, `к${clientNumber}`, `k-${clientNumber}`]) {
+    await page.getByTestId("machine-search").fill(query);
+    await expect(list.locator("li").filter({ hasText: model })).toHaveCount(1);
+  }
 });
 
 test("свой станок продаётся одной кнопкой: «Продан» доступен и арендному, категория едет следом", async ({

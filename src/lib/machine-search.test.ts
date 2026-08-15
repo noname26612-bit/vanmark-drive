@@ -151,8 +151,9 @@ describe("machine-search: сниппет «почему нашлось»", () =>
 });
 
 describe("machine-search: маркировка", () => {
-  it("наш номер отображается как «77-N», у клиентских его нет", () => {
-    expect(formatOurNumber(5)).toBe("77-5");
-    expect(formatOurNumber(null)).toBeNull();
+  it("номер отображается по происхождению: своё «77-N», чужое «К-N»", () => {
+    expect(formatOurNumber({ category: "OUR_SALE", ourNumber: 5, clientNumber: null })).toBe("77-5");
+    expect(formatOurNumber({ category: "CLIENT", ourNumber: null, clientNumber: 5 })).toBe("К-5");
+    expect(formatOurNumber({ category: "OUR_SALE", ourNumber: null, clientNumber: null })).toBeNull();
   });
 });

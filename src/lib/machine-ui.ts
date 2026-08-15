@@ -12,7 +12,10 @@ import {
   MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_LABEL,
 } from "@/domain/machine-status";
+import { formatMachineNumber, type NumberedMachine } from "@/domain/machine-number";
 import type { DueState } from "@/domain/machine-flags";
+
+export { formatMachineNumber, formatNumberIn, NUMBER_PREFIX, numberSchemeFor } from "@/domain/machine-number";
 
 export {
   EQUIPMENT_FAMILY_LABEL,
@@ -69,19 +72,21 @@ export const MACHINE_CATEGORY_SHORT: Record<MachineCategory, string> = {
 };
 
 /**
- * Заголовок карточки — учётный номер «77-N», который пишут маркером на железе (решение Артёма
- * 15.08.2026). Сквозной системный номер (Machine.number) из интерфейса убран совсем: две нумерации
- * рядом («77-5 · №9») путали, а вторую никто не использовал.
+ * Заголовок карточки — учётный номер, который пишут маркером на железе (решение Артёма 15.08.2026):
+ * «77-N» у своего парка, «К-N» у клиентского. Сквозной системный номер (Machine.number) из
+ * интерфейса убран совсем: две нумерации рядом («77-5 · №9») путали, а вторую никто не использовал.
  *
  * Карточка без номера подписывается моделью — номер необязателен, и заголовок «—» был бы хуже
  * пустого места. № заказа 1С остаётся приметой клиентских станков.
  */
-export function machineTitle(m: {
-  ourNumber: number | null;
-  model?: string;
-  invoice1C: string | null;
-}): string {
-  if (m.ourNumber !== null) return `77-${m.ourNumber}`;
+export function machineTitle(
+  m: NumberedMachine & {
+    model?: string;
+    invoice1C: string | null;
+  },
+): string {
+  const number = formatMachineNumber(m);
+  if (number) return number;
   const order = m.invoice1C?.trim();
   if (order) return `заказ ${order}`;
   return m.model?.trim() || "Без номера";

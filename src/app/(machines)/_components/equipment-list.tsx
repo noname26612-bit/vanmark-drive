@@ -9,7 +9,13 @@ import { Highlighted } from "@/components/highlight";
 import { machineDueState } from "@/domain/machine-flags";
 import { isStockKind } from "@/domain/machine-status";
 import { firstHiddenMachineMatch, type parseQuery } from "@/lib/machine-search";
-import { MACHINE_STATUS_BAR, dueBadgeClass, formatDayShort, machineTitle } from "@/lib/machine-ui";
+import {
+  MACHINE_STATUS_BAR,
+  dueBadgeClass,
+  formatDayShort,
+  formatMachineNumber,
+  machineTitle,
+} from "@/lib/machine-ui";
 import type { EquipmentGroup } from "@/lib/equipment-view";
 import type { MachineListItem } from "@/lib/machine-dto";
 import {
@@ -25,7 +31,8 @@ type Query = ReturnType<typeof parseQuery> | null;
  * на телефоне — строки. Это не два разных списка, а одна разметка с двумя раскладками: данные,
  * ссылки и подсветка поиска общие, расходится только то, как они разложены.
  *
- * Заголовок строки — учётный «77-N»: сквозной системный номер из интерфейса убран совсем.
+ * Заголовок строки — учётный номер: «77-N» у своего парка, «К-N» у клиентского. Сквозной
+ * системный номер из интерфейса убран совсем.
  */
 export function EquipmentList({
   groups,
@@ -123,12 +130,12 @@ function KitLine({ machine: m }: { machine: MachineListItem }) {
   if (m.kitParts.length === 0 && m.kitHeads.length === 0) return null;
   if (m.kitParts.length > 0) {
     const text = m.kitParts
-      .map((p) => (p.ourNumber ? `77-${p.ourNumber}` : p.model) + (p.qty > 1 ? ` ×${p.qty}` : ""))
+      .map((p) => (formatMachineNumber(p) ?? p.model) + (p.qty > 1 ? ` ×${p.qty}` : ""))
       .join(", ");
     return <span className="truncate text-xs text-neutral-500">Комплект: {text}</span>;
   }
   const heads = m.kitHeads
-    .map((h) => (h.ourNumber ? `77-${h.ourNumber}` : h.model) + (h.qty > 1 ? ` ×${h.qty}` : ""))
+    .map((h) => (formatMachineNumber(h) ?? h.model) + (h.qty > 1 ? ` ×${h.qty}` : ""))
     .join(", ");
   return <span className="truncate text-xs text-neutral-500">В комплекте: {heads}</span>;
 }

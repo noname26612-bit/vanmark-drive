@@ -39,6 +39,8 @@ export type MachineAttachmentView = {
 export type KitPartView = {
   id: string;
   ourNumber: number | null;
+  clientNumber: number | null;
+  category: MachineCategory; // номер читается по категории («77-N» / «К-N»)
   kind: EquipmentKind;
   model: string;
   status: MachineStatus;
@@ -50,6 +52,8 @@ export type KitPartView = {
 export type KitHeadView = {
   id: string;
   ourNumber: number | null;
+  clientNumber: number | null;
+  category: MachineCategory;
   model: string;
   qty: number;
 };
@@ -58,7 +62,10 @@ export type KitHeadView = {
 export type MachineListItem = {
   id: string;
   number: number;
+  /** «77-N» у своего железа; у клиентского пусто — там свой номер (см. clientNumber). */
   ourNumber: number | null;
+  /** «К-N» у клиентского железа; у своего пусто. Номер читается по категории. */
+  clientNumber: number | null;
   family: EquipmentFamily;
   kind: EquipmentKind;
   /** Всего на складе (складские виды). У штучного оборудования всегда 1. */
