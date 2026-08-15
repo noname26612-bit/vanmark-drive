@@ -16,11 +16,11 @@ import { DateField } from "@/components/ui/date-field";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { BackLink } from "@/components/back-link";
 import {
-  EQUIPMENT_KINDS,
   EQUIPMENT_KIND_LABEL,
+  KINDS_BY_FAMILY,
   MACHINE_CATEGORIES,
   isArchivedStatus,
-  isOurCategory,
+  isStockKind,
   reasonRequiredFor,
   statusesForCategory,
 } from "@/domain/machine-status";
@@ -40,9 +40,19 @@ import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/
 import { MachineCategoryBadge, MachineKindBadge, MachineStatusBadge } from "../_components/machine-badges";
 import { ModelCombobox } from "../_components/model-combobox";
 import { ShopTaskModal } from "./shop-task-modal";
+import { KitPanel } from "./kit-panel";
+import { StatusKitModal } from "./status-kit-modal";
 import { uploadMachinePhotos } from "@/lib/machine-photo-upload";
 
-export function MachineCardClient({ id, initial }: { id: string; initial: MachineDetail }) {
+export function MachineCardClient({
+  id,
+  initial,
+  basePath = "/machines",
+}: {
+  id: string;
+  initial: MachineDetail;
+  basePath?: string;
+}) {
   const { data: machine = initial, mutate } = useSWR<MachineDetail>(
     `/api/machines/${id}`,
     fetcher,
@@ -50,7 +60,7 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
   );
   // Справочники формы: сотрудники офиса для «Ответственного» и модели для подсказок комбобокса.
   const { data: meta } = useSWR<{ responsibles: { id: string; name: string }[]; models: string[] }>(
-    "/api/machines/meta",
+    `/api/machines/meta?family=${initial.family}`,
     fetcher,
   );
 
@@ -64,6 +74,8 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
   const [historyOpen, setHistoryOpen] = useState(false);
   const [pinnedEditing, setPinnedEditing] = useState(false);
   const [pinnedDraft, setPinnedDraft] = useState("");
+  // Состояние, которое ждёт подтверждения в переспросе про комплект (null — переспроса нет).
+  const [pendingStatus, setPendingStatus] = useState<MachineStatus | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function send(body: Record<string, unknown>) {
@@ -85,6 +97,13 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
   // станок из основного списка, и случайный тап по выпадашке не должен этого делать молча.
   async function changeStatus(next: MachineStatus) {
     if (next === machine.status) return;
+    // Собран комплект — спрашиваем отдельным окном: там и состав, и галочка «перевести вместе»
+    // (включена), и поле причины. confirm() галочку показать не умеет.
+    const activeKit = machine.kitParts.filter((p) => p.consumedAt === null);
+    if (activeKit.length > 0) {
+      setPendingStatus(next);
+      return;
+    }
     let reason: string | null = null;
     if (reasonRequiredFor(next)) {
       reason = window.prompt(
@@ -153,6 +172,7 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
   }
 
   const archived = isArchivedStatus(machine.status);
+  const stock = isStockKind(machine.kind);
   // Комментарии живут отдельной лентой, технические события — в сворачиваемой «Истории».
   const comments = machine.events.filter((e) => e.kind === "comment");
   const history = machine.events.filter((e) => e.kind !== "comment");
@@ -162,8 +182,8 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 p-4">
-      <BackLink href="/machines" className="self-start !text-base !py-2">
-        Станки
+      <BackLink href={basePath} className="self-start !text-base !py-2">
+        {basePath === "/seamers" ? "Фальцепрокатники" : "Листогибы"}
       </BackLink>
 
       <header className="flex flex-col gap-2 rounded-lg border border-neutral-200 bg-white p-4">
@@ -197,7 +217,34 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
         </p>
       ) : null}
 
-      {/* ── Состояние и категория ── */}
+      {/* Складская позиция (размотчик, частотник) — остаток, а не станок: ни состояния, ни
+          категории, ни срока у неё нет. Вместо всего этого одно поле «На складе». */}
+      {stock ? (
+        <section className="flex flex-col gap-3 rounded-lg border border-neutral-200 bg-white p-4">
+          <div className="w-40">
+            <Field label="На складе, шт">
+              <Input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                defaultValue={machine.quantity}
+                disabled={busy}
+                onBlur={(e) => {
+                  const next = Number(e.target.value);
+                  if (Number.isFinite(next) && next !== machine.quantity) {
+                    void send({ op: "edit", quantity: Math.trunc(next) });
+                  }
+                }}
+                data-testid="machine-stock-quantity"
+              />
+            </Field>
+          </div>
+          <p className="text-xs text-neutral-500">
+            Свободно {machine.freeQuantity} из {machine.quantity} шт — остальное стоит в комплектах.
+          </p>
+        </section>
+      ) : (
+        /* ── Состояние и категория ── */
       <section className="flex flex-col gap-3 rounded-lg border border-neutral-200 bg-white p-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Состояние">
@@ -308,6 +355,15 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
           <LastShopTask event={lastShopTask} />
         ) : null}
       </section>
+      )}
+
+      {/* ── Комплект: что уезжает вместе со станком (15.08.2026) ── */}
+      <KitPanel
+        machine={machine}
+        basePath={basePath}
+        disabled={busy || archived}
+        onChanged={(updated) => void mutate(updated, { revalidate: false })}
+      />
 
       {/* ── Фото ── */}
       <section className="rounded-lg border border-neutral-200 bg-white p-4">
@@ -562,6 +618,21 @@ export function MachineCardClient({ id, initial }: { id: string; initial: Machin
         ) : null}
       </section>
 
+      {/* Переспрос при смене состояния станка с собранным комплектом (15.08.2026). */}
+      <StatusKitModal
+        open={pendingStatus !== null}
+        status={pendingStatus}
+        parts={machine.kitParts.filter((p) => p.consumedAt === null)}
+        consumes={pendingStatus === "SOLD" || pendingStatus === "RELEASED"}
+        reasonRequired={pendingStatus !== null && reasonRequiredFor(pendingStatus)}
+        onCancel={() => setPendingStatus(null)}
+        onConfirm={async ({ withKit, reason }) => {
+          const next = pendingStatus;
+          setPendingStatus(null);
+          if (next) await send({ op: "status", status: next, reason, withKit });
+        }}
+      />
+
       {shopTaskOpen ? (
         <ShopTaskModal
           machine={machine}
@@ -708,23 +779,23 @@ function MachineEditForm({
           onChange={(e) => set({ kind: e.target.value as EquipmentKind })}
           data-testid="machine-edit-kind"
         >
-          {EQUIPMENT_KINDS.map((k) => (
+          {KINDS_BY_FAMILY[machine.family].map((k) => (
             <option key={k} value={k}>
               {EQUIPMENT_KIND_LABEL[k]}
             </option>
           ))}
         </Select>
       </Field>
-      {isOurCategory(machine.category) ? (
-        <Field label="Наш номер (77-N)">
-          <Input
-            type="number"
-            inputMode="numeric"
-            value={f.ourNumber}
-            onChange={(e) => set({ ourNumber: e.target.value })}
-          />
-        </Field>
-      ) : null}
+      {/* Учётный номер доступен любой категории (15.08.2026): системный сквозной номер убран,
+          и «77-N» остался единственной подписью карточки. */}
+      <Field label="Учётный номер (77-N)">
+        <Input
+          type="number"
+          inputMode="numeric"
+          value={f.ourNumber}
+          onChange={(e) => set({ ourNumber: e.target.value })}
+        />
+      </Field>
       <Field label="Комплектация">
         <Input value={f.configuration} onChange={(e) => set({ configuration: e.target.value })} />
       </Field>
@@ -798,7 +869,7 @@ function MachineEditForm({
             onSave({
               ...f,
               responsibleId: f.responsibleId || null,
-              ourNumber: isOurCategory(machine.category) && f.ourNumber ? Number(f.ourNumber) : null,
+              ourNumber: f.ourNumber ? Number(f.ourNumber) : null,
             })
           }
         >

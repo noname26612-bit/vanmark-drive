@@ -47,17 +47,18 @@ test("Максим заводит станок с телефона: катего
   await expect(row).toContainText("Без заказа 1С");
 });
 
-test("наш станок получает подсказку номера 77-N, клиентский — нет", async ({ page }) => {
+test("учётный номер 77-N подсказывается любой категории (15.08.2026)", async ({ page }) => {
   await login(page, "maxim");
   await page.getByTestId("machine-create").click();
 
-  // Клиентскому «77-N» не предлагаем: это маркировка нашего парка.
-  await expect(page.getByTestId("machine-our-number")).toHaveCount(0);
-
-  await page.getByTestId("machine-category").selectOption("OUR_SALE");
+  // Раньше номер был только у наших станков. Теперь сквозной системный номер убран из интерфейса,
+  // и «77-N» — единственная подпись карточки, поэтому он доступен и клиентским (решение Артёма).
   const ourNumber = page.getByTestId("machine-our-number");
   await expect(ourNumber).toBeVisible();
-  // Подсказан следующий свободный номер — поле не пустое и правимое.
+  await expect(ourNumber).not.toHaveValue("");
+
+  await page.getByTestId("machine-category").selectOption("OUR_SALE");
+  await expect(ourNumber).toBeVisible();
   await expect(ourNumber).not.toHaveValue("");
 });
 
@@ -250,24 +251,22 @@ test("фильтр по состоянию не выводит архивные 
   expect(data.machines.some((m: { id: string }) => m.id === machine.id)).toBe(false);
 });
 
-test("смена категории не стирает номер 77-N молча", async ({ page }) => {
+test("учётный номер переживает смену категории (15.08.2026)", async ({ page }) => {
   await login(page, "maxim");
   const model = unique("Номер-категория");
   const ourNumber = 80000 + Math.floor(Math.random() * 9000);
   const machine = await createMachine(page, { category: "OUR_SALE", model, ourNumber });
 
-  // Перевод в клиентские отклоняется, пока на станке висит наш номер: он написан маркером
-  // на железе, и молча освободить его нельзя — номер тут же уйдёт другому станку.
+  // Прежний запрет «77-N только нашим» снят: номер написан маркером на железе и не зависит от
+  // того, чей это станок. Перевод в клиентские теперь проходит, а номер остаётся на карточке.
   const res = await page.request.patch(`/api/machines/${machine.id}`, {
     data: { op: "category", category: "CLIENT" },
   });
-  expect(res.status()).toBe(422);
-  expect((await res.json()).error.message).toContain("Сначала снимите номер");
+  expect(res.status()).toBe(200);
 
-  // Номер на месте — данные не потеряны.
   const after = (await (await page.request.get(`/api/machines/${machine.id}`)).json()).data;
   expect(after.ourNumber).toBe(ourNumber);
-  expect(after.category).toBe("OUR_SALE");
+  expect(after.category).toBe("CLIENT");
 });
 
 test("ответственного менеджера можно изменить после заведения карточки", async ({ page }) => {
@@ -522,7 +521,7 @@ test("роликовый нож: заведение сегментом, бейд
   await page.getByTestId("machine-create").click();
   await page.getByTestId("machine-kind-ROLLER_KNIFE").click();
   // Заголовок модалки честно называет, что заводим.
-  await expect(page.getByRole("dialog")).toContainText("Новый нож");
+  await expect(page.getByRole("dialog")).toContainText("роликовый нож");
   await page.getByTestId("machine-model").fill(model);
   await page.getByTestId("machine-save").click();
 

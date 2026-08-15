@@ -18,6 +18,7 @@ type DriverAccessView = {
   canLogin: boolean;
   isExternal: boolean;
   onPayroll: boolean;
+  equipmentAccess: boolean; // доступ к разделам «Листогибы» и «Фальцепрокатники» (15.08.2026)
 };
 
 // «Водители — доступ» (02.07): вход вкл/выкл. С 03.08 здесь же — признак «внешний перевозчик» и
@@ -61,6 +62,28 @@ export function DriversClient() {
     }
   }
 
+  // Доступ к разделам оборудования (15.08.2026): единственное право, выданное не ролью. Водитель
+  // остаётся водителем — меняется только видимость «Листогибов» и «Фальцепрокатников».
+  async function toggleEquipment(d: DriverAccessView) {
+    const question = d.equipmentAccess
+      ? `Убрать у «${d.name}» доступ к Листогибам и Фальцепрокатникам?`
+      : `Дать «${d.name}» полный доступ к Листогибам и Фальцепрокатникам? Задачи, смены и KPI не изменятся.`;
+    if (!confirm(question)) return;
+    setError(null);
+    setBusyId(d.id);
+    try {
+      await apiSend("/api/admin/drivers", "PATCH", {
+        driverId: d.id,
+        equipmentAccess: !d.equipmentAccess,
+      });
+      await mutate();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Не удалось изменить доступ");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   return (
     <main className="mx-auto max-w-3xl p-6">
       <Link href="/admin" className="text-sm text-neutral-500 hover:underline">
@@ -69,7 +92,8 @@ export function DriversClient() {
       <h1 className="mt-2 text-2xl font-semibold text-neutral-900">Водители — доступ</h1>
       <p className="mt-1 text-sm text-neutral-500">
         Кто может входить в приложение. Внешний перевозчик входит как водитель: видит свои задачи и
-        ведёт статусы, но без смен, KPI и расчёта.
+        ведёт статусы, но без смен, KPI и расчёта. Доступ к оборудованию открывает водителю разделы
+        «Листогибы» и «Фальцепрокатники» — на задачи, смены и KPI он не влияет.
       </p>
       {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
       {isLoading && drivers.length === 0 ? (
@@ -91,6 +115,9 @@ export function DriversClient() {
                       как штатный и непонятно, почему его нет в зарплате (03.08). */}
                   {!d.onPayroll && !d.isExternal ? (
                     <Badge className="border border-slate-300 text-slate-600">Без расчёта</Badge>
+                  ) : null}
+                  {d.equipmentAccess ? (
+                    <Badge className="border border-slate-300 text-slate-600">Оборудование</Badge>
                   ) : null}
                 </div>
                 <div className="text-sm text-neutral-500">логин: {d.login}</div>
@@ -115,6 +142,15 @@ export function DriversClient() {
                   onClick={() => setPwdFor(d)}
                 >
                   Сменить пароль
+                </Button>
+                <Button
+                  variant="ghost"
+                  data-testid="driver-equipment"
+                  className="h-9 px-3 text-sm"
+                  disabled={busyId === d.id}
+                  onClick={() => void toggleEquipment(d)}
+                >
+                  {d.equipmentAccess ? "Убрать оборудование" : "Дать оборудование"}
                 </Button>
                 <Button
                   variant="ghost"

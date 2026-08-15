@@ -36,6 +36,19 @@ export async function isExternalDriver(userId: string): Promise<boolean> {
   return u?.isExternal ?? false;
 }
 
+/**
+ * Есть ли у пользователя персональный допуск к разделам оборудования (15.08.2026). Признак из БД,
+ * никогда из запроса и никогда из сессии: доступ выдаётся и снимается в «Управлении», и должен
+ * действовать сразу, а не после того, как истечёт тридцатидневная кука.
+ */
+export async function hasEquipmentAccess(userId: string): Promise<boolean> {
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { equipmentAccess: true, isActive: true },
+  });
+  return (u?.isActive && u.equipmentAccess) === true;
+}
+
 // Доступ водителей для админ-экрана «Водители — доступ» (02.07): включить/выключить вход.
 export type DriverAccessView = {
   id: string;
@@ -44,6 +57,8 @@ export type DriverAccessView = {
   canLogin: boolean;
   isExternal: boolean;
   onPayroll: boolean;
+  /** Персональный допуск к разделам оборудования (Листогибы/Фальцепрокатники), 15.08.2026. */
+  equipmentAccess: boolean;
 };
 
 /** Список водителей с признаками доступа — только для админа (guard в route). */
@@ -56,6 +71,7 @@ export async function listDriverAccess(): Promise<DriverAccessView[]> {
       login: true,
       canLogin: true,
       isExternal: true,
+      equipmentAccess: true,
       payProfile: { select: { isActive: true } },
     },
     orderBy: { name: "asc" },
@@ -67,6 +83,7 @@ export async function listDriverAccess(): Promise<DriverAccessView[]> {
     canLogin: u.canLogin,
     isExternal: u.isExternal,
     onPayroll: u.payProfile?.isActive ?? false,
+    equipmentAccess: u.equipmentAccess,
   }));
 }
 
@@ -77,6 +94,7 @@ const ACCESS_SELECT = {
   login: true,
   canLogin: true,
   isExternal: true,
+  equipmentAccess: true,
   payProfile: { select: { isActive: true } },
 } as const;
 
@@ -86,6 +104,7 @@ type AccessRow = {
   login: string;
   canLogin: boolean;
   isExternal: boolean;
+  equipmentAccess: boolean;
   payProfile: { isActive: boolean } | null;
 };
 
@@ -97,6 +116,7 @@ function toAccessView(u: AccessRow): DriverAccessView {
     canLogin: u.canLogin,
     isExternal: u.isExternal,
     onPayroll: u.payProfile?.isActive ?? false,
+    equipmentAccess: u.equipmentAccess,
   };
 }
 
@@ -139,6 +159,24 @@ export async function setDriverExternal(driverId: string, isExternal: boolean): 
   const updated = await prisma.user.update({
     where: { id: driverId },
     data: { isExternal },
+    select: ACCESS_SELECT,
+  });
+  return toAccessView(updated);
+}
+
+/**
+ * Выдать или снять водителю доступ к разделам оборудования (15.08.2026, Николай и Александр).
+ * Роль остаётся DRIVER: задачи, смены и KPI считаются как раньше, меняется только видимость
+ * «Листогибов» и «Фальцепрокатников». Как и остальные админ-действия — строго по роли DRIVER.
+ */
+export async function setDriverEquipmentAccess(
+  driverId: string,
+  equipmentAccess: boolean,
+): Promise<DriverAccessView> {
+  await requireDriverUser(driverId);
+  const updated = await prisma.user.update({
+    where: { id: driverId },
+    data: { equipmentAccess },
     select: ACCESS_SELECT,
   });
   return toAccessView(updated);

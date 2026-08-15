@@ -3,7 +3,9 @@
 // Делает идемпотентно:
 //   1) переименовывает внешнего перевозчика (login=sultan) в нейтральное «Внешний перевозчик»;
 //   2) заводит штатного подменного водителя Николая (login=nikolay), если его ещё нет;
-//   3) заводит ген. директора Михаила (login=mikhail, права ADMIN, должность «Директор»), если его ещё нет.
+//   3) заводит ген. директора Михаила (login=mikhail, права ADMIN, должность «Директор»), если его ещё нет;
+//   4) заводит второго подменного водителя Александра (login=alexandr), если его ещё нет;
+//   5) выдаёт Николаю доступ к разделам оборудования (15.08.2026) — существующему пользователю.
 // Пароль новым пользователям ставится ТОЛЬКО при создании, из SEED_PASSWORD_<LOGIN> (приоритетно)
 // или SEED_PASSWORD. Повторный запуск пароль не меняет. Запуск: `pnpm db:seed:roster`.
 import "dotenv/config";
@@ -13,6 +15,7 @@ import { hashPassword } from "@/lib/password";
 
 const EXTERNAL = { login: "sultan", name: "Внешний перевозчик" };
 const NIKOLAY = { login: "nikolay", name: "Николай" };
+const ALEXANDR = { login: "alexandr", name: "Александр" };
 const MIKHAIL = { login: "mikhail", name: "Михаил", position: "Директор" };
 
 /**
@@ -22,7 +25,14 @@ const MIKHAIL = { login: "mikhail", name: "Михаил", position: "Дирек�
  */
 async function ensureUser(
   prisma: PrismaClient,
-  cfg: { login: string; name: string; role: Role; position?: string | null; passwordEnvKey: string },
+  cfg: {
+    login: string;
+    name: string;
+    role: Role;
+    position?: string | null;
+    passwordEnvKey: string;
+    equipmentAccess?: boolean;
+  },
 ): Promise<void> {
   const existing = await prisma.user.findUnique({ where: { login: cfg.login }, select: { id: true } });
   if (existing) {
@@ -41,6 +51,7 @@ async function ensureUser(
       role: cfg.role,
       canLogin: true,
       position: cfg.position ?? null,
+      equipmentAccess: cfg.equipmentAccess ?? false,
       passwordHash,
     },
   });
@@ -76,6 +87,29 @@ export async function seedRoster(prisma: PrismaClient): Promise<void> {
     position: MIKHAIL.position,
     passwordEnvKey: "SEED_PASSWORD_MIKHAIL",
   });
+
+  // 4) Александр — второй подменный водитель (15.08.2026, полная копия Николая): входит сам,
+  // выполняет любые задачи, в KPI не попадает (денежного профиля нет). Доступ к разделам
+  // оборудования выдаётся сразу при создании — за этим его и заводили.
+  await ensureUser(prisma, {
+    login: ALEXANDR.login,
+    name: ALEXANDR.name,
+    role: "DRIVER",
+    passwordEnvKey: "SEED_PASSWORD_ALEXANDR",
+    equipmentAccess: true,
+  });
+
+  // 5) Доступ к оборудованию Николаю (15.08.2026). Отдельным шагом, а не только при создании:
+  // Николай на проде давно заведён, и права ему нужно выдать существующему. Пароль не трогаем.
+  const equipped = await prisma.user.updateMany({
+    where: { login: NIKOLAY.login, equipmentAccess: false },
+    data: { equipmentAccess: true },
+  });
+  console.log(
+    equipped.count > 0
+      ? `  ✓ ${NIKOLAY.login}: выдан доступ к разделам оборудования`
+      : `  ✓ ${NIKOLAY.login}: доступ к оборудованию уже есть (или пользователь не найден)`,
+  );
 }
 
 // Standalone-запуск (`pnpm db:seed:roster`) — для прода после деплоя кода.

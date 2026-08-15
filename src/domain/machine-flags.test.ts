@@ -245,7 +245,7 @@ describe("machine-flags: счётчики сводки", () => {
     expect(s.total).toBe(0);
     expect(s.byStatus.ACCEPTED).toBe(0);
     expect(s.byCategory.CLIENT).toBe(0);
-    expect(s.byKind).toEqual({ MACHINE: 0, ROLLER_KNIFE: 0 });
+    expect(s.byKind).toEqual({ MACHINE: 0, ROLLER_KNIFE: 0, SEAMER: 0, UNCOILER: 0, INVERTER: 0 });
     expect(s.duePressing).toBe(0);
   });
 
@@ -258,7 +258,7 @@ describe("machine-flags: счётчики сводки", () => {
       ],
       now,
     );
-    expect(s.byKind).toEqual({ MACHINE: 1, ROLLER_KNIFE: 1 });
+    expect(s.byKind).toEqual({ MACHINE: 1, ROLLER_KNIFE: 1, SEAMER: 0, UNCOILER: 0, INVERTER: 0 });
   });
 
   it("горящие сроки суммируются только по активным станкам", () => {

@@ -16,7 +16,10 @@ const TASK_ROLES: readonly Role[] = ["DISPATCHER", "ADMIN", "SERVICE_MANAGER"];
 const STAFF_ROLES: readonly Role[] = ["DISPATCHER", "ADMIN"];
 const MACHINE_ROLES: readonly Role[] = ["DISPATCHER", "ADMIN", "SERVICE_MANAGER"];
 
-const LINKS: { href: string; label: string; roles: readonly Role[] }[] = [
+// `equipment: true` — вкладку открывает ещё и персональный флаг User.equipmentAccess (15.08.2026,
+// Николай и Александр). Это ЕДИНСТВЕННОЕ исключение из чисто ролевого меню, и оно ровно повторяет
+// серверный guard requireEquipmentUser: вкладка, ведущая на redirect, — баг интерфейса.
+const LINKS: { href: string; label: string; roles: readonly Role[]; equipment?: boolean }[] = [
   { href: "/board", label: "Сегодня", roles: TASK_ROLES },
   { href: "/planning", label: "Планирование", roles: TASK_ROLES },
   { href: "/capacity", label: "Календарь", roles: TASK_ROLES },
@@ -24,14 +27,24 @@ const LINKS: { href: string; label: string; roles: readonly Role[] }[] = [
   ...(PRICING_ENABLED ? [{ href: "/pricing", label: "Расценка", roles: STAFF_ROLES }] : []),
   { href: "/summary", label: "Сводка", roles: STAFF_ROLES },
   { href: "/kpi", label: "KPI / Зарплата", roles: STAFF_ROLES },
-  // Картотека станков (05.08.2026, PRD §16): у Милены те же права, что у менеджера-сервисника.
-  { href: "/machines", label: "Станки", roles: MACHINE_ROLES },
+  // Разделы оборудования (05.08.2026 — картотека, 15.08.2026 — разделение на два раздела).
+  // У Милены те же права, что у менеджера-сервисника.
+  { href: "/machines", label: "Листогибы", roles: MACHINE_ROLES, equipment: true },
+  { href: "/seamers", label: "Фальцепрокатники", roles: MACHINE_ROLES, equipment: true },
   { href: "/admin", label: "Управление", roles: ["ADMIN"] },
 ];
 
-export function DispatcherNav({ role }: { role: Role }) {
+export function DispatcherNav({
+  role,
+  equipmentAccess = false,
+}: {
+  role: Role;
+  equipmentAccess?: boolean;
+}) {
   const pathname = usePathname();
-  const links = LINKS.filter((l) => l.roles.includes(role));
+  const links = LINKS.filter(
+    (l) => l.roles.includes(role) || (l.equipment === true && equipmentAccess),
+  );
 
   return (
     <nav className="flex gap-1 border-b border-neutral-200 bg-white px-4">

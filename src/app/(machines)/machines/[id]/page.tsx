@@ -1,16 +1,16 @@
 import { notFound } from "next/navigation";
-import { requireAnyRole } from "@/lib/session";
+import { requireEquipmentUser } from "@/lib/session";
 import { getMachine } from "@/domain/machine-service";
 import { DomainError } from "@/domain/errors";
 import { MachineCardClient } from "./machine-card-client";
 
 export const dynamic = "force-dynamic";
 
-// Карточка станка. Первый рендер — серверный (открывается сразу, без «загружаю»), дальше клиент
-// обновляет данные через API. Guard тот же, что у layout: роль проверяется и здесь — страница
-// сама грузит данные и не имеет права полагаться на защиту уровнем выше.
+// Карточка единицы оборудования. Первый рендер — серверный (открывается сразу, без «загружаю»),
+// дальше клиент обновляет данные через API. Guard тот же, что у layout: допуск проверяется и здесь —
+// страница сама грузит данные и не имеет права полагаться на защиту уровнем выше.
 export default async function MachinePage({ params }: { params: Promise<{ id: string }> }) {
-  const user = await requireAnyRole("SERVICE_MANAGER", "DISPATCHER", "ADMIN");
+  const user = await requireEquipmentUser();
   const { id } = await params;
 
   // Данные достаём отдельно от рендера: JSX внутри try/catch не ловится (ошибки рендера ловит

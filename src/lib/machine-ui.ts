@@ -5,14 +5,23 @@
 // Классы — строками-литералами, иначе Tailwind их не увидит.
 import type { MachineCategory, MachineStatus } from "@/generated/prisma/enums";
 import {
+  EQUIPMENT_FAMILY_LABEL,
   EQUIPMENT_KIND_LABEL,
+  EQUIPMENT_KIND_PLURAL,
   EQUIPMENT_KIND_SHORT,
   MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_LABEL,
 } from "@/domain/machine-status";
 import type { DueState } from "@/domain/machine-flags";
 
-export { EQUIPMENT_KIND_LABEL, EQUIPMENT_KIND_SHORT, MACHINE_CATEGORY_LABEL, MACHINE_STATUS_LABEL };
+export {
+  EQUIPMENT_FAMILY_LABEL,
+  EQUIPMENT_KIND_LABEL,
+  EQUIPMENT_KIND_PLURAL,
+  EQUIPMENT_KIND_SHORT,
+  MACHINE_CATEGORY_LABEL,
+  MACHINE_STATUS_LABEL,
+};
 
 export const MACHINE_STATUS_BADGE: Record<MachineStatus, string> = {
   ACCEPTED: "border border-slate-300 text-slate-600",
@@ -44,17 +53,22 @@ export const MACHINE_CATEGORY_SHORT: Record<MachineCategory, string> = {
 };
 
 /**
- * Заголовок карточки по решению Артёма о маркировке: у наших — привычный «77-N» впереди и
- * учётный номер следом, у клиентских — учётный номер и № заказа 1С («№214 · заказ 4512»).
+ * Заголовок карточки — учётный номер «77-N», который пишут маркером на железе (решение Артёма
+ * 15.08.2026). Сквозной системный номер (Machine.number) из интерфейса убран совсем: две нумерации
+ * рядом («77-5 · №9») путали, а вторую никто не использовал.
+ *
+ * Карточка без номера подписывается моделью — номер необязателен, и заголовок «—» был бы хуже
+ * пустого места. № заказа 1С остаётся приметой клиентских станков.
  */
 export function machineTitle(m: {
-  number: number;
   ourNumber: number | null;
+  model?: string;
   invoice1C: string | null;
 }): string {
-  if (m.ourNumber !== null) return `77-${m.ourNumber} · №${m.number}`;
+  if (m.ourNumber !== null) return `77-${m.ourNumber}`;
   const order = m.invoice1C?.trim();
-  return order ? `№${m.number} · заказ ${order}` : `№${m.number}`;
+  if (order) return `заказ ${order}`;
+  return m.model?.trim() || "Без номера";
 }
 
 /** «дд.мм.гггг» из «YYYY-MM-DD» (без сдвига по таймзоне — режем строку). */

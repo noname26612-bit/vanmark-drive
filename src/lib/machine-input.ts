@@ -2,7 +2,19 @@
 // Тот же «обоснованный unknown-парсинг», что в task-input.ts: один контролируемый каст,
 // обязательные поля и бизнес-правила проверяет домен (machine-service).
 import type { EditMachineInput } from "@/domain/machine-service";
-import { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
+import {
+  EquipmentFamily,
+  EquipmentKind,
+  MachineCategory,
+  MachineStatus,
+} from "@/generated/prisma/enums";
+
+/** Раздел оборудования из query/тела. Некорректное значение — undefined, домен подставит «Листогибы». */
+export function parseFamily(v: unknown): EquipmentFamily | undefined {
+  return typeof v === "string" && Object.values(EquipmentFamily).includes(v as EquipmentFamily)
+    ? (v as EquipmentFamily)
+    : undefined;
+}
 
 export function parseCategory(v: unknown): MachineCategory | undefined {
   return typeof v === "string" && Object.values(MachineCategory).includes(v as MachineCategory)
@@ -59,6 +71,11 @@ export function parseMachineFields(body: Record<string, unknown>): EditMachineIn
   if ("kind" in body) {
     const kind = parseEquipmentKind(body.kind);
     if (kind) out.kind = kind;
+  }
+  // Остаток складской позиции. Дробное и отрицательное отсекает домен — здесь только форма.
+  if ("quantity" in body) {
+    const v = body.quantity;
+    if (typeof v === "number" && Number.isFinite(v)) out.quantity = Math.trunc(v);
   }
 
   return out as EditMachineInput;

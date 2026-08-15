@@ -416,16 +416,19 @@ estimate   = type.onSiteMinutes + travelMin     (round)
 ```prisma
 enum MachineCategory { CLIENT OUR_SALE OUR_RENTAL }              // чей станок: клиентский / наш на продажу / наш арендный
 enum MachineStatus   { ACCEPTED NEEDS_REPAIR IN_REPAIR READY RENTED RELEASED SOLD VOIDED }
-enum EquipmentKind   { MACHINE ROLLER_KNIFE }                    // вид: станок / роликовый нож (07.08.2026, общая картотека)
+enum EquipmentFamily { BENDER SEAMER }                           // раздел: Листогибы / Фальцепрокатники (15.08.2026)
+enum EquipmentKind   { MACHINE ROLLER_KNIFE SEAMER UNCOILER INVERTER } // вид внутри раздела
 
 // Карточка станка. number — сквозной учётный № ВСЕХ станков (Postgres sequence machine_number_seq),
 // пишется маркером на железо. ourNumber — привычная маркировка «77-N» только наших: подсказка
 // следующего + ручной ввод при инвентаризации (дубль ловится @unique и отдаётся человеческой ошибкой).
 model Machine {
   id             String          @id @default(uuid())
-  number         Int             @unique @default(dbgenerated("nextval('machine_number_seq'::regclass)"))
-  ourNumber      Int?            @unique              // «77-N»; null у клиентских
-  kind           EquipmentKind   @default(MACHINE)    // своих полей у ножей нет — общих хватает (PRD §16.3)
+  number         Int             @unique @default(dbgenerated("nextval('machine_number_seq'::regclass)")) // УБРАН из интерфейса 15.08.2026
+  ourNumber      Int?                                 // «77-N»; уникален внутри family, вводится руками
+  family         EquipmentFamily @default(BENDER)     // раздел: он же область уникальности номера
+  kind           EquipmentKind   @default(MACHINE)    // своих полей у видов нет — общих хватает (PRD §16.3)
+  quantity       Int             @default(1)          // остаток на складе; >1 только у UNCOILER/INVERTER
   category       MachineCategory
   status         MachineStatus   @default(ACCEPTED)
   model          String                               // обязательное поле №2 (кроме категории)
@@ -452,7 +455,25 @@ model Machine {
   updatedAt      DateTime        @updatedAt
   events         MachineEvent[]
   attachments    MachineAttachment[]
-  @@index([category, status]) @@index([status]) @@index([updatedAt])
+  kitParts       MachineKitPart[] @relation("kitHead")
+  kitOf          MachineKitPart[] @relation("kitPart")
+  @@unique([family, ourNumber])
+  @@index([family, status]) @@index([category, status]) @@index([status]) @@index([updatedAt])
+}
+
+// Комплектация (15.08.2026): что уезжает вместе с головным станком. Две механики в одной таблице,
+// различаются видом part: уникальный экземпляр (нож) — ровно один комплект; складская позиция —
+// много комплектов, суммарно не больше остатка. consumedAt закрывает связь при продаже, поэтому
+// остаток не списывается дважды. Инварианты — в src/domain/machine-kit.ts (частичным индексом их
+// не выразить: условие зависит от вида ДРУГОЙ строки).
+model MachineKitPart {
+  id         String    @id @default(uuid())
+  headId     String                                   // листогиб или фальцепрокатник
+  partId     String                                   // нож / размотчик / частотник
+  qty        Int       @default(1)
+  consumedAt DateTime?                                // остаток списан вместе с продажей головного
+  createdAt  DateTime  @default(now())
+  @@unique([headId, partId]) @@index([partId])
 }
 
 // Журнал станка — ТОЛЬКО НА ЗАПИСЬ (CLAUDE.md правило 3), как TaskEvent.
@@ -541,6 +562,7 @@ model MachineAttachment {
   Попутно исправлены два места «от противного», которые при расширении роли отдали бы ей лишнее: `transitionTask` снимал деньги только с DRIVER (теперь белый список), `loadTaskForWorksheet` проверял владение только у DRIVER (теперь `canEditWorksheet`). `/api/work-catalog` переписан с отрицаний на перечисление ролей.
 
 - **Роль SERVICE_MANAGER (05.08.2026, §4г).** Права роли — БЕЛЫЙ список, а не «всё кроме»: доступ к модулю станков дают три роли (`isMachineRole` = SERVICE_MANAGER | DISPATCHER | ADMIN, `src/domain/machine-access.ts`), всё остальное для новой роли закрыто по умолчанию. Ключевое требование при её вводе — **проверить существующие guard'ы на допущение «роль не DRIVER ⇒ штаб»**: `requireDispatcher` опирается на `isDispatcherRole` (белый список ADMIN|DISPATCHER — новая роль не проходит), `requireAdmin`/`requireDriver` — точное сравнение, страницы — `requireRole`/`requireAnyRole` с редиректом на `homeForRole`. Отдельно проверяются эндпоинты с одним лишь `requireApiUser()` (без роли): `canViewTask` для SERVICE_MANAGER возвращает false → чужая карточка/вложение отдают 404. Маршруты новой роли: `homeForRole('SERVICE_MANAGER') = '/machines'`; `exhaustive switch` в `src/domain/roles.ts` заставляет типизацию упасть, если роль забыли учесть.
+  - **Персональный доступ (15.08.2026).** К белому списку ролей добавлен флаг `User.equipmentAccess` — единственное право в системе, выданное не ролью (Николай и Александр). Предикат один: `canAccessEquipment` = роль из списка ИЛИ флаг (`src/domain/machine-access.ts`); guard'ы `requireMachineUser()` (API) и `requireEquipmentUser()` (страницы) читают флаг ИЗ БД, а не из JWT, — выдача и отзыв действуют сразу, без перезахода. Флаг НИЧЕГО не открывает сверх оборудования: задачи, смены, KPI, сводка и админка закрыты своими белыми списками ролей, и это зафиксировано e2e (`machines-access.spec.ts`, describe «Персональный доступ к оборудованию»).
   - Модуль станков изоляции «по владельцу» не имеет by design (все три роли видят весь парк — это общая картотека, а не личные задачи), поэтому вся его защита — ролевая: `requireMachineUser()` в каждом handler'е, включая раздачу фото `GET /api/machines/photos/:id`. Водитель к любому `/api/machines/*` получает **404** (не 403 — не раскрываем существование модуля).
   - Участие в KPI/зарплате = наличие АКТИВНОГО денежного профиля (`DriverPayProfile.isActive`). Водители без профиля (подменный Николай, внешний перевозчик) исключены из детектора нарушений, списка кандидатов, ручных отметок и расчёта; экран «Мой расчёт» им не показывается (`isPayrollDriver`). Это единственный признак участия — отдельного флага в схеме нет.
 
@@ -592,11 +614,14 @@ model MachineAttachment {
 
 | Метод и путь | Кто | Что |
 |---|---|---|
-| GET /api/machines?scope=active\|archive&category&status&kind&flag&q&take&skip | С, Д, А | список станков + счётчики сводки. `scope` — область просмотра (площадка/архив), `kind` — вид (`MACHINE`\|`ROLLER_KNIFE`), `flag` — фильтр по плитке сводки (`urgent`, `duePressing`, `awaitingDiagnosis`, `noInvoice1C`, `staleVerification`; при `duePressing` — сортировка по `dueDate` asc). Активные отдаются целиком (десятки), архив — постранично с серверным поиском `q` (номер, «77-N», модель, заказчик, телефон по цифрам, № заказа 1С) |
+| GET /api/machines?family=BENDER\|SEAMER&scope=active\|archive&category&status&kind&flag&q&take&skip | С, Д, А | список станков + счётчики сводки. `scope` — область просмотра (площадка/архив), `kind` — вид (`MACHINE`\|`ROLLER_KNIFE`), `flag` — фильтр по плитке сводки (`urgent`, `duePressing`, `awaitingDiagnosis`, `noInvoice1C`, `staleVerification`; при `duePressing` — сортировка по `dueDate` asc). Активные отдаются целиком (десятки), архив — постранично с серверным поиском `q` (номер, «77-N», модель, заказчик, телефон по цифрам, № заказа 1С) |
 | POST /api/machines | С, Д, А | завести станок. Обязательны только `category` и `model`; `number` выдаёт сервер (sequence), `ourNumber` — подсказка следующего или ручной ввод |
-| GET /api/machines/meta | С, Д, А | справочные данные формы одним запросом: подсказка следующего свободного «77-N» + сотрудники офиса для поля «ответственный» + `models` (distinct по картотеке — сырьё подсказок комбобокса) |
+| GET /api/machines/:id/kit | С, Д, А | свободные комплектующие раздела: ножи вне чужих комплектов и складские позиции с ненулевым остатком |
+| POST /api/machines/:id/kit {partId, qty} | С, Д, А | поставить комплектующую в комплект (повтор с тем же partId = правка количества). Idempotency-Key обязателен по смыслу: повтор после таймаута не должен списывать остаток дважды |
+| DELETE /api/machines/:id/kit/:partId | С, Д, А | разобрать комплект; списанную связь (проданный комплект) разобрать нельзя — она история |
+| GET /api/machines/meta?family=BENDER\|SEAMER | С, Д, А | справочные данные формы одним запросом: подсказка следующего свободного «77-N» + сотрудники офиса для поля «ответственный» + `models` (distinct по картотеке — сырьё подсказок комбобокса) |
 | GET /api/machines/:id | С, Д, А | карточка + журнал + фото |
-| PATCH /api/machines/:id {op:edit\|status\|category\|diagnosed\|verified} | С, Д, А | правка полей, включая `kind` и `dueDate` (журнал пишет «было→стало»), смена состояния (валидация совместимости с категорией; `VOIDED` требует причину), смена категории, отметки «диагностика проведена» / «подтверждён на месте» |
+| PATCH /api/machines/:id {op:edit\|status\|category\|diagnosed\|verified, withKit?} | С, Д, А | правка полей, включая `kind` и `dueDate` (журнал пишет «было→стало»), смена состояния (валидация совместимости с категорией; `VOIDED` требует причину), смена категории, отметки «диагностика проведена» / «подтверждён на месте» |
 | POST /api/machines/:id/comments | С, Д, А | комментарий в журнал (лента «Комментарии» карточки) |
 | POST /api/machines/:id/shop-task {note, toInRepair} | С, Д, А | зафиксировать «Задание в цех»: событие `shop_task` с полным текстом (собирается сервером из карточки + `note`); при `toInRepair` — той же транзакцией перевод в `IN_REPAIR`. Idempotency-Key обязателен по смыслу: повтор после таймаута не плодит дубли задания |
 | POST /api/machines/:id/attachments (multipart) | С, Д, А | фото станка (сжатие ~1920px на клиенте); карточка сохраняется до фото, догрузка с автоповтором |

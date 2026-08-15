@@ -69,10 +69,12 @@ function usePrefetchCards(ids: string[], online: boolean, needCatalog: boolean):
 // showShift=false — внешний перевозчик (02.07): смен не ведёт, блок смены скрыт.
 export function DriverTasksClient({
   showPayroll = true,
+  showEquipment = false,
   showShift = true,
   meId = "",
 }: {
   showPayroll?: boolean;
+  showEquipment?: boolean;
   showShift?: boolean;
   meId?: string; // id водителя из сессии — для бейджа роли в паре (20.07)
 }) {
@@ -143,12 +145,24 @@ export function DriverTasksClient({
         </p>
       ) : null}
 
-      {/* Ссылка на личный расчёт зарплаты (Фаза 1.5) — только у водителей с денежным профилем. */}
-      {showPayroll ? (
-        <div className="mb-3 flex justify-end">
-          <Link href="/m/payroll" className="text-sm font-medium text-neutral-600 underline">
-            Мой расчёт →
-          </Link>
+      {/* Ссылка на личный расчёт зарплаты (Фаза 1.5) — только у водителей с денежным профилем.
+          Рядом — вход в разделы оборудования у тех, кому Артём выдал доступ (15.08.2026). */}
+      {showPayroll || showEquipment ? (
+        <div className="mb-3 flex flex-wrap justify-end gap-3">
+          {showEquipment ? (
+            <Link
+              href="/machines"
+              className="text-sm font-medium text-neutral-600 underline"
+              data-testid="driver-equipment-link"
+            >
+              Оборудование →
+            </Link>
+          ) : null}
+          {showPayroll ? (
+            <Link href="/m/payroll" className="text-sm font-medium text-neutral-600 underline">
+              Мой расчёт →
+            </Link>
+          ) : null}
         </div>
       ) : null}
 

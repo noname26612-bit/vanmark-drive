@@ -1,11 +1,21 @@
 import { describe, it, expect } from "vitest";
 import {
+  EQUIPMENT_FAMILIES,
+  EQUIPMENT_KIND_LABEL,
+  EQUIPMENT_KIND_PLURAL,
+  EQUIPMENT_KIND_SHORT,
+  KINDS_BY_FAMILY,
   MACHINE_CATEGORIES,
   MACHINE_STATUSES,
   categoriesForStatus,
+  familyOfKind,
+  headKindOf,
   isArchivedStatus,
+  isHeadKind,
+  isKindInFamily,
   isOurCategory,
   isStatusAllowedForCategory,
+  isStockKind,
   reasonRequiredFor,
   statusesForCategory,
   MACHINE_STATUS_LABEL,
@@ -100,5 +110,49 @@ describe("machine-status: подписи и категории", () => {
   it("у каждого состояния и категории есть русская подпись", () => {
     for (const s of MACHINE_STATUSES) expect(MACHINE_STATUS_LABEL[s]?.length).toBeGreaterThan(0);
     for (const c of MACHINE_CATEGORIES) expect(MACHINE_CATEGORY_LABEL[c]?.length).toBeGreaterThan(0);
+  });
+});
+
+// Разделы оборудования (решение Артёма 15.08.2026). Тесты держат границу «вид принадлежит своему
+// разделу»: именно она не даёт размотчику появиться у листогибов, а ножу — у фальцепрокатников.
+describe("machine-status: разделы и виды", () => {
+  it("каждый вид принадлежит ровно одному разделу", () => {
+    for (const family of EQUIPMENT_FAMILIES) {
+      for (const kind of KINDS_BY_FAMILY[family]) {
+        expect(familyOfKind(kind)).toBe(family);
+        expect(isKindInFamily(family, kind)).toBe(true);
+      }
+    }
+  });
+
+  it("вид из чужого раздела не проходит", () => {
+    expect(isKindInFamily("BENDER", "UNCOILER")).toBe(false);
+    expect(isKindInFamily("SEAMER", "ROLLER_KNIFE")).toBe(false);
+  });
+
+  it("головной вид раздела — первый в списке и держит комплект", () => {
+    expect(headKindOf("BENDER")).toBe("MACHINE");
+    expect(headKindOf("SEAMER")).toBe("SEAMER");
+    expect(isHeadKind("MACHINE")).toBe(true);
+    expect(isHeadKind("SEAMER")).toBe(true);
+    expect(isHeadKind("ROLLER_KNIFE")).toBe(false);
+  });
+
+  it("складские виды — только размотчики и частотники", () => {
+    expect(isStockKind("UNCOILER")).toBe(true);
+    expect(isStockKind("INVERTER")).toBe(true);
+    expect(isStockKind("MACHINE")).toBe(false);
+    expect(isStockKind("ROLLER_KNIFE")).toBe(false);
+    expect(isStockKind("SEAMER")).toBe(false);
+  });
+
+  it("у каждого вида есть все три подписи — иначе в интерфейсе появится пустое место", () => {
+    for (const family of EQUIPMENT_FAMILIES) {
+      for (const kind of KINDS_BY_FAMILY[family]) {
+        expect(EQUIPMENT_KIND_LABEL[kind]).toBeTruthy();
+        expect(EQUIPMENT_KIND_SHORT[kind]).toBeTruthy();
+        expect(EQUIPMENT_KIND_PLURAL[kind]).toBeTruthy();
+      }
+    }
   });
 });

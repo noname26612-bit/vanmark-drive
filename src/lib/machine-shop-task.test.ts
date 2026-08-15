@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import { buildShopTaskText, type ShopTaskMachine } from "./machine-shop-task";
 
 const machine = (over: Partial<ShopTaskMachine> = {}): ShopTaskMachine => ({
-  number: 214,
   ourNumber: 3,
   invoice1C: null,
   kind: "MACHINE",
@@ -20,7 +19,7 @@ describe("machine-shop-task: текст задания в цех", () => {
   it("собирает полное задание из карточки и комментария", () => {
     expect(buildShopTaskText(machine(), "заменить подшипник, отрегулировать прижим")).toBe(
       [
-        "В цех — 77-3 · №214",
+        "В цех — 77-3",
         "Модель: ЛБМ 200",
         "Металл: 1,5 мм",
         "Комплектация: без ножа",
@@ -49,12 +48,12 @@ describe("machine-shop-task: текст задания в цех", () => {
       }),
       "   ",
     );
-    expect(text).toBe(["В цех — №214", "Модель: ЛБМ 200"].join("\n"));
+    expect(text).toBe(["В цех — ЛБМ 200", "Модель: ЛБМ 200"].join("\n"));
   });
 
   it("клиентский станок подписан заказом 1С", () => {
     const text = buildShopTaskText(machine({ ourNumber: null, invoice1C: "4512" }), null);
-    expect(text.split("\n")[0]).toBe("В цех — №214 · заказ 4512");
+    expect(text.split("\n")[0]).toBe("В цех — заказ 4512");
   });
 
   it("роликовый нож отмечен видом — цех должен понимать, что приедет", () => {

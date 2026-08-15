@@ -13,7 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Field } from "@/components/ui/field";
 import { DateField } from "@/components/ui/date-field";
 import { newActionId as newIdempotencyKey } from "@/lib/offline/id";
-import { EQUIPMENT_KINDS, MACHINE_CATEGORIES, isOurCategory } from "@/domain/machine-status";
+import { KINDS_BY_FAMILY, MACHINE_CATEGORIES, headKindOf, isStockKind } from "@/domain/machine-status";
 import { modelSuggestionPool } from "@/domain/machine-models";
 import { EQUIPMENT_KIND_LABEL, MACHINE_CATEGORY_LABEL } from "@/lib/machine-ui";
 import {
@@ -27,7 +27,7 @@ import {
 import { cn } from "@/lib/cn";
 import { ModelCombobox } from "./model-combobox";
 import type { MachineDetail } from "@/lib/machine-dto";
-import type { EquipmentKind, MachineCategory } from "@/generated/prisma/enums";
+import type { EquipmentFamily, EquipmentKind, MachineCategory } from "@/generated/prisma/enums";
 
 // Кто обычно привозит станки — подсказки, а не жёсткий список (PRD §16.4).
 const DELIVERED_BY = ["Каширский", "Писарев", "Султан", "Заказчик", "Яндекс"];
@@ -50,17 +50,25 @@ const EMPTY = EMPTY_MACHINE_FORM;
  */
 export function MachineFormModal({
   open,
+  family,
   onClose,
   locations,
   onCreated,
 }: {
   open: boolean;
+  family: EquipmentFamily;
   onClose: () => void;
   locations: string[];
   onCreated: (machine: MachineDetail, photos: File[]) => void;
 }) {
+  const kinds = KINDS_BY_FAMILY[family];
+  const defaultKind = headKindOf(family);
   const [category, setCategory] = useState<MachineCategory>("CLIENT");
-  const [kind, setKind] = useState<EquipmentKind>("MACHINE");
+  const [kind, setKind] = useState<EquipmentKind>(defaultKind);
+  // Складская позиция (размотчик, частотник) заводится количеством: ни категории, ни состояния у
+  // остатка нет — вместо них одно поле «Сколько на складе».
+  const stock = isStockKind(kind);
+  const [quantity, setQuantity] = useState("1");
   const [form, setForm] = useState(EMPTY);
   const [photos, setPhotos] = useState<File[]>([]);
   const [showAll, setShowAll] = useState(false);
@@ -77,7 +85,7 @@ export function MachineFormModal({
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
 
   // Справочники формы (следующий «77-N», ответственные, модели для подсказок) — только когда открыта.
-  const { data: meta } = useSWR<Meta>(open ? "/api/machines/meta" : null, fetcher);
+  const { data: meta } = useSWR<Meta>(open ? `/api/machines/meta?family=${family}` : null, fetcher);
   const modelPool = useMemo(() => modelSuggestionPool(meta?.models ?? []), [meta?.models]);
 
   // Сброс при каждом открытии — паттерн React «adjust state on prop change» (setState во время
@@ -86,7 +94,7 @@ export function MachineFormModal({
   if (open !== prevOpen) {
     setPrevOpen(open);
     if (open) {
-      const draft = loadMachineDraft();
+      const draft = loadMachineDraft(family);
       if (draft && isDirtyMachineForm(draft.form)) {
         setCategory(draft.category);
         setKind(draft.kind);
@@ -97,12 +105,13 @@ export function MachineFormModal({
         setRestoredDraft(true);
       } else {
         setCategory("CLIENT");
-        setKind("MACHINE");
+        setKind(defaultKind);
         setForm(EMPTY);
         setShowAll(false);
         setOurNumberEdited(false);
         setRestoredDraft(false);
       }
+      setQuantity("1");
       setPhotos([]);
       setError(null);
       setIdempotencyKey(null);
@@ -118,9 +127,9 @@ export function MachineFormModal({
   function handleClose() {
     if (saving) return;
     if (dirty) {
-      saveMachineDraft({ category, kind, form });
+      saveMachineDraft(family, { category, kind, form });
     } else {
-      clearMachineDraft();
+      clearMachineDraft(family);
     }
     onClose();
   }
@@ -129,15 +138,15 @@ export function MachineFormModal({
   function handleDiscard() {
     if (saving) return;
     if (dirty && !window.confirm("Выбросить черновик? Заполненные поля пропадут.")) return;
-    clearMachineDraft();
+    clearMachineDraft(family);
     onClose();
   }
 
   // «Начать заново» на плашке восстановленного черновика.
   function startFresh() {
-    clearMachineDraft();
+    clearMachineDraft(family);
     setCategory("CLIENT");
-    setKind("MACHINE");
+    setKind(defaultKind);
     setForm(EMPTY);
     setShowAll(false);
     setOurNumberEdited(false);
@@ -145,8 +154,9 @@ export function MachineFormModal({
     setError(null);
   }
 
-  // Наш станок — подсказываем следующий свободный номер, но он остаётся правимым: при
-  // инвентаризации номер уже написан маркером на железе и может быть любым (PRD §16.2).
+  // Подсказываем следующий свободный номер раздела, но он остаётся правимым: при инвентаризации
+  // номер уже написан маркером на железе и может быть любым (PRD §16.2). С 15.08.2026 номер
+  // доступен любой категории — системный сквозной номер из интерфейса убран.
   const suggestedOurNumber = meta ? String(meta.nextOurNumber) : "";
   const ourNumberValue = ourNumberEdited ? form.ourNumber : suggestedOurNumber;
 
@@ -161,7 +171,7 @@ export function MachineFormModal({
 
   async function submit() {
     if (!form.model.trim()) {
-      setError("Укажите модель станка");
+      setError("Укажите модель");
       return;
     }
     setSaving(true);
@@ -175,10 +185,12 @@ export function MachineFormModal({
         "/api/machines",
         "POST",
         {
+          family,
           category,
           kind,
+          ...(stock ? { quantity: Number(quantity) || 0 } : {}),
           model: form.model.trim(),
-          ourNumber: isOurCategory(category) && ourNumber ? Number(ourNumber) : null,
+          ourNumber: ourNumber ? Number(ourNumber) : null,
           configuration: form.configuration,
           metalThickness: form.metalThickness,
           serialNumber: form.serialNumber,
@@ -199,12 +211,12 @@ export function MachineFormModal({
         { "Idempotency-Key": key },
       );
       setIdempotencyKey(null); // карточка создана — следующая заводится своим ключом
-      clearMachineDraft(); // введённое доехало до БД — черновику больше нечего страховать
+      clearMachineDraft(family); // введённое доехало до БД — черновику больше нечего страховать
       // Фото передаём наверх: их догружает список, который не размонтируется вместе с формой.
       onCreated(created, photos);
       onClose();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Не удалось сохранить станок");
+      setError(e instanceof ApiError ? e.message : "Не удалось сохранить карточку");
     } finally {
       setSaving(false);
     }
@@ -214,7 +226,7 @@ export function MachineFormModal({
     <Modal
       open={open}
       onClose={handleClose}
-      title={kind === "ROLLER_KNIFE" ? "Новый нож" : "Новый станок"}
+      title={`Новая карточка: ${EQUIPMENT_KIND_LABEL[kind].toLowerCase()}`}
       wide
     >
       <div className="flex flex-col gap-3">
@@ -238,8 +250,12 @@ export function MachineFormModal({
         ) : null}
 
         {/* Вид оборудования — сегмент из двух кнопок (решение Артёма 07.08: ножи в общей картотеке). */}
-        <div role="radiogroup" aria-label="Вид оборудования" className="grid grid-cols-2 gap-2">
-          {EQUIPMENT_KINDS.map((k) => (
+        <div
+          role="radiogroup"
+          aria-label="Вид оборудования"
+          className={cn("grid gap-2", kinds.length > 2 ? "grid-cols-3" : "grid-cols-2")}
+        >
+          {kinds.map((k) => (
             <button
               key={k}
               type="button"
@@ -259,19 +275,33 @@ export function MachineFormModal({
           ))}
         </div>
 
-        <Field label="Категория" required>
-          <Select
-            value={category}
-            onChange={(e) => setCategory(e.target.value as MachineCategory)}
-            data-testid="machine-category"
-          >
-            {MACHINE_CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {MACHINE_CATEGORY_LABEL[c]}
-              </option>
-            ))}
-          </Select>
-        </Field>
+        {stock ? (
+          <Field label="Сколько на складе" required hint="Остаток в штуках — состояний у него нет">
+            <Input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              className="w-32 shrink-0"
+              data-testid="machine-quantity"
+            />
+          </Field>
+        ) : (
+          <Field label="Категория" required>
+            <Select
+              value={category}
+              onChange={(e) => setCategory(e.target.value as MachineCategory)}
+              data-testid="machine-category"
+            >
+              {MACHINE_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {MACHINE_CATEGORY_LABEL[c]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
 
         <Field label="Модель" required hint="Начните печатать — подскажем: «лбм», «ван», «tapco»…">
           <ModelCombobox
@@ -284,8 +314,8 @@ export function MachineFormModal({
           />
         </Field>
 
-        {isOurCategory(category) ? (
-          <Field label="Наш номер" hint="Подсказан следующий свободный — можно исправить">
+        {stock ? null : (
+          <Field label="Учётный номер" hint="Подсказан следующий свободный — можно исправить">
             <div className="flex items-center gap-2">
               <span className="text-sm text-neutral-500">77-</span>
               <Input
@@ -301,7 +331,7 @@ export function MachineFormModal({
               />
             </div>
           </Field>
-        ) : null}
+        )}
 
         <div>
           <span className="text-sm font-medium text-neutral-700">Фото</span>
