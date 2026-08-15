@@ -160,7 +160,9 @@ export function EquipmentClient({
   const stockOnly = kind !== "" && isStockKind(kind);
 
   return (
-    <div className="p-4">
+    /* Ширину держим в разумных рамках: на широком мониторе таблица, растянутая на 2000+ px,
+       превращается в поля пустоты между колонками. */
+    <div className="mx-auto max-w-[1400px] p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-xl font-semibold text-neutral-900">{title}</h1>
         <Button onClick={() => setCreateOpen(true)} data-testid="machine-create">
@@ -185,7 +187,10 @@ export function EquipmentClient({
 
       {/* ── Плашки видов: главное деление раздела (решение Артёма 15.08.2026) ── */}
       {summary ? (
-        <div className="mb-2 flex flex-wrap gap-1.5" data-testid="kind-tabs">
+        <div
+          className="mb-3 flex flex-wrap gap-1.5 sm:justify-center sm:gap-2"
+          data-testid="kind-tabs"
+        >
           <KindTab
             label="Все"
             active={kind === "" && scope === "active"}
@@ -216,7 +221,7 @@ export function EquipmentClient({
 
       {/* ── Счётчики одной строкой: ненулевые состояния + тревожные; остальное под «Ещё» ── */}
       {summary && !stockOnly ? (
-        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 sm:justify-center sm:gap-2">
           <SummaryChip
             label="Всего"
             value={summary.total}
@@ -439,7 +444,9 @@ function KindTab({
       type="button"
       onClick={onClick}
       className={cn(
-        "inline-flex min-h-11 items-center gap-2 rounded-lg border px-4 text-sm font-medium transition-colors",
+        // За компьютером плашки крупные (Артём 15.08.2026), на телефоне — прежний компактный
+        // размер: иначе шесть плашек съедают экран до того, как начнётся сам список.
+        "inline-flex min-h-11 items-center gap-2 rounded-lg border px-4 text-sm font-medium transition-colors sm:min-h-12 sm:px-6 sm:text-base",
         active
           ? "border-neutral-900 bg-neutral-900 text-white"
           : "border-neutral-200 bg-white text-neutral-600 hover:border-neutral-400",
@@ -447,7 +454,9 @@ function KindTab({
     >
       {label}
       {value !== undefined ? (
-        <span className={cn("text-xs", active ? "text-neutral-300" : "text-neutral-400")}>{value}</span>
+        <span className={cn("text-xs sm:text-sm", active ? "text-neutral-300" : "text-neutral-400")}>
+          {value}
+        </span>
       ) : null}
     </button>
   );
@@ -476,7 +485,7 @@ function SummaryChip({
       onClick={onClick}
       title={hint}
       className={cn(
-        "inline-flex min-h-10 items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition-colors",
+        "inline-flex min-h-10 items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition-colors sm:min-h-11 sm:px-4 sm:text-sm",
         active
           ? "border-neutral-900 bg-white text-neutral-900"
           : accent
@@ -484,7 +493,7 @@ function SummaryChip({
             : "border-neutral-200 bg-white text-neutral-600 hover:border-neutral-400",
       )}
     >
-      <span className="text-sm font-semibold">{value}</span>
+      <span className="text-sm font-semibold sm:text-base">{value}</span>
       {label}
     </button>
   );

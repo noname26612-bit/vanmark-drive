@@ -81,7 +81,7 @@ test("умный поиск находит станок по телефону в
   await expect(row).toContainText("Тел.");
 });
 
-test("состояние, несовместимое с категорией, отклоняется и не предлагается в выпадашке", async ({
+test("состояние, несовместимое с категорией, отклоняется и не предлагается кнопкой", async ({
   page,
 }) => {
   await login(page, "maxim");
@@ -95,12 +95,17 @@ test("состояние, несовместимое с категорией, о
   expect(res.status()).toBe(422);
   expect((await res.json()).error.code).toBe("MACHINE_STATUS_CATEGORY");
 
-  // И в интерфейсе такого варианта просто нет.
+  // И в интерфейсе такой кнопки просто нет (состояния переключаются кнопками с 15.08.2026).
   await page.goto(`/machines/${machine.id}`);
-  const options = await page.getByTestId("machine-status-select").locator("option").allInnerTexts();
-  expect(options).not.toContain("Продан");
-  expect(options).not.toContain("В аренде");
-  expect(options).toContain("Выдан клиенту");
+  const buttons = await page.getByTestId("machine-status-buttons").locator("button").allInnerTexts();
+  expect(buttons).not.toContain("Продан");
+  expect(buttons).not.toContain("В аренде");
+  expect(buttons).toContain("Выдан клиенту");
+  // Текущее состояние подсвечено, а не спрятано в списке.
+  await expect(page.getByTestId("machine-status-btn-ACCEPTED")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 });
 
 test("смена состояния и правка пишут в журнал «было→стало»", async ({ page }) => {
@@ -109,7 +114,7 @@ test("смена состояния и правка пишут в журнал �
   const machine = await createMachine(page, { category: "CLIENT", model, location: "Ряд А, место 1" });
 
   await page.goto(`/machines/${machine.id}`);
-  await page.getByTestId("machine-status-select").selectOption("IN_REPAIR");
+  await page.getByTestId("machine-status-btn-IN_REPAIR").click();
   // Технические события живут в свёрнутой «Истории изменений» — раскрываем её один раз.
   await page.getByTestId("machine-history-toggle").click();
   await expect(page.getByTestId("machine-events")).toContainText("Принят → В ремонте");
@@ -267,6 +272,49 @@ test("учётный номер переживает смену категори
   const after = (await (await page.request.get(`/api/machines/${machine.id}`)).json()).data;
   expect(after.ourNumber).toBe(ourNumber);
   expect(after.category).toBe("CLIENT");
+});
+
+test("свой станок продаётся одной кнопкой: «Продан» доступен и арендному, категория едет следом", async ({
+  page,
+}) => {
+  await login(page, "maxim");
+  const model = unique("Аренда-продажа");
+  const machine = await createMachine(page, { category: "OUR_RENTAL", model });
+
+  await page.goto(`/machines/${machine.id}`);
+  // У своего железа на виду обе развязки — и «Продан», и «В аренде» (Артём 15.08.2026).
+  await expect(page.getByTestId("machine-status-btn-SOLD")).toBeVisible();
+  await expect(page.getByTestId("machine-status-btn-RENTED")).toBeVisible();
+
+  page.once("dialog", (d) => void d.accept()); // переспрос про уход в архив
+  await page.getByTestId("machine-status-btn-SOLD").click();
+  // Ждём, пока карточка подтвердит новое состояние, и только потом спрашиваем сервер.
+  await expect(page.getByTestId("machine-status-btn-SOLD")).toHaveAttribute("aria-pressed", "true");
+
+  const after = (await (await page.request.get(`/api/machines/${machine.id}`)).json()).data;
+  expect(after.status).toBe("SOLD");
+  expect(after.category).toBe("OUR_SALE"); // категория подстроилась сама, без второго действия
+
+  // И это видно в журнале: продажа и переезд категории — две читаемые строки истории.
+  await page.goto(`/machines/${machine.id}`);
+  await page.getByTestId("machine-history-toggle").click();
+  const events = page.getByTestId("machine-events");
+  await expect(events).toContainText("Принят → Продан");
+  await expect(events).toContainText("Категория: Наш арендный → Наш на продажу");
+});
+
+test("чужой станок так не продаётся: у клиентского категория сама не меняется", async ({ page }) => {
+  await login(page, "maxim");
+  const model = unique("Чужой-продажа");
+  const machine = await createMachine(page, { category: "CLIENT", model });
+
+  const res = await page.request.patch(`/api/machines/${machine.id}`, {
+    data: { op: "status", status: "SOLD" },
+  });
+  expect(res.status()).toBe(422);
+  const after = (await (await page.request.get(`/api/machines/${machine.id}`)).json()).data;
+  expect(after.category).toBe("CLIENT");
+  expect(after.status).toBe("ACCEPTED");
 });
 
 test("ответственного менеджера можно изменить после заведения карточки", async ({ page }) => {
@@ -432,7 +480,10 @@ test("модалка «Задание в цех»: живой предпросм
   // Задание записано, станок в ремонте, и последний текст виден прямо в карточке.
   const last = page.getByTestId("machine-last-shop-task");
   await expect(last).toContainText("отрегулировать прижим");
-  await expect(page.getByTestId("machine-status-select")).toHaveValue("IN_REPAIR");
+  await expect(page.getByTestId("machine-status-btn-IN_REPAIR")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 });
 
 // ───────────────────────────── Доработки 07.08: срок готовности ─────────────────────────────

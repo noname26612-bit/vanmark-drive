@@ -10,6 +10,7 @@ import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
 import { assertMachineAccess, isMachineRole } from "./machine-access";
 import {
+  categoryFollowingStatus,
   isArchivedStatus,
   isStatusAllowedForCategory,
   isKindInFamily,
@@ -790,10 +791,17 @@ export async function editMachine(
   return getMachine(id, actor);
 }
 
-/** Совместимость нового состояния с категорией — общая проверка changeStatus и sendShopTask. */
+/**
+ * Совместимость нового состояния с категорией — общая проверка changeStatus и sendShopTask.
+ * Своё железо может переехать в подходящую категорию само (`categoryFollowingStatus`), и тогда
+ * несовместимости нет; запрет остаётся там, где он про суть: чужой станок не продают и не сдают.
+ */
 function assertStatusAllowed(category: MachineCategory, status: MachineStatus): void {
   if (!MACHINE_STATUS_LABEL[status]) throw Errors.validation("Неизвестное состояние");
-  if (!isStatusAllowedForCategory(category, status)) {
+  if (
+    !isStatusAllowedForCategory(category, status) &&
+    categoryFollowingStatus(category, status) === null
+  ) {
     throw Errors.machineStatusCategory(
       `«${MACHINE_STATUS_LABEL[status]}» не подходит категории «${MACHINE_CATEGORY_LABEL[category]}»`,
     );
@@ -806,15 +814,21 @@ function assertStatusAllowed(category: MachineCategory, status: MachineStatus): 
  */
 async function applyStatusChangeTx(
   tx: Prisma.TransactionClient,
-  before: { id: string; status: MachineStatus },
+  before: { id: string; status: MachineStatus; category?: MachineCategory },
   toStatus: MachineStatus,
   reason: string | null,
   actorId: string,
 ): Promise<void> {
+  // Своё железо переезжает между «на продажу» и «арендный» вслед за состоянием: на площадке
+  // «продали арендный» — одно событие, а не смена категории плюс смена состояния.
+  const nextCategory =
+    before.category === undefined ? null : categoryFollowingStatus(before.category, toStatus);
+
   await tx.machine.update({
     where: { id: before.id },
     data: {
       status: toStatus,
+      ...(nextCategory ? { category: nextCategory } : {}),
       // Причина аннулирования живёт на карточке (её показываем в архиве); при выходе из VOIDED — снимаем.
       voidReason: toStatus === "VOIDED" ? reason : null,
     },
@@ -829,6 +843,25 @@ async function applyStatusChangeTx(
       comment: reason,
     },
   });
+  // Смена категории — отдельная строка журнала: иначе «почему станок стал арендным» пришлось бы
+  // выводить из состояния, а журнал должен читаться как история.
+  if (nextCategory && before.category) {
+    await tx.machineEvent.create({
+      data: {
+        machineId: before.id,
+        actorId,
+        kind: "edit",
+        changes: [
+          {
+            field: "category",
+            label: "Категория",
+            from: MACHINE_CATEGORY_LABEL[before.category],
+            to: MACHINE_CATEGORY_LABEL[nextCategory],
+          },
+        ],
+      },
+    });
+  }
 }
 
 /**
@@ -887,7 +920,7 @@ export async function changeStatus(
       }
       await applyStatusChangeTx(
         tx,
-        { id: link.partId, status: link.partStatus },
+        { id: link.partId, status: link.partStatus, category: link.partCategory },
         input.status,
         reason,
         actor.id,
@@ -914,6 +947,8 @@ type TransferLink = {
   qty: number;
   stock: boolean;
   partStatus: MachineStatus;
+  /** Категория комплектующей — чтобы она переехала вслед за состоянием так же, как головной. */
+  partCategory?: MachineCategory;
   headOurNumber: number | null;
 };
 
@@ -949,7 +984,12 @@ async function loadKitForTransfer(headId: string, status: MachineStatus): Promis
       continue;
     }
     if (!transfersStatus(status) || link.part.status === status) continue;
-    if (!isStatusAllowedForCategory(link.part.category, status)) {
+    // Своя комплектующая переезжает в подходящую категорию вместе с головным (комплект продают
+    // целиком). Чужая — нет: клиентский нож нельзя продать вместе с нашим станком.
+    if (
+      !isStatusAllowedForCategory(link.part.category, status) &&
+      categoryFollowingStatus(link.part.category, status) === null
+    ) {
       const name = link.part.ourNumber ? `77-${link.part.ourNumber}` : link.part.model;
       throw Errors.machineStatusCategory(
         `«${MACHINE_STATUS_LABEL[status]}» не подходит комплектующей ${name} (${MACHINE_CATEGORY_LABEL[link.part.category]}) — смените её категорию или снимите галочку`,
@@ -960,6 +1000,7 @@ async function loadKitForTransfer(headId: string, status: MachineStatus): Promis
       qty: link.qty,
       stock: false,
       partStatus: link.part.status,
+      partCategory: link.part.category,
       headOurNumber: head.ourNumber,
     });
   }

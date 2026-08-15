@@ -34,6 +34,22 @@ export const MACHINE_STATUS_BADGE: Record<MachineStatus, string> = {
   VOIDED: "border border-red-600 text-red-700", // ошибочная карточка
 };
 
+/**
+ * Заливка ВЫБРАННОЙ кнопки состояния в карточке (решение Артёма 15.08.2026: состояния переключаются
+ * кнопками, а не выпадашкой). Смысл тот же, что у бейджей, но насыщенный: из ряда одинаковых плашек
+ * текущее состояние должно читаться мгновенно, с телефона и на вытянутой руке.
+ */
+export const MACHINE_STATUS_ACTIVE: Record<MachineStatus, string> = {
+  ACCEPTED: "border-slate-600 bg-slate-600 text-white",
+  NEEDS_REPAIR: "border-amber-600 bg-amber-600 text-white", // ждёт действия — в ремонт его
+  IN_REPAIR: "border-blue-600 bg-blue-600 text-white", // работа идёт прямо сейчас
+  READY: "border-green-600 bg-green-600 text-white",
+  RENTED: "border-slate-700 bg-slate-700 text-white",
+  RELEASED: "border-slate-500 bg-slate-500 text-white",
+  SOLD: "border-slate-700 bg-slate-700 text-white",
+  VOIDED: "border-red-600 bg-red-600 text-white", // ошибочная карточка
+};
+
 // Левый «корешок» строки списка (3px), как у карточек задач.
 export const MACHINE_STATUS_BAR: Record<MachineStatus, string> = {
   ACCEPTED: "bg-slate-300",

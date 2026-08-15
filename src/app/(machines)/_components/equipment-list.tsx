@@ -36,6 +36,11 @@ export function EquipmentList({
   query: Query;
   basePath: string;
 }) {
+  // Колонка «Заказчик» нужна там, где есть чужое железо: у клиентского станка это главный признак,
+  // а пустой заказчик у него — сам по себе сигнал. В разделе своего парка колонка была бы столбцом
+  // прочерков — тогда её место честнее отдать модели и состоянию.
+  const showOrg = groups.some((g) => g.items.some((m) => m.orgName || m.category === "CLIENT"));
+
   return (
     <div data-testid="machine-list">
       {groups.map((group) => (
@@ -55,22 +60,37 @@ export function EquipmentList({
             ))}
           </ul>
 
-          {/* Компьютер: таблица — за один взгляд видно два десятка станков. */}
+          {/* Компьютер: таблица — за один взгляд видно два десятка станков.
+              table-fixed с долями: без него единственная колонка без ширины («Модель») забирала
+              весь остаток широкого монитора и между ней и состоянием зияла пустота. */}
           <div className="hidden overflow-x-auto rounded-lg border border-neutral-200 bg-white lg:block">
-            <table className="w-full text-left text-sm">
+            <table className="w-full table-fixed text-left text-sm">
               <thead className="border-b border-neutral-200 text-xs text-neutral-400">
                 <tr>
-                  <th className="w-24 px-3 py-2 font-normal">Номер</th>
-                  <th className="w-14 px-3 py-2 font-normal">Фото</th>
-                  <th className="px-3 py-2 font-normal">Модель</th>
-                  <th className="w-44 px-3 py-2 font-normal">Состояние</th>
-                  <th className="w-36 px-3 py-2 font-normal">Место</th>
-                  <th className="w-24 px-3 py-2 font-normal">Срок</th>
+                  <th className="w-[9%] px-3 py-2 font-normal">Номер</th>
+                  <th className="w-[8%] px-3 py-2 font-normal">Фото</th>
+                  <th className={cn("px-3 py-2 font-normal", showOrg ? "w-[22%]" : "w-[32%]")}>
+                    Модель
+                  </th>
+                  {showOrg ? <th className="w-[17%] px-3 py-2 font-normal">Заказчик</th> : null}
+                  <th className={cn("px-3 py-2 font-normal", showOrg ? "w-[22%]" : "w-[27%]")}>
+                    Состояние
+                  </th>
+                  <th className={cn("px-3 py-2 font-normal", showOrg ? "w-[13%]" : "w-[15%]")}>
+                    Место
+                  </th>
+                  <th className="w-[9%] px-3 py-2 font-normal">Срок</th>
                 </tr>
               </thead>
               <tbody>
                 {group.items.map((m) => (
-                  <EquipmentRow key={m.id} machine={m} query={query} basePath={basePath} />
+                  <EquipmentRow
+                    key={m.id}
+                    machine={m}
+                    query={query}
+                    basePath={basePath}
+                    showOrg={showOrg}
+                  />
                 ))}
               </tbody>
             </table>
@@ -117,10 +137,12 @@ function EquipmentRow({
   machine: m,
   query,
   basePath,
+  showOrg,
 }: {
   machine: MachineListItem;
   query: Query;
   basePath: string;
+  showOrg: boolean;
 }) {
   const stock = isStockKind(m.kind);
   const dueState = m.dueDate ? machineDueState(m, new Date()) : null;
@@ -140,7 +162,7 @@ function EquipmentRow({
         </Link>
       </td>
       <td className="px-3 py-2">
-        <Link href={`${basePath}/${m.id}`} className="flex flex-col">
+        <Link href={`${basePath}/${m.id}`} className="flex min-w-0 flex-col">
           <span className="truncate">
             <Highlighted text={m.model} query={query} />
             {m.metalThickness ? <span className="text-neutral-500"> · {m.metalThickness}</span> : null}
@@ -148,6 +170,20 @@ function EquipmentRow({
           <KitLine machine={m} />
         </Link>
       </td>
+      {showOrg ? (
+        <td className="px-3 py-2 text-neutral-600">
+          {m.orgName ? (
+            <span className="block truncate">
+              <Highlighted text={m.orgName} query={query} />
+            </span>
+          ) : (
+            <span className="text-neutral-400">—</span>
+          )}
+          {m.category === "CLIENT" && !m.invoice1C ? (
+            <span className="block truncate text-xs text-amber-700">Без заказа 1С</span>
+          ) : null}
+        </td>
+      ) : null}
       <td className="px-3 py-2">
         {stock ? (
           <StockCount machine={m} />
@@ -180,8 +216,9 @@ function EquipmentRow({
   );
 }
 
+/** Миниатюра: по станку узнают в первую очередь по виду, поэтому фото крупное (Артём 15.08.2026). */
 function Thumb({ machine: m, size }: { machine: MachineListItem; size: "sm" | "md" }) {
-  const box = size === "sm" ? "h-9 w-9" : "h-16 w-16";
+  const box = size === "sm" ? "h-14 w-14" : "h-20 w-20";
   if (m.photoId) {
     return (
       <img
@@ -199,7 +236,7 @@ function Thumb({ machine: m, size }: { machine: MachineListItem; size: "sm" | "m
         "flex shrink-0 items-center justify-center rounded-lg border border-dashed border-neutral-200 text-neutral-300",
       )}
     >
-      <ImageOff className={size === "sm" ? "h-4 w-4" : "h-5 w-5"} />
+      <ImageOff className={size === "sm" ? "h-5 w-5" : "h-6 w-6"} />
     </span>
   );
 }
