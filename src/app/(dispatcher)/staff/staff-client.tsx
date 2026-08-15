@@ -3,22 +3,27 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { AlertTriangle, CalendarClock, CalendarOff, GripVertical, Plus } from "lucide-react";
+import {
+  AlertTriangle,
+  CalendarClock,
+  CalendarOff,
+  ChevronLeft,
+  ChevronRight,
+  GripVertical,
+  Plus,
+  Users,
+} from "lucide-react";
 import { fetcher, apiSend, ApiError } from "@/lib/fetcher";
+import { StaffTaskModal, type Performer } from "../_components/staff-task-modal";
 import { mergeOrder, moveTo } from "@/lib/pool-order";
 import { persistUiPref } from "@/lib/ui-prefs-client";
 import { cn } from "@/lib/cn";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
-import { Field } from "@/components/ui/field";
-import { Modal } from "@/components/ui/modal";
-import { DateField } from "@/components/ui/date-field";
-import { TimeField } from "@/components/ui/time-field";
 import { StatusBadge } from "@/components/status-badge";
 import { AuthorBadge } from "@/components/author-badge";
-import { STATUS_BAR, addDaysISO, formatDateShort } from "@/lib/task-ui";
+import { STATUS_BAR, addDaysISO, formatDateShort, initials } from "@/lib/task-ui";
+import { taskNumberLabel } from "@/lib/task-number";
 import type { TaskDTO } from "@/lib/task-dto";
 
 // Перетаскивание колонок — своим MIME, чтобы не путаться с карточками (те кладут id в text/plain).
@@ -29,18 +34,19 @@ const OVERDUE_DAYS = 14;
 // Горизонт пула «Ближайшие»: сегодня + 7 дней. Задачи цеха планируют на неделю вперёд.
 const UPCOMING_DAYS = 7;
 
-type Performer = { id: string; name: string };
-
 function todayISO(): string {
   return new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD в местной зоне
 }
 
 /**
- * «Сотрудники» — доска второго контура задач (цех и снабжение), решение Артёма 15.08.2026.
+ * «Цех» — доска второго контура задач (цех и снабжение), решение Артёма 15.08.2026.
  *
- * Устроена как «Сегодня», но проще: у этих задач нет ни адреса, ни оплаты, ни актов — только суть,
+ * Устроена как «Водители», но проще: у этих задач нет ни адреса, ни оплаты, ни актов — только суть,
  * исполнитель и срок. Колонка исполнителя показывает ровно то же, что он видит у себя в телефоне
  * (сегодняшние + незакрытые просроченные + назначенные без даты), иначе доска и телефон разойдутся.
+ *
+ * Колонки — тот же «плотный пульт», что на доске водителей (16.08.2026): растягиваются на всю
+ * ширину, шапка тащится за грип и подсвечивается при перетаскивании, порядок живёт в аккаунте.
  */
 export function StaffBoardClient({
   performers,
@@ -113,7 +119,8 @@ export function StaffBoardClient({
       return {
         poolKey,
         title: "Без даты",
-        icon: <CalendarOff className="h-4 w-4" />,
+        hint: "пул для планирования",
+        icon: <CalendarOff className="h-4 w-4 text-slate-300" />,
         tasks: tasks.filter((t) => dayOf(t) === null && !t.assignee),
         target: null as string | null,
       };
@@ -122,7 +129,8 @@ export function StaffBoardClient({
       return {
         poolKey,
         title: "Ближайшие",
-        icon: <CalendarClock className="h-4 w-4" />,
+        hint: "планирование",
+        icon: <CalendarClock className="h-4 w-4 text-slate-300" />,
         tasks: tasks.filter((t) => {
           const day = dayOf(t);
           return day !== null && day > today;
@@ -134,9 +142,13 @@ export function StaffBoardClient({
     const person = performers.find((p) => p.id === id);
     return {
       poolKey,
+      // «сегодня» в шапке (16.08.2026): у колонки исполнителя рядом с пулом «Ближайшие» иначе не
+      // видно, за какой день она отвечает — а это задачи на сегодня плюс незакрытые хвосты.
+      hint: "сегодня",
       title: person?.name ?? "—",
       icon: null,
-      tasks: tasks.filter((t) => t.assignee?.id === id && forToday(t)),
+      // Парная задача (16.08.2026) видна у ОБОИХ: у напарника — зеркалом, как на доске водителей.
+      tasks: tasks.filter((t) => (t.assignee?.id === id || t.coDriverId === id) && forToday(t)),
       target: id,
     };
   });
@@ -148,9 +160,9 @@ export function StaffBoardClient({
     <div className="p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-xl font-semibold text-neutral-900">Задачи сотрудникам</h1>
+          <h1 className="text-xl font-semibold text-neutral-900">Цех</h1>
           <p className="text-sm text-neutral-500">
-            Цех и снабжение. Доставки — на вкладке «Сегодня».
+            Задачи сотрудникам: цех и снабжение. Доставки — на вкладке «Водители».
           </p>
         </div>
         <Button onClick={() => setCreateOpen(true)} data-testid="staff-create">
@@ -181,6 +193,7 @@ export function StaffBoardClient({
               key={pool.poolKey}
               poolKey={pool.poolKey}
               title={pool.title}
+              hint={pool.hint}
               icon={pool.icon}
               tasks={pool.tasks}
               performerId={pool.target}
@@ -195,11 +208,11 @@ export function StaffBoardClient({
       )}
 
       {createOpen ? (
-        <CreateStaffTaskModal
+        <StaffTaskModal
           performers={performers}
           today={today}
           onClose={() => setCreateOpen(false)}
-          onCreated={() => void mutate()}
+          onSaved={() => void mutate()}
         />
       ) : null}
     </div>
@@ -220,6 +233,7 @@ function Stat({ label, value, accent }: { label: string; value: number; accent?:
 function StaffColumn({
   poolKey,
   title,
+  hint,
   icon,
   tasks,
   performerId,
@@ -231,6 +245,7 @@ function StaffColumn({
 }: {
   poolKey: string;
   title: string;
+  hint?: string;
   icon: React.ReactNode;
   tasks: TaskDTO[];
   performerId: string | null;
@@ -240,10 +255,14 @@ function StaffColumn({
   onDropTask: (taskId: string) => void;
   onOpen: (taskId: string) => void;
 }) {
-  const [over, setOver] = useState(false);
+  const [over, setOver] = useState(false); // подсветка drop-зоны карточек
+  const [reorderOver, setReorderOver] = useState(false); // подсветка при перетаскивании колонки
   const droppable = performerId !== null;
+  const isPerson = performerId !== null;
 
   // Шапка тащится сама (перестановка колонок) и принимает только такие же шапки — по своему MIME.
+  // Курсор-«грабли» и подсветка обязательны: без них перетаскивание есть, но о нём никто не знает
+  // (16.08.2026 — ровно так и вышло на первой версии доски цеха).
   const headProps = {
     draggable: true,
     onDragStart: (e: React.DragEvent) => {
@@ -253,10 +272,14 @@ function StaffColumn({
     onDragOver: (e: React.DragEvent) => {
       if (!e.dataTransfer.types.includes(POOL_MIME)) return;
       e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      setReorderOver(true);
     },
+    onDragLeave: () => setReorderOver(false),
     onDrop: (e: React.DragEvent) => {
       if (!e.dataTransfer.types.includes(POOL_MIME)) return;
       e.preventDefault();
+      setReorderOver(false);
       const dragKey = e.dataTransfer.getData(POOL_MIME);
       if (dragKey) onReorder(dragKey, poolKey);
     },
@@ -280,58 +303,87 @@ function StaffColumn({
         }
       : {};
 
+  const ringCls = reorderOver ? "rounded-md ring-2 ring-slate-400" : "";
+
+  // Свёрнутый пул — узкая полоса: перетаскивание, инициалы/иконка, счётчик, разворот по клику.
   if (collapsed) {
     return (
-      <div className="w-12 shrink-0" data-testid={`staff-col-${poolKey}`}>
+      <div
+        className={cn("flex w-11 shrink-0 flex-col", ringCls)}
+        data-testid={`staff-col-${poolKey}`}
+        data-collapsed="true"
+      >
         <button
           type="button"
           onClick={onToggleCollapse}
-          className="flex h-full w-full flex-col items-center gap-2 rounded-lg bg-slate-900 py-3 text-white"
+          aria-label={`Развернуть пул «${title}»`}
+          className="flex flex-1 cursor-grab flex-col items-center gap-2 rounded-md bg-slate-900 px-1 py-2 active:cursor-grabbing"
           data-testid={`staff-expand-${poolKey}`}
           {...headProps}
         >
-          <GripVertical className="h-4 w-4 text-slate-400" />
-          <span className="text-xs font-semibold">{tasks.length}</span>
-          <span className="[writing-mode:vertical-rl] text-xs">{title}</span>
+          <ChevronRight className="h-4 w-4 text-slate-300" />
+          {isPerson ? (
+            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-700 text-[11px] font-semibold text-white">
+              {initials(title)}
+            </span>
+          ) : (
+            (icon ?? null)
+          )}
+          <span className="text-xs font-semibold tabular-nums text-slate-300">{tasks.length}</span>
+          <span className="mt-1 max-h-36 overflow-hidden text-xs font-medium text-white [writing-mode:vertical-rl]">
+            {title}
+          </span>
         </button>
       </div>
     );
   }
 
   return (
-    <div className="w-72 shrink-0" data-testid={`staff-col-${poolKey}`}>
+    <div
+      className={cn("flex min-w-[18rem] flex-1 flex-col", ringCls)}
+      data-testid={`staff-col-${poolKey}`}
+    >
       <div
-        className="flex items-center justify-between gap-2 rounded-t-lg bg-slate-900 px-3 py-2 text-white"
+        className="flex cursor-grab items-center gap-2 rounded-t-md bg-slate-900 px-2.5 py-2 active:cursor-grabbing"
         {...headProps}
       >
-        <span className="flex min-w-0 items-center gap-2">
-          <GripVertical className="h-4 w-4 shrink-0 text-slate-400" />
-          {icon}
-          <span className="truncate text-sm font-medium">{title}</span>
+        <GripVertical className="h-4 w-4 shrink-0 text-slate-500" />
+        {isPerson ? (
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-700 text-[11px] font-semibold text-white">
+            {initials(title)}
+          </span>
+        ) : (
+          (icon ?? null)
+        )}
+        <span className="flex-1 truncate text-sm font-semibold text-white">{title}</span>
+        <span className="shrink-0 text-xs text-slate-300">
+          {hint ? `${hint} · ` : ""}
+          {tasks.length}
         </span>
         <button
           type="button"
           onClick={onToggleCollapse}
-          className="shrink-0 rounded px-1.5 text-xs text-slate-300 hover:text-white"
+          aria-label={`Свернуть пул «${title}»`}
+          className="shrink-0 rounded p-0.5 text-slate-300 hover:bg-slate-700 hover:text-white"
           data-testid={`staff-collapse-${poolKey}`}
         >
-          {tasks.length} ↕
+          <ChevronLeft className="h-4 w-4" />
         </button>
       </div>
       <div
         className={cn(
-          "min-h-24 rounded-b-lg border border-t-0 border-neutral-200 bg-white p-2",
-          over && "ring-2 ring-slate-400",
+          "flex min-h-32 flex-1 flex-col rounded-b-md border border-t-0 p-2 transition-colors",
+          over ? "border-slate-400 bg-slate-50" : "border-slate-200 bg-white",
         )}
         {...bodyProps}
       >
         {tasks.length === 0 ? (
-          <p className="px-1 py-3 text-xs text-neutral-400">Пусто</p>
+          <p className="px-1 py-6 text-center text-xs text-slate-400">Пусто</p>
         ) : (
           <ul className="flex flex-col gap-1.5">
             {tasks.map((t) => (
               <li key={t.id}>
-                <StaffCard task={t} onOpen={() => onOpen(t.id)} />
+                <StaffCard task={t} columnPerformerId={performerId} onOpen={() => onOpen(t.id)} />
               </li>
             ))}
           </ul>
@@ -341,22 +393,38 @@ function StaffColumn({
   );
 }
 
-function StaffCard({ task, onOpen }: { task: TaskDTO; onOpen: () => void }) {
+function StaffCard({
+  task,
+  columnPerformerId = null,
+  onOpen,
+}: {
+  task: TaskDTO;
+  columnPerformerId?: string | null; // чья колонка: у напарника карточка — «зеркало»
+  onOpen: () => void;
+}) {
+  // Пара (16.08.2026, как на доске водителей): в колонке напарника карточка — зеркало (правда живёт
+  // у ответственного, перетаскивать нельзя — двусмысленно), в остальных — обычная с бейджем пары.
+  const isMirror = task.coDriverId !== null && columnPerformerId === task.coDriverId;
+  const pairBadge = task.coDriverId
+    ? isMirror
+      ? `напарник · отв. ${task.assignee?.name ?? "—"}`
+      : `в паре · ${task.coDriver?.name ?? ""}`
+    : null;
   return (
     <div
-      draggable
+      draggable={!isMirror}
       onDragStart={(e) => {
         e.dataTransfer.setData("text/plain", task.id);
         e.dataTransfer.effectAllowed = "move";
       }}
       onClick={onOpen}
       className="flex cursor-pointer items-stretch gap-2 overflow-hidden rounded border border-neutral-200 bg-white hover:bg-neutral-50"
-      data-testid={`staff-card-${task.number}`}
+      data-testid={isMirror ? "staff-card-mirror" : `staff-card-${task.number}`}
     >
       <span className={cn("w-1 shrink-0", STATUS_BAR[task.status])} aria-hidden />
       <div className="flex min-w-0 flex-1 flex-col gap-1 py-2 pr-2">
         <div className="flex flex-wrap items-center gap-1.5 text-xs text-neutral-500">
-          <span className="font-medium text-neutral-700">№{task.number}</span>
+          <span className="font-medium text-neutral-700">{taskNumberLabel(task)}</span>
           {task.priority ? (
             <AlertTriangle className="h-3.5 w-3.5 text-amber-600" aria-label="Срочно" />
           ) : null}
@@ -364,7 +432,7 @@ function StaffCard({ task, onOpen }: { task: TaskDTO; onOpen: () => void }) {
           <AuthorBadge name={task.createdBy?.name} />
         </div>
         <span className="truncate text-sm text-neutral-900">{task.title}</span>
-        <span className="flex flex-wrap gap-x-2 text-xs text-neutral-500">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-neutral-500">
           {task.scheduledDate ? <span>{formatDateShort(task.scheduledDate)}</span> : null}
           {task.timeFrom ? (
             <span>
@@ -372,145 +440,17 @@ function StaffCard({ task, onOpen }: { task: TaskDTO; onOpen: () => void }) {
               {task.timeTo ? `–${task.timeTo}` : ""}
             </span>
           ) : null}
+          {pairBadge ? (
+            <Badge
+              data-testid="staff-pair-badge"
+              className="inline-flex items-center gap-1 border border-slate-400 text-slate-600"
+            >
+              <Users className="h-3 w-3" />
+              {pairBadge}
+            </Badge>
+          ) : null}
         </span>
       </div>
     </div>
-  );
-}
-
-/**
- * Постановка задачи сотруднику. Полей ровно столько, сколько нужно: что сделать, кому и когда —
- * классификации у этих задач нет (решение Артёма 15.08.2026, «пока не усложняем»).
- */
-function CreateStaffTaskModal({
-  performers,
-  today,
-  onClose,
-  onCreated,
-}: {
-  performers: Performer[];
-  today: string;
-  onClose: () => void;
-  onCreated: () => void;
-}) {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [assigneeId, setAssigneeId] = useState("");
-  const [scheduledDate, setScheduledDate] = useState(today);
-  const [timeFrom, setTimeFrom] = useState("");
-  const [priority, setPriority] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit(keepOpen: boolean) {
-    if (!title.trim()) {
-      setError("Напишите, что нужно сделать");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      await apiSend("/api/tasks", "POST", {
-        kind: "STAFF",
-        title: title.trim(),
-        description: description.trim() || null,
-        assigneeId: assigneeId || null,
-        scheduledDate: scheduledDate || null,
-        timeFrom: timeFrom || null,
-        priority,
-      });
-      onCreated();
-      if (keepOpen) {
-        setTitle("");
-        setDescription("");
-        setTimeFrom("");
-        setPriority(false);
-      } else {
-        onClose();
-      }
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Не удалось создать задачу");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <Modal open onClose={onClose} title="Задача сотруднику">
-      <div className="flex flex-col gap-3">
-        {error ? (
-          <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {error}
-          </p>
-        ) : null}
-
-        <Field label="Что сделать" required>
-          <Input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Например: забрать ролики с Ленинградки"
-            autoFocus
-            data-testid="staff-title"
-          />
-        </Field>
-
-        <Field label="Подробности">
-          <Textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            rows={3}
-            data-testid="staff-description"
-          />
-        </Field>
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Кому">
-            <Select
-              value={assigneeId}
-              onChange={(e) => setAssigneeId(e.target.value)}
-              data-testid="staff-assignee"
-            >
-              <option value="">— не назначено —</option>
-              {performers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Когда">
-            <DateField value={scheduledDate} onChange={setScheduledDate} testId="staff-date" />
-          </Field>
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Ко скольки">
-            <TimeField value={timeFrom} onChange={setTimeFrom} testId="staff-time" />
-          </Field>
-          <label className="flex items-end gap-2 pb-2 text-sm text-neutral-700">
-            <input
-              type="checkbox"
-              checked={priority}
-              onChange={(e) => setPriority(e.target.checked)}
-              className="h-4 w-4"
-              data-testid="staff-priority"
-            />
-            Срочно
-          </label>
-        </div>
-
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button variant="ghost" onClick={onClose} disabled={saving}>
-            Отмена
-          </Button>
-          <Button variant="secondary" onClick={() => void submit(true)} disabled={saving}>
-            Создать и ещё
-          </Button>
-          <Button onClick={() => void submit(false)} disabled={saving} data-testid="staff-save">
-            Создать
-          </Button>
-        </div>
-      </div>
-    </Modal>
   );
 }

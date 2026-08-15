@@ -14,6 +14,7 @@ import { MANUAL_STATUSES } from "@/domain/task-status";
 import { formatMinutes } from "@/domain/capacity";
 import { PRICING_ENABLED } from "@/lib/features";
 import { isStaffTask } from "@/lib/task-dto";
+import { taskNumberLabel } from "@/lib/task-number";
 import type { DriverDTO, TaskDetailDTO, TaskTypeDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
 import {
@@ -26,6 +27,7 @@ import {
   formatDate,
   formatDateTime,
   formatMoney,
+  todayISO,
 } from "@/lib/task-ui";
 import { StatusBadge } from "@/components/status-badge";
 import { WorksheetPricingSection } from "../../_components/worksheet-pricing-section";
@@ -39,6 +41,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Modal } from "@/components/ui/modal";
 import { Field } from "@/components/ui/field";
 import { CreateTaskModal } from "../../_components/create-task-modal";
+import { StaffTaskModal } from "../../_components/staff-task-modal";
 
 // Диспетчер может вести статусы за исполнителя (в т.ч. внешнего перевозчика). Цепочка схлопнута (этап A):
 // «В работу» (взять) → «Завершить»; из паузы — «Вернуть в работу».
@@ -300,7 +303,8 @@ export function TaskDetailClient({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-500">
-              <TypeIcon name={task.type.icon} className="h-4 w-4" />№{task.number} · {task.type.name}
+              <TypeIcon name={task.type.icon} className="h-4 w-4" />
+              {taskNumberLabel(task)} · {task.type.name}
             </div>
             <h1 className="mt-1 text-xl font-semibold text-neutral-900">{task.title}</h1>
             <p className="mt-1 truncate text-sm text-neutral-500">
@@ -438,7 +442,9 @@ export function TaskDetailClient({
               </option>
             ))}
           </Select>
-          {task.assigneeId && !staff ? (
+          {/* Напарник — и в доставке, и в цехе (16.08.2026). Список берём из того же контура, что и
+              ответственного: водителя в заявку, исполнителя цеха — в задачу цеха. */}
+          {task.assigneeId ? (
             <Select
               data-testid="card-co-driver"
               value={task.coDriverId ?? ""}
@@ -448,7 +454,7 @@ export function TaskDetailClient({
               aria-label="Напарник"
             >
               <option value="">— без напарника —</option>
-              {drivers
+              {assignableList
                 .filter((d) => d.id !== task.assigneeId)
                 .map((d) => (
                   <option key={d.id} value={d.id}>
@@ -813,12 +819,19 @@ export function TaskDetailClient({
 
       {/* Переспрос перед архивацией: действие незаметное на экране (заявка просто исчезает), поэтому
           подтверждение обязательно. Причина по желанию — уходит в журнал. */}
-      <Modal open={archiveOpen} onClose={() => setArchiveOpen(false)} title="Убрать заявку в архив?">
+      <Modal
+        open={archiveOpen}
+        onClose={() => setArchiveOpen(false)}
+        title={staff ? "Убрать задачу в архив?" : "Убрать заявку в архив?"}
+      >
         <div className="flex flex-col gap-3">
           <p className="text-sm text-neutral-600">
-            Заявка №{task.number} исчезнет из «Сегодня», «Планирования», «Календаря», из списков
-            водителя и из отчётов. История сохранится, номер останется за ней. Вернуть можно во
-            «Все задачи» → «Архив».
+            {staff ? "Задача" : "Заявка"} {taskNumberLabel(task)} исчезнет{" "}
+            {staff
+              ? "из «Цеха», из списка исполнителя"
+              : "из «Водителей», «Планирования», «Календаря», из списков водителя"}{" "}
+            и из отчётов. История сохранится, номер останется за ней. Вернуть можно во «Все задачи» →
+            «Архив».
           </p>
           <Field label="Причина (по желанию)">
             <Textarea
@@ -939,14 +952,28 @@ export function TaskDetailClient({
         </div>
       </Modal>
 
-      <CreateTaskModal
-        open={editOpen}
-        onClose={() => setEditOpen(false)}
-        types={types}
-        drivers={drivers}
-        editTask={task}
-        onCreated={() => void mutate()}
-      />
+      {/* Правка идёт формой своего контура (16.08.2026): у задачи цеха нет ни типа, ни адреса, ни
+          денег — форма заявки предлагала бы заполнить то, чего у неё не существует. */}
+      {staff ? (
+        editOpen ? (
+          <StaffTaskModal
+            performers={staffPerformers}
+            today={todayISO()}
+            editTask={task}
+            onClose={() => setEditOpen(false)}
+            onSaved={() => void mutate()}
+          />
+        ) : null
+      ) : (
+        <CreateTaskModal
+          open={editOpen}
+          onClose={() => setEditOpen(false)}
+          types={types}
+          drivers={drivers}
+          editTask={task}
+          onCreated={() => void mutate()}
+        />
+      )}
     </div>
   );
 }

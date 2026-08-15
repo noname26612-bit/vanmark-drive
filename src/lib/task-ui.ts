@@ -144,6 +144,16 @@ export const STATUS_ORDER: TaskStatus[] = [
   "CANCELLED",
 ];
 
+/** Инициалы для аватара в шапке колонки: «Алексей Каширский» → «АК». Общее для обеих досок. */
+export function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
 /** ISO-дату (или Date) — в «дд.мм.гггг». Берём части строки, чтобы не было сдвига по таймзоне. */
 export function formatDate(value: string | Date | null | undefined): string {
   if (!value) return "—";

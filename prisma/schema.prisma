@@ -180,6 +180,12 @@ model Task {
   // Сквозной номер: Postgres sequence task_number_seq (START 476 — миграция). См. ARCHITECTURE §4.
   number Int    @unique @default(dbgenerated("nextval('task_number_seq'::regclass)"))
 
+  // Номер задачи цеха — своя нумерация с 1, показывается как «Ц-N» (решение Артёма 15.08.2026,
+  // вечер). У доставок пусто, у STAFF заполнен всегда. Значение выдаёт домен из отдельной
+  // последовательности staff_task_number_seq: default на колонке жёг бы номера и на доставках.
+  // Сквозной `number` при этом остаётся у обеих: он — технический ключ всего кода и журналов.
+  staffNumber Int? @unique
+
   typeId String
   type   TaskType @relation(fields: [typeId], references: [id])
   // Контур задачи — снимок с типа на момент создания (см. enum TaskKind). Экраны доставок

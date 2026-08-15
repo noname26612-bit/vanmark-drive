@@ -1,4 +1,4 @@
-// Умный клиентский поиск по задачам (доска «Сегодня», «Планирование»; подсветка — везде).
+// Умный клиентский поиск по задачам (доска «Водители», «Планирование»; подсветка — везде).
 // Движок разбора запроса, матчинга и подсветки — общий (`src/lib/search-core.ts`), здесь только
 // предметная часть: какие поля задачи ищем и что показывать в сниппете «почему нашлось».
 // Реэкспорт примитивов сохранён — экраны импортируют их отсюда с 20.07.2026.
@@ -12,6 +12,7 @@ import {
   type MatchRange,
   type ParsedQuery,
 } from "./search-core";
+import { staffNumberSearchVariants } from "./task-number";
 
 export {
   digitsWithMap,
@@ -25,6 +26,7 @@ export {
 
 export type SearchableTask = {
   number: number;
+  staffNumber?: number | null; // номер цеха «Ц-N» (16.08.2026): у доставок пуст
   title: string;
   address: string | null;
   description?: string | null;
@@ -51,12 +53,16 @@ function textFields(t: SearchableTask): string[] {
     t.type?.name,
     t.assignee?.name,
     t.coDriver?.name,
+    // Написания номера цеха («ц-5», «c5»): человек набирает как получится, в том числе латиницей
+    // с забытой раскладкой — как с «К-N» у станков.
+    ...staffNumberSearchVariants({ kind: t.staffNumber != null ? "STAFF" : "DELIVERY", number: t.number, staffNumber: t.staffNumber }),
   ].filter((v): v is string => typeof v === "string" && v.length > 0);
 }
 
-// Цифровой токен (≥2 цифр) матчится с № заявки и № счёта по вхождению цифр.
+// Цифровой токен (≥2 цифр) матчится с № заявки, № цеха и № счёта по вхождению цифр.
 function numberHaystacks(t: SearchableTask): string[] {
   const out = [String(t.number)];
+  if (t.staffNumber != null) out.push(String(t.staffNumber));
   if (t.invoiceNumber) {
     const { digits } = digitsWithMap(t.invoiceNumber);
     if (digits) out.push(digits);

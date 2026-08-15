@@ -7,7 +7,7 @@ export default function AdminPage() {
       <h1 className="text-2xl font-semibold text-neutral-900">Администрирование</h1>
       <p className="mt-1 text-sm text-neutral-500">Управление сервисом и быстрый переход к работе.</p>
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <AdminLink href="/board" title="Доска «Сегодня»" desc="Задачи дня по водителям" />
+        <AdminLink href="/board" title="Доска «Водители»" desc="Задачи дня по водителям" />
         <AdminLink href="/tasks" title="Заявки — редактирование" desc="Открыть любую заявку и изменить название и все поля" />
         <AdminLink href="/summary" title="Сводка" desc="Итоги по водителям за период, выгрузка" />
         <AdminLink href="/kpi" title="KPI / зарплата" desc="Зарплата, премии и штрафы по месяцам" />

@@ -12,6 +12,7 @@ import { useOnline } from "@/lib/offline/net";
 import { usePendingActions } from "@/lib/offline/use-queue";
 import { overlayStatus, overlayShift, currentShift } from "@/lib/offline/overlay";
 import { isStaffTask } from "@/lib/task-dto";
+import { taskNumberLabel } from "@/lib/task-number";
 import type { TaskDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
 import {
@@ -518,7 +519,8 @@ function TaskCard({
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1.5 text-base font-semibold text-neutral-700">
             <TypeIcon name={task.type.icon} className="h-6 w-6" />
-            №{task.number}
+            {/* Номер того контура, в котором задача живёт: «№615» у доставки, «Ц-5» у цеха. */}
+            {taskNumberLabel(task)}
             {task.priority ? (
               <span className="text-red-500" aria-hidden>
                 ●

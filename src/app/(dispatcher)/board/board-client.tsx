@@ -30,6 +30,7 @@ import {
   addDaysISO,
   formatDate,
   formatDateShort,
+  initials,
   paymentBadge,
 } from "@/lib/task-ui";
 import { actState } from "@/domain/act";
@@ -75,16 +76,6 @@ type PoolDescriptor = {
   showDate?: boolean;
 };
 
-// Инициалы водителя для аватара в графитовой шапке колонки: «Алексей Каширский» → «АК».
-function initials(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase() ?? "")
-    .join("");
-}
-
 export function BoardClient({
   drivers,
   types,
@@ -107,8 +98,8 @@ export function BoardClient({
   const horizonEnd = addDaysISO(today, HORIZON_DAYS);
   // hideCancelled (11.08.2026): отменённые заявки на доске не показываем — ни в колонках водителей,
   // ни в пулах, ни в счётчике «Всего». Найти отменённую можно во «Все задачи» фильтром по статусу.
-  // kind=DELIVERY: доска «Сегодня» — про заявки водителям. Задачи цеха и снабжения живут на
-  // своей вкладке «Сотрудники» (решение Артёма 15.08.2026).
+  // kind=DELIVERY: доска «Водители» — про заявки водителям. Задачи цеха и снабжения живут на
+  // своей вкладке «Цех» (решение Артёма 15.08.2026).
   const key = `/api/tasks?kind=DELIVERY&dateFrom=${today}&dateTo=${horizonEnd}&includeUndated=1&hideCancelled=1`;
   const { data: tasks, isLoading, error: loadError, mutate } = useSWR<TaskDTO[]>(key, fetcher, LIVE);
   const { data: attention, mutate: mutateAttention } = useSWR<AttentionDTO>(
@@ -296,7 +287,7 @@ export function BoardClient({
   return (
     <div className="p-4" data-testid="board">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold text-neutral-900">Сегодня · {formatDate(today)}</h1>
+        <h1 className="text-xl font-semibold text-neutral-900">Водители · {formatDate(today)}</h1>
         <div className="flex flex-1 flex-wrap items-center justify-end gap-3">
           <TaskSearchInput value={searchText} onChange={setSearchText} found={foundCount} />
           <Button

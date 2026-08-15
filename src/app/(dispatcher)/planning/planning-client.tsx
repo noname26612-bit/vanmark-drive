@@ -60,7 +60,7 @@ export function PlanningClient({
 
   // hideCancelled (11.08.2026): отменённая заявка не занимает ячейку и не входит ни в «≈ часы»,
   // ни в счётчик «N зад.» — иначе диспетчер планирует день по завышенной загрузке.
-  // Планирование расставляет доставки по дням недели; задачи сотрудникам — на вкладке «Сотрудники».
+  // Планирование расставляет доставки по дням недели; задачи сотрудникам — на вкладке «Цех».
   const key = `/api/tasks?kind=DELIVERY&dateFrom=${weekStart}&dateTo=${weekEnd}&includeUndated=1&hideCancelled=1`;
   const { data: tasks, isLoading, error: loadError, mutate } = useSWR<TaskDTO[]>(key, fetcher, LIVE);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -68,7 +68,7 @@ export function PlanningClient({
   const list = useMemo(() => tasks ?? [], [tasks]);
   const dateOf = (t: TaskDTO): string | null => (t.scheduledDate ? t.scheduledDate.slice(0, 10) : null);
 
-  // Умный поиск по сетке недели: клиентская фильтрация загруженных задач (как на «Сегодня»).
+  // Умный поиск по сетке недели: клиентская фильтрация загруженных задач (как на «Водителях»).
   const [searchText, setSearchText] = useState("");
   const searchQuery = useMemo(() => parseQuery(searchText), [searchText]);
   const searchActive = searchQuery.active;

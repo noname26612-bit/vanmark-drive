@@ -10,6 +10,7 @@ import type { DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
 import { actState } from "@/domain/act";
 import { STATUS_LABEL, STATUS_ORDER, actBadge, formatDate, paymentBadge } from "@/lib/task-ui";
 import { parseQuery } from "@/lib/task-search";
+import { taskNumberLabel } from "@/lib/task-number";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { StatusBadge } from "@/components/status-badge";
 import { AuthorBadge } from "@/components/author-badge";
@@ -144,7 +145,7 @@ export function AllTasksClient({
                   kind === k ? "bg-neutral-900 text-white" : "text-neutral-500 hover:text-neutral-800",
                 )}
               >
-                {k === "DELIVERY" ? "Доставки" : "Сотрудники"}
+                {k === "DELIVERY" ? "Доставки" : "Цех"}
               </button>
             ))}
           </div>
@@ -262,8 +263,10 @@ export function AllTasksClient({
                       onClick={(e) => e.stopPropagation()}
                       className="hover:underline"
                     >
-                      {t.priority ? <span className="mr-1 text-red-500">●</span> : null}№
-                      <Highlighted text={String(t.number)} query={searchQuery} />
+                      {t.priority ? <span className="mr-1 text-red-500">●</span> : null}
+                      {/* Номер того контура, в котором задача живёт: «№615» у доставки, «Ц-5» у
+                          цеха (16.08.2026). */}
+                      <Highlighted text={taskNumberLabel(t)} query={searchQuery} />
                     </Link>
                   </td>
                   {delivery ? (

@@ -296,7 +296,18 @@ test.describe("Персональный доступ к оборудованию
     await page.goto("/machines");
     await expect(page.getByRole("link", { name: "Листогибы" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Фальцепрокатники" })).toBeVisible();
-    for (const label of ["Сегодня", "Планирование", "Все задачи", "Сводка", "KPI / Зарплата", "Управление"]) {
+    // Подписи — ровно как в dispatcher-nav (16.08.2026: «Сегодня» → «Водители», «Сотрудники» → «Цех»).
+    // Список обязан совпадать с меню: устаревшая подпись превращает проверку в ложно-зелёную.
+    for (const label of [
+      "Водители",
+      "Цех",
+      "Планирование",
+      "Календарь",
+      "Все задачи",
+      "Сводка",
+      "KPI / Зарплата",
+      "Управление",
+    ]) {
       await expect(page.getByRole("link", { name: label }), `${label} водителю не положен`).toHaveCount(0);
     }
   });

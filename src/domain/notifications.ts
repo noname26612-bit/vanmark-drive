@@ -1,8 +1,9 @@
 // Чистые билдеры полезной нагрузки пушей и валидация подписки (PRD §7, ARCHITECTURE §8).
 // Здесь НЕТ web-push, prisma и server-only — модуль импортируется юнит-тестами (vitest, node).
 // Транспорт (отправка) — в src/lib/push.ts.
-import type { PaymentType } from "@/generated/prisma/enums";
+import type { PaymentType, TaskKind } from "@/generated/prisma/enums";
 import { formatMoney } from "@/lib/task-ui";
+import { taskNumberLabel } from "@/lib/task-number";
 
 // Минимальная нагрузка пуша (ARCHITECTURE §8): заголовок/тело + deeplink в карточку.
 export type PushPayload = {
@@ -18,6 +19,11 @@ export type NotifiableTask = {
   id: string;
   number: number;
   title: string;
+  // Контур и номер цеха (16.08.2026): в пуше должен стоять тот же номер, что человек видит на
+  // экране — «Ц-5» у задачи цеха, «№615» у заявки. Поля опциональны: узкие вызовы их не передают,
+  // и тогда номер показывается сквозной (как было).
+  kind?: TaskKind | null;
+  staffNumber?: number | null;
   type?: { name: string } | null;
   // Деньги на точке (17.07): опциональны — узкие вызовы (например «priced» из work-service)
   // их не передают; полные строки Task из task-service подхватываются structural typing.
@@ -44,7 +50,7 @@ export function buildTaskPayload(task: NotifiableTask, kind: TaskNotifyKind): Pu
         : " · Взять деньги на точке"
       : "";
   return {
-    title: `${TASK_TITLE[kind]} №${task.number}`,
+    title: `${TASK_TITLE[kind]} ${taskNumberLabel(task)}`,
     body: `${typeName}${task.title}${money}`,
     url: `/m/${task.id}`,
     tag: `task-${task.id}`,
@@ -53,14 +59,16 @@ export function buildTaskPayload(task: NotifiableTask, kind: TaskNotifyKind): Pu
 
 // Пуш напарнику при добавлении в пару (20.07.2026, PRD §7): отдельный от «Новая задача» текст —
 // человек сразу понимает свою роль (статусы ведёт ответственный). Ведёт в карточку PWA.
+// С 16.08.2026 пара бывает и в цехе — тогда это «задача», а не «заявка».
 export function buildCoDriverPayload(
   task: NotifiableTask,
   assigneeName?: string | null,
 ): PushPayload {
   const typeName = task.type?.name ? `${task.type.name}: ` : "";
   const lead = assigneeName ? ` · ответственный ${assigneeName}` : "";
+  const what = (task.kind ?? "DELIVERY") === "STAFF" ? "задаче" : "заявке";
   return {
-    title: `Ты напарник по заявке №${task.number}`,
+    title: `Ты напарник по ${what} ${taskNumberLabel(task)}`,
     body: `${typeName}${task.title}${lead}`,
     url: `/m/${task.id}`,
     tag: `task-${task.id}`,

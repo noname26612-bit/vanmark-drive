@@ -17,8 +17,9 @@ import { overlayStatus, overlayShift, currentShift } from "@/lib/offline/overlay
 import { ConflictCenter } from "../../conflict-center";
 import { compressImage } from "@/lib/image-compress";
 import { isStaffTask } from "@/lib/task-dto";
+import { taskNumberLabel } from "@/lib/task-number";
 import type { TaskDetailDTO, WorkCatalogItemDTO } from "@/lib/task-dto";
-import type { TaskStatus } from "@/generated/prisma/enums";
+import type { TaskKind, TaskStatus } from "@/generated/prisma/enums";
 import {
   STATUS_LABEL,
   PASS_LABEL,
@@ -162,7 +163,15 @@ export function DriverTaskClient({
   // Одна активная задача (этап B): знаем про другую задачу водителя «В работе», чтобы заранее
   // заблокировать кнопку «В работу» (сервер всё равно запретит — это проактивная подсказка в UI).
   const { data: myToday = [] } = useSWR<
-    { id: string; status: TaskStatus; number: number; coDriverId: string | null }[]
+    {
+      id: string;
+      status: TaskStatus;
+      number: number;
+      // Контур и номер цеха — чтобы в подсказке стоял тот же номер, что человек видит в списке.
+      kind?: TaskKind;
+      staffNumber?: number | null;
+      coDriverId: string | null;
+    }[]
   >(`/api/my/tasks?date=${todayISO()}&scope=today`, cachedFetcher, { refreshInterval: 10_000 });
   // Открытая смена нужна, чтобы брать задачу в работу (этап D). Кэшируем статус, а поверх — оверлей
   // очереди (O7): смена, открытая офлайн минуту назад, сразу разблокирует «В работу», не дожидаясь
@@ -514,7 +523,7 @@ export function DriverTaskClient({
         <div className="mt-3 flex items-center justify-between gap-3">
           <span className="flex items-center gap-2 text-lg font-semibold text-neutral-700">
             <TypeIcon name={t.type.icon} className="h-6 w-6" />
-            №{t.number}
+            {taskNumberLabel(t)}
             {t.priority ? (
               <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs font-semibold text-red-700">
                 Срочно
@@ -938,8 +947,8 @@ export function DriverTaskClient({
             ) : blockedByActive ? (
               <p className="mt-1 text-center text-sm text-amber-700">
                 {activeOtherIsPair
-                  ? `Идёт парная задача №${activeOther?.number} — ты в ней напарник`
-                  : `Сначала завершите активную задачу №${activeOther?.number}`}
+                  ? `Идёт парная задача ${activeOther ? taskNumberLabel(activeOther) : ""} — ты в ней напарник`
+                  : `Сначала завершите активную задачу ${activeOther ? taskNumberLabel(activeOther) : ""}`}
               </p>
             ) : null}
           </>
