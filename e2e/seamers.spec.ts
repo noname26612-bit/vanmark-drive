@@ -25,6 +25,17 @@ async function create(page: Page, data: Record<string, unknown>): Promise<Machin
   return (await res.json()).data;
 }
 
+/**
+ * Следующий свободный номер раздела. Тесты делят общую dev-БД и гоняются многократно, поэтому
+ * случайный номер из фиксированного диапазона рано или поздно ловит занятый и падает на дубле.
+ * Спрашиваем у сервера — он и так подсказывает его форме.
+ */
+async function nextNumber(page: Page, family: string): Promise<number> {
+  const res = await page.request.get(`/api/machines/meta?family=${family}`);
+  expect(res.status()).toBe(200);
+  return (await res.json()).data.nextOurNumber;
+}
+
 async function read(page: Page, id: string): Promise<Machine & Record<string, unknown>> {
   const res = await page.request.get(`/api/machines/${id}`);
   expect(res.status()).toBe(200);
@@ -35,8 +46,8 @@ test("нумерация 77-N своя в каждом разделе: один 
   page,
 }) => {
   await login(page, "maxim");
-  // Берём заведомо свободный номер в обоих разделах, чтобы не конфликтовать с данными других тестов.
-  const number = 60000 + Math.floor(Math.random() * 9000);
+  // Берём номер, свободный в ОБОИХ разделах: так тест не зависит от того, что накопили соседние.
+  const number = Math.max(await nextNumber(page, "BENDER"), await nextNumber(page, "SEAMER"));
 
   const bender = await create(page, {
     family: "BENDER",
@@ -80,10 +91,20 @@ test("разделы не смешиваются: подсказка номер�
   expect(benderList.data.machines.some((m: { model: string }) => m.model === model)).toBe(false);
   expect(seamerList.data.machines.some((m: { model: string }) => m.model === model)).toBe(true);
 
-  // Подсказка следующего свободного номера считается по своему разделу.
-  const benderMeta = await (await page.request.get("/api/machines/meta?family=BENDER")).json();
-  const seamerMeta = await (await page.request.get("/api/machines/meta?family=SEAMER")).json();
-  expect(benderMeta.data.nextOurNumber).not.toBe(seamerMeta.data.nextOurNumber);
+  // Подсказка следующего свободного номера считается по своему разделу: заняли большой номер у
+  // фальцепрокатников — подсказка листогибов не сдвинулась. (Сравнивать две подсказки между собой
+  // бессмысленно: они могут совпасть случайно.)
+  const benderBefore = await nextNumber(page, "BENDER");
+  const seamerBefore = await nextNumber(page, "SEAMER");
+  await create(page, {
+    family: "SEAMER",
+    kind: "SEAMER",
+    category: "OUR_SALE",
+    model: unique("Фальц-подсказка"),
+    ourNumber: seamerBefore,
+  });
+  expect(await nextNumber(page, "BENDER")).toBe(benderBefore);
+  expect(await nextNumber(page, "SEAMER")).toBe(seamerBefore + 1);
 });
 
 test("складской остаток: размотчик ведётся количеством, без состояния и категории", async ({
@@ -250,7 +271,7 @@ test("список не прыгает после правки: порядок �
 }) => {
   await login(page, "maxim");
   // Три карточки подряд идущими номерами: правка средней не должна менять их порядок.
-  const base = 50000 + Math.floor(Math.random() * 900);
+  const base = await nextNumber(page, "SEAMER");
   const tag = unique("Порядок");
   const made: Machine[] = [];
   for (const i of [0, 1, 2]) {
