@@ -13,7 +13,9 @@ import type { Role } from "@/domain/roles";
 // сервисника). Меню обязано совпадать с серверными guard'ами: показать вкладку, ведущую на
 // redirect, — это баг интерфейса. Новая роль по умолчанию не видит ничего, пока её не впишут.
 const TASK_ROLES: readonly Role[] = ["DISPATCHER", "ADMIN", "SERVICE_MANAGER"];
-const STAFF_ROLES: readonly Role[] = ["DISPATCHER", "ADMIN"];
+// Диспетчерский контур (смены, KPI, деньги). Имя намеренно не «STAFF»: с 15.08.2026 «сотрудники» —
+// это отдельный контур ЗАДАЧ (цех и снабжение), и путать их нельзя.
+const DISPATCH_ROLES: readonly Role[] = ["DISPATCHER", "ADMIN"];
 const MACHINE_ROLES: readonly Role[] = ["DISPATCHER", "ADMIN", "SERVICE_MANAGER"];
 
 // `equipment: true` — вкладку открывает ещё и персональный флаг User.equipmentAccess (15.08.2026,
@@ -24,9 +26,11 @@ const LINKS: { href: string; label: string; roles: readonly Role[]; equipment?: 
   { href: "/planning", label: "Планирование", roles: TASK_ROLES },
   { href: "/capacity", label: "Календарь", roles: TASK_ROLES },
   { href: "/tasks", label: "Все задачи", roles: TASK_ROLES },
-  ...(PRICING_ENABLED ? [{ href: "/pricing", label: "Расценка", roles: STAFF_ROLES }] : []),
-  { href: "/summary", label: "Сводка", roles: STAFF_ROLES },
-  { href: "/kpi", label: "KPI / Зарплата", roles: STAFF_ROLES },
+  // Задачи сотрудникам — цех и снабжение (15.08.2026). Ставят те же, кто ведёт заявки.
+  { href: "/staff", label: "Сотрудники", roles: TASK_ROLES },
+  ...(PRICING_ENABLED ? [{ href: "/pricing", label: "Расценка", roles: DISPATCH_ROLES }] : []),
+  { href: "/summary", label: "Сводка", roles: DISPATCH_ROLES },
+  { href: "/kpi", label: "KPI / Зарплата", roles: DISPATCH_ROLES },
   // Разделы оборудования (05.08.2026 — картотека, 15.08.2026 — разделение на два раздела).
   // У Милены те же права, что у менеджера-сервисника.
   { href: "/machines", label: "Листогибы", roles: MACHINE_ROLES, equipment: true },

@@ -2,8 +2,15 @@
 // ключей, типы, санитизация значений. БЕЗ доступа к БД — тестируется напрямую (как src/domain/kpi.ts).
 // Доступ к хранилищу — в src/domain/ui-prefs-service.ts.
 
-// Допустимые настройки. board.* — доска «Сегодня», planning.* — «Планирование».
-export const UI_PREF_KEYS = ["board.order", "board.collapsed", "planning.order"] as const;
+// Допустимые настройки. board.* — доска «Сегодня», planning.* — «Планирование»,
+// staff.* — вкладка «Сотрудники» (задачи цеха и снабжения, 15.08.2026).
+export const UI_PREF_KEYS = [
+  "board.order",
+  "board.collapsed",
+  "planning.order",
+  "staff.order",
+  "staff.collapsed",
+] as const;
 export type UiPrefKey = (typeof UI_PREF_KEYS)[number];
 
 export type UiPrefs = Record<UiPrefKey, string[]>;
@@ -33,5 +40,11 @@ export function sanitizeKeyArray(value: unknown): string[] {
 
 /** Пустые настройки (дефолт, когда у пользователя ещё ничего не сохранено). */
 export function emptyUiPrefs(): UiPrefs {
-  return { "board.order": [], "board.collapsed": [], "planning.order": [] };
+  return {
+    "board.order": [],
+    "board.collapsed": [],
+    "planning.order": [],
+    "staff.order": [],
+    "staff.collapsed": [],
+  };
 }
