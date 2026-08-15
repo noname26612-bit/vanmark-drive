@@ -30,6 +30,28 @@ export async function listActiveDrivers(): Promise<DriverDTO[]> {
   }));
 }
 
+/**
+ * Исполнители задач сотрудникам (цех и снабжение, 15.08.2026) — все, кому открыт этот доступ.
+ * Роль не фильтруем: сегодня это водители Александр с Николаем, завтра — сотрудники цеха, которых
+ * заведут тем же флагом. Список отдаётся только тем, кто ставит задачи (guard в route).
+ */
+export async function listStaffPerformers(): Promise<{ id: string; name: string }[]> {
+  return prisma.user.findMany({
+    where: { isActive: true, staffTasksAccess: true },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
+}
+
+/** Есть ли у пользователя доступ к задачам сотрудникам. Признак из БД, никогда из сессии. */
+export async function hasStaffTasksAccess(userId: string): Promise<boolean> {
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { staffTasksAccess: true, isActive: true },
+  });
+  return (u?.isActive && u.staffTasksAccess) === true;
+}
+
 /** Внешний (наёмный) исполнитель? Признак из БД (User.isExternal), никогда из запроса. */
 export async function isExternalDriver(userId: string): Promise<boolean> {
   const u = await prisma.user.findUnique({ where: { id: userId }, select: { isExternal: true } });

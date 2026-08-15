@@ -17,6 +17,9 @@ export function overdueWhere(today: Date): Prisma.TaskWhereInput {
     scheduledDate: { lt: today },
     status: { notIn: TERMINAL },
     archivedAt: null,
+    // Блок «Требуют внимания» — про доставки: просроченные задачи цеха и снабжения видно на своей
+    // вкладке, и мешать их с заявками водителей на общей доске незачем (15.08.2026).
+    kind: "DELIVERY",
   };
 }
 
@@ -27,5 +30,6 @@ export function tomorrowPassWhere(tomorrow: Date): Prisma.TaskWhereInput {
     passStatus: "NEEDED",
     status: { notIn: TERMINAL },
     archivedAt: null,
+    kind: "DELIVERY", // пропусков у задач сотрудникам не бывает — фильтр для единообразия
   };
 }

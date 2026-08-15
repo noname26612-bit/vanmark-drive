@@ -438,7 +438,8 @@ function DayDetail({
     // hideCancelled (11.08.2026): раньше окно дня показывало отменённые (и завышало итог), а сама
     // ячейка календаря их уже не считала — цифры расходились. Теперь и там, и там одинаково.
     sel
-      ? `/api/tasks?dateFrom=${sel.day}&dateTo=${sel.day}&assigneeId=${sel.driverId}&hideCancelled=1`
+      ? // Окно дня показывает то же, что считает загрузку, — доставки (15.08.2026).
+        `/api/tasks?kind=DELIVERY&dateFrom=${sel.day}&dateTo=${sel.day}&assigneeId=${sel.driverId}&hideCancelled=1`
       : null,
     fetcher,
   );

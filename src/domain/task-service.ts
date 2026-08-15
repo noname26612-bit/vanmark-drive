@@ -3,7 +3,14 @@
 // Каждое изменение атомарно пишет событие в TaskEvent (CLAUDE.md правило 3 — журнал только на запись).
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
-import type { PassStatus, PaymentType, Role, TaskStatus, WorksheetStatus } from "@/generated/prisma/enums";
+import type {
+  PassStatus,
+  PaymentType,
+  Role,
+  TaskKind,
+  TaskStatus,
+  WorksheetStatus,
+} from "@/generated/prisma/enums";
 import { checkTransition, isDispatcherRole } from "./task-status";
 import { assertTaskManager, isTaskManagerRole } from "./task-access";
 import { resolveAssignedDate } from "./assign-date";
@@ -18,12 +25,15 @@ import { notifyTaskAssignee, notifyCoDriverAssigned } from "@/lib/push";
 import { geocodeAddress } from "@/lib/geocode";
 import { computeEstimate } from "./capacity-service";
 import { syncUnsignedDocMark } from "./kpi-service";
+import { requireStaffTaskType } from "./task-type-service";
 import { periodOf } from "./kpi";
 import type { LatLng } from "./capacity";
 
 export type Actor = { id: string; role: Role };
 
 export type CreateTaskInput = {
+  /** Контур задачи (15.08.2026). Не задан — доставка, как было до появления двух контуров. */
+  kind?: TaskKind;
   typeId: string;
   title: string;
   address: string;
@@ -70,6 +80,11 @@ export type ListFilters = {
   // Архив (11.08.2026): по умолчанию списки показывают только активные заявки. scope="archive" —
   // раздел «Архив» во «Все задачи», scope="all" — служебная область (не используется в UI).
   scope?: "active" | "archive" | "all";
+  /**
+   * Контур (15.08.2026). Экраны доставок просят DELIVERY, вкладка «Сотрудники» — STAFF.
+   * Без фильтра отдаются оба — так «Все задачи» умеют показать любую заявку по номеру.
+   */
+  kind?: TaskKind;
 };
 
 // Краткие связи для карточек/списков (используется и записями: createTask/assign/transition...).
@@ -251,6 +266,7 @@ export async function listTasks(filters: ListFilters): Promise<TaskListWire[]> {
   if (filters.status) and.push({ status: filters.status });
   else if (filters.hideCancelled) and.push({ status: { not: "CANCELLED" } });
   if (filters.typeId) and.push({ typeId: filters.typeId });
+  if (filters.kind) and.push({ kind: filters.kind });
 
   const q = filters.q?.trim();
   if (q) {
@@ -407,15 +423,26 @@ export async function createTask(
 ): Promise<TaskListItem> {
   assertTaskManager(actor);
 
-  const typeId = input.typeId;
+  // Контур решает почти всё дальнейшее: у задачи сотрудникам нет ни адреса, ни денег, ни актов —
+  // только «что сделать», кому и когда (решение Артёма 15.08.2026).
+  const kind: TaskKind = input.kind === "STAFF" ? "STAFF" : "DELIVERY";
+  const staff = kind === "STAFF";
+
+  // Классификации у задач сотрудникам нет, но Task.typeId обязателен — служебный тип подставляет
+  // сервер: форма его не знает и не показывает.
+  const typeId = staff ? (await requireStaffTaskType()).id : input.typeId;
   const title = clean(input.title);
-  const address = clean(input.address);
-  const orgName = clean(input.orgName);
-  const contactName = clean(input.contactName);
-  const contactPhone = clean(input.contactPhone);
+  // Адрес у задачи сотрудникам не спрашивают: работа в цехе или разъезды по снабжению не ложатся в
+  // одну строку адреса. Колонку не делаем nullable (её читает весь код доставок) — храним пустую.
+  const address = staff ? "" : clean(input.address);
+  const orgName = staff ? null : clean(input.orgName);
+  const contactName = staff ? null : clean(input.contactName);
+  const contactPhone = staff ? null : clean(input.contactPhone);
   if (!typeId) throw Errors.validation("Не выбран тип задачи");
   if (!title) throw Errors.validation("Не указано название");
-  if (!address) throw Errors.validation("Не указан адрес");
+  if (!staff && !address) throw Errors.validation("Не указан адрес");
+  // Дальше адрес — всегда строка: у доставки он проверен выше, у задачи сотрудникам пустой.
+  const addressValue = address ?? "";
   // Организация, контакт, телефон — НЕобязательны при создании (решение Артёма 24.07.2026: быстрая
   // постановка заявки; раньше были обязательны — 02.07). Обязательны только Тип, Название, Адрес.
   // Редактирование (updateTaskFields) тоже мягкое — поля можно очищать в null.
@@ -423,9 +450,12 @@ export async function createTask(
   // Тип задаёт дефолт требования акта; диспетчер может снять его галочкой «акт не нужен» (PRD §4).
   const type = await prisma.taskType.findUnique({
     where: { id: typeId },
-    select: { requiresSignedDoc: true, requiresPricing: true, onSiteMinutes: true },
+    select: { requiresSignedDoc: true, requiresPricing: true, onSiteMinutes: true, kind: true },
   });
   if (!type) throw Errors.validation("Неизвестный тип задачи");
+  // Тип и контур обязаны сойтись: заявка водителю со служебным типом (и наоборот) означала бы, что
+  // задача попала не на тот экран и мимо всех расчётов.
+  if (type.kind !== kind) throw Errors.validation("Тип задачи не из этого раздела");
   const requiresSignedDoc =
     input.requiresAct === undefined || input.requiresAct === null ? type.requiresSignedDoc : input.requiresAct;
   // Причину снятия храним, только когда акт реально сняли с типа, который его ожидал.
@@ -435,13 +465,17 @@ export async function createTask(
 
   let assigneeId: string | null = null;
   if (input.assigneeId) {
-    assigneeId = await assertAssignableDriver(input.assigneeId);
+    assigneeId = await assertAssignableFor(kind, input.assigneeId);
   }
   const status: TaskStatus = assigneeId ? "ASSIGNED" : "NEW";
 
   // Напарник (20.07.2026, PRD §4): активный водитель, только при ответственном и != ему.
+  // У задач сотрудникам пары нет — вдвоём в цехе работают по договорённости, а не по заявке.
   let coDriverId: string | null = null;
   let coDriverName = "";
+  if (input.coDriverId && staff) {
+    throw Errors.validation("У задач сотрудникам напарника не бывает");
+  }
   if (input.coDriverId) {
     coDriverId = await assertAssignableDriver(input.coDriverId);
     coDriverId = checkCoDriverRules(coDriverId, assigneeId);
@@ -452,24 +486,29 @@ export async function createTask(
   }
 
   // Стоимость поездки перевозчика (этап 3, 02.07): целое ≥ 0, вводит диспетчер.
-  const carrierCost = validateCarrierCost(input.carrierCost);
+  const carrierCost = staff ? null : validateCarrierCost(input.carrierCost);
 
   // Оценка времени (Фаза 2, PRD §14): геокодируем адрес и считаем «норма типа + дорога».
   // Геокод и расчёт — ДО транзакции (внешний вызов не держит БД). Сбой геокодера → дорога не учтена.
+  // Задачи сотрудникам в ёмкость не входят: адреса у них нет, а «норма на объекте» бессмысленна —
+  // поэтому ни геокода, ни оценки (в календаре загрузки они и не показываются).
   const timeFromClean = clean(input.timeFrom);
-  const point = await geocodeAddress(address);
-  const estimate = await computeEstimate({
-    onSiteMinutes: type.onSiteMinutes,
-    point,
-    timeFrom: timeFromClean,
-  });
+  const point = staff ? null : await geocodeAddress(addressValue);
+  const estimate = staff
+    ? { totalMinutes: null }
+    : await computeEstimate({
+        onSiteMinutes: type.onSiteMinutes,
+        point,
+        timeFrom: timeFromClean,
+      });
 
   const created = await prisma.$transaction(async (tx) => {
     const task = await tx.task.create({
       data: {
         typeId,
+        kind,
         title,
-        address,
+        address: addressValue,
         description: clean(input.description),
         equipment: clean(input.equipment),
         orgName,
@@ -477,15 +516,16 @@ export async function createTask(
         contactPhone,
         addressLink: clean(input.addressLink),
         invoiceNumber: clean(input.invoiceNumber),
-        paymentType: input.paymentType ?? "NONE",
-        paymentAmount: input.paymentAmount ?? null,
-        paymentNote: clean(input.paymentNote),
+        // Денег у задач сотрудникам не бывает — ни оплаты на точке, ни суммы, ни заметки.
+        paymentType: staff ? "NONE" : (input.paymentType ?? "NONE"),
+        paymentAmount: staff ? null : (input.paymentAmount ?? null),
+        paymentNote: staff ? null : clean(input.paymentNote),
         carrierCost,
         scheduledDate: parseDate(input.scheduledDate),
         timeFrom: timeFromClean,
         timeTo: clean(input.timeTo),
         timeNote: clean(input.timeNote),
-        passStatus: input.passStatus ?? "NOT_NEEDED",
+        passStatus: staff ? "NOT_NEEDED" : (input.passStatus ?? "NOT_NEEDED"),
         priority: input.priority ?? false,
         requiresSignedDoc,
         actWaivedNote,
@@ -600,6 +640,7 @@ export async function updateTaskFields(
         where: {
           OR: [{ assigneeId: newCoDriverId }, { coDriverId: newCoDriverId }],
           status: "IN_PROGRESS",
+          kind: "DELIVERY", // задача в цехе не делает напарника занятым на маршруте
           id: { not: taskId },
         },
         select: { number: true },
@@ -696,12 +737,17 @@ async function assertNoOtherActiveTask(
   newAssigneeId: string | null,
   currentAssigneeId: string | null,
   status: TaskStatus,
+  kind: TaskKind = "DELIVERY",
 ): Promise<void> {
   if (!newAssigneeId || newAssigneeId === currentAssigneeId || status !== "IN_PROGRESS") return;
+  // Правило «одна активная» — про доставки: работа в цехе идёт параллельно и не занимает водителя
+  // на маршруте (решение Артёма 15.08.2026).
+  if (kind === "STAFF") return;
   const other = await prisma.task.findFirst({
     where: {
       OR: [{ assigneeId: newAssigneeId }, { coDriverId: newAssigneeId }],
       status: "IN_PROGRESS",
+      kind: "DELIVERY",
       id: { not: taskId },
     },
     select: { number: true, coDriverId: true },
@@ -727,13 +773,13 @@ export async function assignTask(
 
   let name = "";
   if (assigneeId) {
-    await assertAssignableDriver(assigneeId);
+    await assertAssignableFor(task.kind, assigneeId);
     const u = await prisma.user.findUnique({ where: { id: assigneeId }, select: { name: true } });
     name = u?.name ?? "";
   }
 
   // Перенос активной задачи другому водителю не должен дать ему вторую «В работе» (В3).
-  await assertNoOtherActiveTask(taskId, assigneeId, task.assigneeId, task.status);
+  await assertNoOtherActiveTask(taskId, assigneeId, task.assigneeId, task.status, task.kind);
 
   // Судьба напарника при смене ответственного (20.07.2026): на напарника → swap ролей,
   // на третьего/снятие → пара распадается, тот же → без изменений (см. co-driver.ts).
@@ -833,13 +879,13 @@ export async function planTask(
 
   let name = "";
   if (assigneeId) {
-    await assertAssignableDriver(assigneeId);
+    await assertAssignableFor(task.kind, assigneeId);
     const u = await prisma.user.findUnique({ where: { id: assigneeId }, select: { name: true } });
     name = u?.name ?? "";
   }
 
   // Перенос активной задачи другому водителю не должен дать ему вторую «В работе» (В3).
-  await assertNoOtherActiveTask(taskId, assigneeId, task.assigneeId, task.status);
+  await assertNoOtherActiveTask(taskId, assigneeId, task.assigneeId, task.status, task.kind);
 
   // Судьба напарника при смене ответственного — как в assignTask (swap/removed/none).
   const pair = resolveCoDriverOnAssign(
@@ -1052,7 +1098,10 @@ export async function transitionTask(
   }
 
   // Взятие/возобновление работы (→IN_PROGRESS): требуется открытая смена + одна активная задача.
-  if (toStatus === "IN_PROGRESS" && task.assigneeId) {
+  // Задачи сотрудникам живут вне этих правил (решение Артёма 15.08.2026): смена — про рабочий день
+  // водителя на маршруте, а работа в цехе идёт параллельно доставкам и по ходу дня переключается.
+  const staffTask = task.kind === "STAFF";
+  if (toStatus === "IN_PROGRESS" && task.assigneeId && !staffTask) {
     // Требование открытой смены — только когда ВОДИТЕЛЬ берёт СВОЮ задачу (решение Артёма 19.06.2026).
     // Диспетчер ведёт статусы за исполнителя (в т.ч. внешнего перевозчика без смены) — его не блокируем.
     // Внешний перевозчик (User.isExternal, 02.07) смен не ведёт — гейт к нему не применяется; признак
@@ -1071,10 +1120,13 @@ export async function transitionTask(
     // Правило по assigneeId — работает и когда водитель берёт сам, и когда диспетчер ведёт за исполнителя.
     // Жёсткий запрет (Артём 20.07): занятость НАПАРНИКОМ в активной парной блокирует так же, как своя
     // активная. Пока парная лишь назначена (не IN_PROGRESS) — не блокирует.
+    // Считаем только доставки: задача в цехе не должна мешать взять заявку — это разная работа,
+    // и «одна активная» задумывалась как «водитель в один момент едет по одному адресу».
     const other = await prisma.task.findFirst({
       where: {
         OR: [{ assigneeId: task.assigneeId }, { coDriverId: task.assigneeId }],
         status: "IN_PROGRESS",
+        kind: "DELIVERY",
         id: { not: taskId },
       },
       select: { number: true, coDriverId: true },
@@ -1284,4 +1336,25 @@ async function assertAssignableDriver(userId: string): Promise<string> {
     throw Errors.validation("Назначить можно только активного водителя");
   }
   return u.id;
+}
+
+/**
+ * Исполнитель задачи сотрудникам — тот, кому выдан персональный доступ (staffTasksAccess).
+ * Роль намеренно НЕ проверяем: сегодня это водители Александр и Николай, завтра — сотрудники цеха,
+ * которых заведут тем же флагом. Право читается из БД, а не из запроса.
+ */
+async function assertAssignableStaff(userId: string): Promise<string> {
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, isActive: true, staffTasksAccess: true },
+  });
+  if (!u || !u.isActive || !u.staffTasksAccess) {
+    throw Errors.validation("Задачи сотрудникам можно ставить только тем, кому открыт этот доступ");
+  }
+  return u.id;
+}
+
+/** Кого можно поставить исполнителем в этом контуре. */
+async function assertAssignableFor(kind: TaskKind, userId: string): Promise<string> {
+  return kind === "STAFF" ? assertAssignableStaff(userId) : assertAssignableDriver(userId);
 }

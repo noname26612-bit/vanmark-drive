@@ -60,7 +60,8 @@ export function PlanningClient({
 
   // hideCancelled (11.08.2026): отменённая заявка не занимает ячейку и не входит ни в «≈ часы»,
   // ни в счётчик «N зад.» — иначе диспетчер планирует день по завышенной загрузке.
-  const key = `/api/tasks?dateFrom=${weekStart}&dateTo=${weekEnd}&includeUndated=1&hideCancelled=1`;
+  // Планирование расставляет доставки по дням недели; задачи сотрудникам — на вкладке «Сотрудники».
+  const key = `/api/tasks?kind=DELIVERY&dateFrom=${weekStart}&dateTo=${weekEnd}&includeUndated=1&hideCancelled=1`;
   const { data: tasks, isLoading, error: loadError, mutate } = useSWR<TaskDTO[]>(key, fetcher, LIVE);
   const [actionError, setActionError] = useState<string | null>(null);
 

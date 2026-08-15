@@ -4,6 +4,7 @@
 import type { CreateTaskInput } from "@/domain/task-service";
 import type { TaskTypeInput } from "@/domain/task-type-service";
 import { PassStatus, PaymentType, TaskStatus } from "@/generated/prisma/enums";
+import type { TaskKind } from "@/generated/prisma/enums";
 
 /** Разбор полей типа задачи (справочник админа). */
 export function parseTaskTypeFields(body: Record<string, unknown>): Partial<TaskTypeInput> {
@@ -44,6 +45,11 @@ const NULLABLE_STRINGS = [
 
 const REQUIRED_STRINGS = ["typeId", "title", "address"] as const;
 
+/** Контур задачи из запроса (белый список — из query и тела приходит что угодно). */
+export function parseTaskKind(v: unknown): TaskKind | undefined {
+  return v === "DELIVERY" || v === "STAFF" ? v : undefined;
+}
+
 function isPaymentType(v: unknown): v is PaymentType {
   return typeof v === "string" && Object.values(PaymentType).includes(v as PaymentType);
 }
@@ -53,6 +59,9 @@ function isPassStatus(v: unknown): v is PassStatus {
 
 export function parseTaskFields(body: Record<string, unknown>): Partial<CreateTaskInput> {
   const out: Record<string, unknown> = {};
+
+  const kind = parseTaskKind(body.kind);
+  if (kind) out.kind = kind;
 
   for (const k of NULLABLE_STRINGS) {
     if (k in body) {

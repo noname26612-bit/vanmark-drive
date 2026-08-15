@@ -107,7 +107,9 @@ export function BoardClient({
   const horizonEnd = addDaysISO(today, HORIZON_DAYS);
   // hideCancelled (11.08.2026): отменённые заявки на доске не показываем — ни в колонках водителей,
   // ни в пулах, ни в счётчике «Всего». Найти отменённую можно во «Все задачи» фильтром по статусу.
-  const key = `/api/tasks?dateFrom=${today}&dateTo=${horizonEnd}&includeUndated=1&hideCancelled=1`;
+  // kind=DELIVERY: доска «Сегодня» — про заявки водителям. Задачи цеха и снабжения живут на
+  // своей вкладке «Сотрудники» (решение Артёма 15.08.2026).
+  const key = `/api/tasks?kind=DELIVERY&dateFrom=${today}&dateTo=${horizonEnd}&includeUndated=1&hideCancelled=1`;
   const { data: tasks, isLoading, error: loadError, mutate } = useSWR<TaskDTO[]>(key, fetcher, LIVE);
   const { data: attention, mutate: mutateAttention } = useSWR<AttentionDTO>(
     `/api/board/attention?date=${today}`,

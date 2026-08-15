@@ -121,6 +121,7 @@ export async function getDriverSummary(
         select: {
           assigneeId: true,
           coDriverId: true, // напарник (20.07): задача видна в сводке обоим, деньги — ответственному
+          kind: true, // контур: доставки считаем в метриках, работу в цехе — только во времени
           completedAt: true,
           estimatedMinutes: true, // план/факт (v2)
           carrierCost: true, // затраты на внешних — в «Деньги за период» (v2)
@@ -136,7 +137,7 @@ export async function getDriverSummary(
         where: {
           toStatus: { in: ["CANCELLED", "RESCHEDULED"] },
           at: { gte: range.gte, lt: range.lt },
-          task: { archivedAt: null },
+          task: { archivedAt: null, kind: "DELIVERY" },
         },
         select: { at: true, toStatus: true, task: { select: { assigneeId: true } } },
       }),
@@ -185,15 +186,20 @@ export async function getDriverSummary(
     if (!a) continue; // не активный водитель — в сводку не входит
     const dk = dateKeyInTz(t.completedAt, KPI_TZ);
     if (!inWindow(dk, w)) continue;
-    a.done += 1;
-    if (t.assignee?.isExternal && t.carrierCost) carrierCostTotal += t.carrierCost;
+    // Сводка — про доставки: «выполнено», среднее, план/факт и деньги считаются по ним (задачи
+    // цеха и снабжения не сравнимы с заявками и живут на своей вкладке). А вот ВРЕМЯ работы
+    // засчитывается по обоим контурам: иначе у Александра с Николаем, весь день провозившихся в
+    // цехе, сводка и полоса доски показали бы фиктивный простой (15.08.2026).
+    const delivery = t.kind !== "STAFF";
+    if (delivery) a.done += 1;
+    if (delivery && t.assignee?.isExternal && t.carrierCost) carrierCostTotal += t.carrierCost;
     const startedAt = t.events[0]?.at; // первый переход в «В работе» (этап A; раньше — «На месте»)
     const ms = startedAt ? t.completedAt.getTime() - startedAt.getTime() : 0;
     if (ms > 0) {
-      a.durations.push(ms); // отрицательные/нулевые (кривые данные) не учитываем
+      if (delivery) a.durations.push(ms); // отрицательные/нулевые (кривые данные) не учитываем
       bump(a.dayWorkedMs, dk, ms); // занятость по дням (v2): отработанное — к дню закрытия
       // План/факт (v2): только задачи, где есть И оценка, И факт — честное сравнение.
-      if (t.estimatedMinutes != null && t.estimatedMinutes > 0) {
+      if (delivery && t.estimatedMinutes != null && t.estimatedMinutes > 0) {
         a.planMin += t.estimatedMinutes;
         a.factMin += Math.round(ms / 60000);
         a.planFactCount += 1;
@@ -205,7 +211,7 @@ export async function getDriverSummary(
     if (t.coDriverId) {
       const ca = acc.get(t.coDriverId);
       if (ca) {
-        ca.pairDone += 1;
+        if (delivery) ca.pairDone += 1;
         if (ms > 0) bump(ca.dayWorkedMs, dk, ms);
       }
     }
@@ -410,6 +416,7 @@ export async function getSummaryDetails(
         status: "DONE",
         completedAt: { gte: range.gte, lt: range.lt },
         archivedAt: null, // список за цифрой строится теми же фильтрами, что и сама цифра
+        kind: "DELIVERY", // ...и тем же контуром: цифра считает доставки (15.08.2026)
         ...(m === "carrier" ? { assignee: { isExternal: true } } : {}),
         ...(m === "payments" ? { paymentReceived: true } : {}),
         ...(m === "priced-works" ? { worksheetStatus: { in: ["PRICED", "SIGNED"] } } : {}),
@@ -516,7 +523,9 @@ export async function getSummaryDetails(
       where: {
         toStatus: m === "cancelled" ? "CANCELLED" : "RESCHEDULED",
         at: { gte: range.gte, lt: range.lt },
-        ...(driverId ? { task: { assigneeId: driverId } } : { task: { assigneeId: { not: null } } }),
+        ...(driverId
+          ? { task: { assigneeId: driverId, kind: "DELIVERY" as const } }
+          : { task: { assigneeId: { not: null }, kind: "DELIVERY" as const } }),
       },
       select: {
         at: true,

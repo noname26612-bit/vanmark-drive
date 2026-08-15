@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
 import { requireTaskManager, errorResponse, readJson } from "@/lib/api-route";
 import { listTasks, createTask, type ListFilters } from "@/domain/task-service";
-import { parseTaskFields, parseStatus } from "@/lib/task-input";
+import { parseTaskFields, parseStatus, parseTaskKind } from "@/lib/task-input";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,6 +27,8 @@ export async function GET(req: Request) {
       hideCancelled: p.get("hideCancelled") === "1",
       // Область: активные (по умолчанию) или архив — раздел «Архив» во «Все задачи» (11.08).
       scope: p.get("scope") === "archive" ? "archive" : "active",
+      // Контур (15.08): доска и планирование просят DELIVERY, вкладка «Сотрудники» — STAFF.
+      kind: parseTaskKind(p.get("kind")),
     };
     return NextResponse.json(ok(await listTasks(filters)));
   } catch (e) {
