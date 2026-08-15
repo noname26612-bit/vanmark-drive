@@ -82,6 +82,7 @@ enum Role        { ADMIN DISPATCHER DRIVER SERVICE_MANAGER }
 enum TaskStatus  { NEW ASSIGNED IN_PROGRESS DONE ON_HOLD RESCHEDULED CANCELLED  /* legacy: */ ACCEPTED EN_ROUTE ON_SITE }
 enum ShiftStatus { REQUESTED OPEN CLOSED }   // смена водителя: открыта → подтверждена → закрыта
 enum PassStatus  { NOT_NEEDED NEEDED ORDERED }
+enum TaskKind    { DELIVERY STAFF }   // контур: заявки водителям / задачи сотрудникам (PRD §17)
 enum PaymentType { NONE OFFICE ON_SITE }
 enum AttachmentKind { PHOTO DOCUMENT }
 enum WorksheetStatus { DRAFT PRICING PRICED SIGNED }   // ведомость работ (этап 12, PRD §13.4)
@@ -132,6 +133,10 @@ model Task {
   number        Int        @unique        // сквозной, sequence (старт задаёт сид)
   typeId        String
   type          TaskType   @relation(fields: [typeId], references: [id])
+  // Контур (15.08.2026, PRD §17): DELIVERY — заявки водителям, STAFF — задачи сотрудникам (цех и
+  // снабжение). Снимок с типа на момент создания: тип могут переименовать, а раскладка экранов по
+  // контурам меняться не должна. Экраны доставок фильтруют kind=DELIVERY, телефон — оба вместе.
+  kind          TaskKind   @default(DELIVERY)
   requiresSignedDoc Boolean @default(false) // требование акта НА ЗАДАЧЕ (этап 11): снимок из типа, диспетчер снимает галочкой
   actWaivedNote String?                    // причина снятия акта на заявке (этап 11)
   worksheetStatus WorksheetStatus?         // ведомость работ (этап 12): null — не нужна для типа
@@ -567,6 +572,7 @@ model MachineAttachment {
 
 - **Роль SERVICE_MANAGER (05.08.2026, §4г).** Права роли — БЕЛЫЙ список, а не «всё кроме»: доступ к модулю станков дают три роли (`isMachineRole` = SERVICE_MANAGER | DISPATCHER | ADMIN, `src/domain/machine-access.ts`), всё остальное для новой роли закрыто по умолчанию. Ключевое требование при её вводе — **проверить существующие guard'ы на допущение «роль не DRIVER ⇒ штаб»**: `requireDispatcher` опирается на `isDispatcherRole` (белый список ADMIN|DISPATCHER — новая роль не проходит), `requireAdmin`/`requireDriver` — точное сравнение, страницы — `requireRole`/`requireAnyRole` с редиректом на `homeForRole`. Отдельно проверяются эндпоинты с одним лишь `requireApiUser()` (без роли): `canViewTask` для SERVICE_MANAGER возвращает false → чужая карточка/вложение отдают 404. Маршруты новой роли: `homeForRole('SERVICE_MANAGER') = '/machines'`; `exhaustive switch` в `src/domain/roles.ts` заставляет типизацию упасть, если роль забыли учесть.
   - **Персональный доступ (15.08.2026).** К белому списку ролей добавлен флаг `User.equipmentAccess` — единственное право в системе, выданное не ролью (Николай и Александр). Предикат один: `canAccessEquipment` = роль из списка ИЛИ флаг (`src/domain/machine-access.ts`); guard'ы `requireMachineUser()` (API) и `requireEquipmentUser()` (страницы) читают флаг ИЗ БД, а не из JWT, — выдача и отзыв действуют сразу, без перезахода. Флаг НИЧЕГО не открывает сверх оборудования: задачи, смены, KPI, сводка и админка закрыты своими белыми списками ролей, и это зафиксировано e2e (`machines-access.spec.ts`, describe «Персональный доступ к оборудованию»).
+  - **Второй персональный флаг — `User.staffTasksAccess` (15.08.2026, вечер).** Устроен так же: решает, кому можно ставить задачи сотрудникам (цех и снабжение) и кто видит их у себя в телефоне. Читается из БД (`assertAssignableStaff` в `task-service.ts`, `listStaffPerformers` в `users.ts`), роль при этом не проверяется — сегодня флаг у водителей Александра и Николая, завтра его получат сотрудники цеха, и ролевую модель это не тронет. Изоляция задач не меняется: телефон ходит только в `/api/my/tasks`, чужая задача — 404.
   - Модуль станков изоляции «по владельцу» не имеет by design (все три роли видят весь парк — это общая картотека, а не личные задачи), поэтому вся его защита — ролевая: `requireMachineUser()` в каждом handler'е, включая раздачу фото `GET /api/machines/photos/:id`. Водитель к любому `/api/machines/*` получает **404** (не 403 — не раскрываем существование модуля).
   - Участие в KPI/зарплате = наличие АКТИВНОГО денежного профиля (`DriverPayProfile.isActive`). Водители без профиля (подменный Николай, внешний перевозчик) исключены из детектора нарушений, списка кандидатов, ручных отметок и расчёта; экран «Мой расчёт» им не показывается (`isPayrollDriver`). Это единственный признак участия — отдельного флага в схеме нет.
 
@@ -576,7 +582,8 @@ model MachineAttachment {
 |---|---|---|
 | POST /api/auth/[...nextauth] | все | вход/выход |
 | GET /api/tasks?date&status&assigneeId&q&hideCancelled&scope | Д, С | список с фильтрами. `hideCancelled=1` — без отменённых (доска, планирование, окно дня календаря, 11.08); `scope=archive` — раздел «Архив» (11.08). `q` (20.07.2026): ILIKE по title/orgName/invoiceNumber/contactName/address/description/equipment/contactPhone + № заявки (короткие числа, включая «№615»); ≥3 цифр в запросе — доп. поиск по цифрам телефона (`regexp_replace`, «8…»≈«+7…», параметризованный $queryRaw) |
-| POST /api/tasks | Д, С | создать (номер выдаёт сервер) |
+| POST /api/tasks | Д, С | создать (номер выдаёт сервер). `kind: "STAFF"` — задача сотруднику: тип подставляет сервер, адрес/деньги/акт/напарник не принимаются (PRD §17) |
+| GET /api/staff-performers | Д, С, А | кому можно ставить задачи сотрудникам (`User.staffTasksAccess`) |
 | PATCH /api/tasks/:id | Д, С | редактирование полей (op:edit, в т.ч. напарник coDriverId — 20.07), назначение (op:assign, swap-правило пары), перенос, **архив/возврат** (op:archive\|unarchive, 11.08: мягкое удаление дубля; закрытый месяц — PERIOD_CLOSED) |
 | GET /api/my/tasks?date&scope=today\|upcoming | В | только свои: ответственный ИЛИ напарник, владение из сессии (myTasksWhere). today: на сегодня + просроченные открытые + без даты; upcoming: завтра+ |
 | GET /api/tasks/:id | Д, В(своя) | карточка + события + вложения |

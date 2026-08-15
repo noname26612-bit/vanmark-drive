@@ -27,8 +27,9 @@ export async function GET(req: Request) {
       hideCancelled: p.get("hideCancelled") === "1",
       // Область: активные (по умолчанию) или архив — раздел «Архив» во «Все задачи» (11.08).
       scope: p.get("scope") === "archive" ? "archive" : "active",
-      // Контур (15.08): доска и планирование просят DELIVERY, вкладка «Сотрудники» — STAFF.
-      kind: parseTaskKind(p.get("kind")),
+      // Контур (15.08). По умолчанию — доставки: так этот список вёл себя всегда, и старый клиент,
+      // открытый до деплоя, не увидит на доске задач цеха. Вкладка «Сотрудники» просит STAFF явно.
+      kind: parseTaskKind(p.get("kind")) ?? "DELIVERY",
     };
     return NextResponse.json(ok(await listTasks(filters)));
   } catch (e) {

@@ -11,6 +11,7 @@ import { enqueueOrSend } from "@/lib/offline/send";
 import { useOnline } from "@/lib/offline/net";
 import { usePendingActions } from "@/lib/offline/use-queue";
 import { overlayStatus, overlayShift, currentShift } from "@/lib/offline/overlay";
+import { isStaffTask } from "@/lib/task-dto";
 import type { TaskDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
 import {
@@ -102,6 +103,12 @@ export function DriverTasksClient({
     .filter((t) => !isTerminal(display(t)))
     .sort((a, b) => (display(a) === "IN_PROGRESS" ? 0 : 1) - (display(b) === "IN_PROGRESS" ? 0 : 1));
   const done = tasks.filter((t) => isTerminal(display(t))); // в «Сегодня» это завершённые за день
+  // Два контура в одном дне (15.08.2026): у Александра с Николаем бывают и доставки, и работа по
+  // цеху/снабжению. Разделяем заголовками — но только когда задачи сотрудникам реально есть, иначе
+  // у Каширского и Писарева экран не меняется ни на пиксель.
+  const activeStaff = active.filter((t) => isStaffTask(t));
+  const activeDelivery = active.filter((t) => !isStaffTask(t));
+  const splitContours = activeStaff.length > 0 && activeDelivery.length > 0;
   // Прогрев карточек (O10): пока связь есть, тихо кэшируем данные и HTML карточек видимого списка,
   // чтобы офлайн открывалась любая задача дня, а не только та, что успели открыть вручную.
   usePrefetchCards(
@@ -205,11 +212,32 @@ export function DriverTasksClient({
         <EmptyState tab={tab} />
       ) : (
         <ul className="flex flex-col gap-3">
-          {active.map((t) => (
-            <li key={t.id}>
-              <TaskCard task={t} displayStatus={display(t)} pending={pendingCountFor(t)} today={today} online={online} meId={meId} />
-            </li>
-          ))}
+          {splitContours ? (
+            <>
+              <li className="px-1 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+                Доставки
+              </li>
+              {activeDelivery.map((t) => (
+                <li key={t.id}>
+                  <TaskCard task={t} displayStatus={display(t)} pending={pendingCountFor(t)} today={today} online={online} meId={meId} />
+                </li>
+              ))}
+              <li className="mt-2 px-1 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+                Задачи
+              </li>
+              {activeStaff.map((t) => (
+                <li key={t.id}>
+                  <TaskCard task={t} displayStatus={display(t)} pending={pendingCountFor(t)} today={today} online={online} meId={meId} />
+                </li>
+              ))}
+            </>
+          ) : (
+            active.map((t) => (
+              <li key={t.id}>
+                <TaskCard task={t} displayStatus={display(t)} pending={pendingCountFor(t)} today={today} online={online} meId={meId} />
+              </li>
+            ))
+          )}
           {done.length > 0 ? (
             <>
               <li className="mt-2 px-1 text-xs font-semibold uppercase tracking-wide text-neutral-400">
@@ -464,6 +492,7 @@ function TaskCard({
   // payload). Полная навигация через <a> гарантированно проходит через SW (networkFirst → кэш HTML +
   // данные из IndexedDB). Онлайн оставляем быстрый SPA-переход по <Link>.
   const CardLink: React.ElementType = online ? Link : "a";
+  const staffTask = isStaffTask(task); // задача по цеху/снабжению: без адреса, маршрута и звонков
   const dateISO = task.scheduledDate?.slice(0, 10) ?? null;
   const overdue = dateISO !== null && dateISO < today && !isTerminal(displayStatus);
   const undated = dateISO === null && !isTerminal(displayStatus);
@@ -533,7 +562,14 @@ function TaskCard({
         ) : null}
 
         <p className="mt-1 text-base font-semibold leading-snug text-neutral-900">{task.title}</p>
-        <p className="mt-0.5 text-sm leading-snug text-neutral-500">{task.address}</p>
+        {/* У задачи сотруднику адреса нет — вместо пустой строки показываем, что это за работа. */}
+        {staffTask ? (
+          <p className="mt-0.5 text-sm leading-snug text-neutral-500">
+            {task.description?.trim() || "Задача по цеху / снабжению"}
+          </p>
+        ) : (
+          <p className="mt-0.5 text-sm leading-snug text-neutral-500">{task.address}</p>
+        )}
 
         {task.passStatus !== "NOT_NEEDED" || pay ? (
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -546,18 +582,21 @@ function TaskCard({
       </CardLink>
 
       {/* Быстрые действия — вне ссылки, чтобы тап не открывал карточку.
-          flex-wrap: список номеров (если их несколько) переносится строкой ниже кнопок. */}
-      <div className="flex flex-wrap gap-2 border-t border-neutral-100 px-3 py-2">
-        <a
-          href={navUrl(task.addressLink, task.address)}
-          target="_blank"
-          rel="noopener"
-          className="inline-flex h-12 flex-1 items-center justify-center gap-1.5 rounded-lg bg-blue-50 text-sm font-medium text-blue-700"
-        >
-          <Navigation className="h-4 w-4" /> Навигатор
-        </a>
-        <CallButton phone={task.contactPhone} variant="compact" />
-      </div>
+          flex-wrap: список номеров (если их несколько) переносится строкой ниже кнопок.
+          У задач сотрудникам ехать некуда и звонить некому — строку действий не показываем. */}
+      {staffTask ? null : (
+        <div className="flex flex-wrap gap-2 border-t border-neutral-100 px-3 py-2">
+          <a
+            href={navUrl(task.addressLink, task.address)}
+            target="_blank"
+            rel="noopener"
+            className="inline-flex h-12 flex-1 items-center justify-center gap-1.5 rounded-lg bg-blue-50 text-sm font-medium text-blue-700"
+          >
+            <Navigation className="h-4 w-4" /> Навигатор
+          </a>
+          <CallButton phone={task.contactPhone} variant="compact" />
+        </div>
+      )}
     </div>
   );
 }

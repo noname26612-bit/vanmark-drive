@@ -16,6 +16,7 @@ import { usePendingActions } from "@/lib/offline/use-queue";
 import { overlayStatus, overlayShift, currentShift } from "@/lib/offline/overlay";
 import { ConflictCenter } from "../../conflict-center";
 import { compressImage } from "@/lib/image-compress";
+import { isStaffTask } from "@/lib/task-dto";
 import type { TaskDetailDTO, WorkCatalogItemDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
 import {
@@ -264,6 +265,9 @@ export function DriverTaskClient({
   const wsEditable = requiresPricing && (ws === null || ws === "DRAFT");
   const worksheetTotal = t.workItems.reduce((s, w) => s + (w.price ?? 0) * w.quantity, 0);
   const onSite = t.paymentType === "ON_SITE";
+  // Задача по цеху/снабжению (15.08.2026): без адреса и маршрута. Деньги, акты и ведомость у неё и
+  // так выключены собственными условиями — тип служебный, оплаты нет.
+  const staffTask = isStaffTask(t);
   // Завершить можно: не ON_SITE; либо деньги получены; либо явно не получены с выбранной причиной (№8).
   const missReady = missReason !== "" && (missReason !== "Другое" || missOther.trim() !== "");
   const payReady = !onSite || payChoice === "paid" || (payChoice === "unpaid" && missReady);
@@ -546,19 +550,21 @@ export function DriverTaskClient({
       ) : null}
 
       <div className="flex flex-col gap-3 p-4">
-        {/* Адрес + Навигатор */}
-        <section className="rounded-xl border border-neutral-200 p-3">
-          <p className="text-xs uppercase tracking-wide text-neutral-400">Адрес</p>
-          <p className="mt-1 text-base text-neutral-900">{t.address}</p>
-          <a
-            href={navUrl(t.addressLink, t.address)}
-            target="_blank"
-            rel="noopener"
-            className="mt-2 inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 text-base font-medium text-white"
-          >
-            <Navigation className="h-5 w-5" /> Навигатор
-          </a>
-        </section>
+        {/* Адрес + Навигатор. У задачи по цеху/снабжению адреса нет — ехать никуда не нужно. */}
+        {staffTask ? null : (
+          <section className="rounded-xl border border-neutral-200 p-3">
+            <p className="text-xs uppercase tracking-wide text-neutral-400">Адрес</p>
+            <p className="mt-1 text-base text-neutral-900">{t.address}</p>
+            <a
+              href={navUrl(t.addressLink, t.address)}
+              target="_blank"
+              rel="noopener"
+              className="mt-2 inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 text-base font-medium text-white"
+            >
+              <Navigation className="h-5 w-5" /> Навигатор
+            </a>
+          </section>
+        )}
 
         {/* Контакт + Позвонить */}
         {t.contactName || t.contactPhone ? (
