@@ -13,8 +13,8 @@ import type { Role } from "@/domain/roles";
 // сервисника). Меню обязано совпадать с серверными guard'ами: показать вкладку, ведущую на
 // redirect, — это баг интерфейса. Новая роль по умолчанию не видит ничего, пока её не впишут.
 const TASK_ROLES: readonly Role[] = ["DISPATCHER", "ADMIN", "SERVICE_MANAGER"];
-// Диспетчерский контур (смены, KPI, деньги). Имя намеренно не «STAFF»: с 15.08.2026 «сотрудники» —
-// это отдельный контур ЗАДАЧ (цех и снабжение), и путать их нельзя.
+// Диспетчерский контур (смены, KPI, деньги). Имя намеренно не «STAFF»: «сотрудники» — это отдельный
+// контур ЗАДАЧ (вкладка «Цех»), и путать их нельзя.
 const DISPATCH_ROLES: readonly Role[] = ["DISPATCHER", "ADMIN"];
 const MACHINE_ROLES: readonly Role[] = ["DISPATCHER", "ADMIN", "SERVICE_MANAGER"];
 
@@ -22,12 +22,14 @@ const MACHINE_ROLES: readonly Role[] = ["DISPATCHER", "ADMIN", "SERVICE_MANAGER"
 // Николай и Александр). Это ЕДИНСТВЕННОЕ исключение из чисто ролевого меню, и оно ровно повторяет
 // серверный guard requireEquipmentUser: вкладка, ведущая на redirect, — баг интерфейса.
 const LINKS: { href: string; label: string; roles: readonly Role[]; equipment?: boolean }[] = [
-  { href: "/board", label: "Сегодня", roles: TASK_ROLES },
+  // Два рабочих контура идут рядом и названы по людям, а не по времени (решение Артёма
+  // 16.08.2026): «Водители» — заявки на день (бывшая «Сегодня»), «Цех» — задачи сотрудникам (бывшая
+  // «Сотрудники»). Пути /board и /staff не меняем: по ним ходят закладки и открытые вкладки.
+  { href: "/board", label: "Водители", roles: TASK_ROLES },
+  { href: "/staff", label: "Цех", roles: TASK_ROLES },
   { href: "/planning", label: "Планирование", roles: TASK_ROLES },
   { href: "/capacity", label: "Календарь", roles: TASK_ROLES },
   { href: "/tasks", label: "Все задачи", roles: TASK_ROLES },
-  // Задачи сотрудникам — цех и снабжение (15.08.2026). Ставят те же, кто ведёт заявки.
-  { href: "/staff", label: "Сотрудники", roles: TASK_ROLES },
   ...(PRICING_ENABLED ? [{ href: "/pricing", label: "Расценка", roles: DISPATCH_ROLES }] : []),
   { href: "/summary", label: "Сводка", roles: DISPATCH_ROLES },
   { href: "/kpi", label: "KPI / Зарплата", roles: DISPATCH_ROLES },

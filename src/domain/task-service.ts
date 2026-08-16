@@ -26,6 +26,7 @@ import { geocodeAddress } from "@/lib/geocode";
 import { computeEstimate } from "./capacity-service";
 import { syncUnsignedDocMark } from "./kpi-service";
 import { requireStaffTaskType } from "./task-type-service";
+import { parseStaffNumberQuery } from "@/lib/task-number";
 import { periodOf } from "./kpi";
 import type { LatLng } from "./capacity";
 
@@ -64,7 +65,7 @@ export type CreateTaskInput = {
 };
 
 export type ListFilters = {
-  date?: string; // одиночная дата (доска «Сегодня»)
+  date?: string; // одиночная дата (доска «Водители»)
   includeUndated?: boolean; // добавить пул «Без даты»
   dateFrom?: string;
   dateTo?: string;
@@ -73,7 +74,7 @@ export type ListFilters = {
   status?: TaskStatus;
   typeId?: string;
   q?: string;
-  // Отменённые заявки вне рабочих экранов (11.08.2026): «Сегодня», «Планирование» и окно дня
+  // Отменённые заявки вне рабочих экранов (11.08.2026): «Водители», «Планирование» и окно дня
   // календаря просят hideCancelled=1 — отменённая не мешает и не попадает ни в сумму часов, ни в
   // счётчик «N зад.». Во «Все задачи» флага нет: там отмену находят фильтром по статусу.
   hideCancelled?: boolean;
@@ -81,7 +82,7 @@ export type ListFilters = {
   // раздел «Архив» во «Все задачи», scope="all" — служебная область (не используется в UI).
   scope?: "active" | "archive" | "all";
   /**
-   * Контур (15.08.2026). Экраны доставок просят DELIVERY, вкладка «Сотрудники» — STAFF.
+   * Контур (15.08.2026). Экраны доставок просят DELIVERY, вкладка «Цех» — STAFF.
    * Без фильтра отдаются оба — так «Все задачи» умеют показать любую заявку по номеру.
    */
   kind?: TaskKind;
@@ -194,6 +195,37 @@ function stripWorkPrices(task: TaskDetail & { archivedByName: string | null }): 
   return { ...task, workItems: task.workItems.map((w) => ({ ...w, price: null })) };
 }
 
+/**
+ * Поля, которых у задачи сотрудникам не бывает (16.08.2026): адрес и всё вокруг него, деньги,
+ * пропуск, перевозчик, требование акта и смена типа (тип служебный, один на весь контур).
+ * При создании они уже обнулены — здесь тот же список для правки, чтобы контур нельзя было
+ * «размыть» прямым PATCH мимо интерфейса.
+ */
+const DELIVERY_ONLY_FIELDS = [
+  "typeId",
+  "address",
+  "addressLink",
+  "orgName",
+  "contactName",
+  "contactPhone",
+  "invoiceNumber",
+  "equipment",
+  "paymentType",
+  "paymentAmount",
+  "paymentNote",
+  "passStatus",
+  "carrierCost",
+  "requiresAct",
+  "actWaivedNote",
+  "estimatedMinutes",
+] as const satisfies readonly (keyof CreateTaskInput)[];
+
+function stripDeliveryOnlyFields(fields: Partial<CreateTaskInput>): Partial<CreateTaskInput> {
+  const out = { ...fields };
+  for (const key of DELIVERY_ONLY_FIELDS) delete out[key];
+  return out;
+}
+
 // Правила пары «ответственный + напарник» → единый формат ошибок API (Errors.validation).
 function checkCoDriverRules(coDriverId: string | null, assigneeId: string | null): string | null {
   try {
@@ -249,7 +281,7 @@ export async function listTasks(filters: ListFilters): Promise<TaskListWire[]> {
     const to = parseDate(filters.dateTo);
     if (from) range.gte = from;
     if (to) range.lte = to;
-    // includeUndated добавляет пул «Без даты» к диапазону (доска «Сегодня»: сегодня…+2 + без даты).
+    // includeUndated добавляет пул «Без даты» к диапазону (доска «Водители»: сегодня…+2 + без даты).
     and.push(
       filters.includeUndated
         ? { OR: [{ scheduledDate: range }, { scheduledDate: null }] }
@@ -283,6 +315,11 @@ export async function listTasks(filters: ListFilters): Promise<TaskListWire[]> {
     // № заявки: только короткие цифровые строки — длинные (телефон) переполнили бы Int-колонку
     // (Prisma кидает ошибку валидации на where number = 8926… → 500 на весь список).
     if (/^\d{1,9}$/.test(q)) or.push({ number: Number.parseInt(q, 10) });
+
+    // Номер цеха: «Ц-5», «ц5», «c5» и просто «5» (16.08.2026). Доставкам это не мешает — у них
+    // staffNumber пуст, и лишних совпадений такое условие не даёт даже без фильтра по контуру.
+    const staffNo = parseStaffNumberQuery(q);
+    if (staffNo !== null) or.push({ staffNumber: staffNo });
 
     // Цифры запроса: «№615» находит № заявки, «8 926 123-45-67» — телефон в любом формате записи.
     const digits = q.replace(/\D/g, "");
@@ -469,15 +506,13 @@ export async function createTask(
   }
   const status: TaskStatus = assigneeId ? "ASSIGNED" : "NEW";
 
-  // Напарник (20.07.2026, PRD §4): активный водитель, только при ответственном и != ему.
-  // У задач сотрудникам пары нет — вдвоём в цехе работают по договорённости, а не по заявке.
+  // Напарник (20.07.2026, PRD §4): только при ответственном и != ему. С 16.08.2026 пара работает и
+  // в цехе (решение Артёма): двое собирают станок так же, как двое едут на выезд. Кого можно взять
+  // напарником, решает контур — водителя в доставку, исполнителя с доступом к цеху в цех.
   let coDriverId: string | null = null;
   let coDriverName = "";
-  if (input.coDriverId && staff) {
-    throw Errors.validation("У задач сотрудникам напарника не бывает");
-  }
   if (input.coDriverId) {
-    coDriverId = await assertAssignableDriver(input.coDriverId);
+    coDriverId = await assertAssignableFor(kind, input.coDriverId);
     coDriverId = checkCoDriverRules(coDriverId, assigneeId);
     if (coDriverId) {
       const u = await prisma.user.findUnique({ where: { id: coDriverId }, select: { name: true } });
@@ -503,10 +538,14 @@ export async function createTask(
       });
 
   const created = await prisma.$transaction(async (tx) => {
+    // Номер цеха «Ц-N» (16.08.2026) — из своей последовательности, внутри той же транзакции, что и
+    // сама задача: не создалась — номер не «сгорел» зря. У доставки номер цеха пуст.
+    const staffNumber = staff ? await nextStaffNumber(tx) : null;
     const task = await tx.task.create({
       data: {
         typeId,
         kind,
+        staffNumber,
         title,
         address: addressValue,
         description: clean(input.description),
@@ -574,6 +613,11 @@ export async function updateTaskFields(
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw Errors.notFound();
   assertNotArchived(task.archivedAt);
+  // Правка задачи цеха идёт по правилам её контура (16.08.2026): полей доставки у неё нет и при
+  // создании они жёстко обнулены — значит и здесь их принимать нельзя, иначе через прямой PATCH у
+  // задачи цеха завелись бы адрес, оплата или чужой тип. Молча отбрасываем: это не ошибка
+  // диспетчера, а поля, которых у контура не существует.
+  if (task.kind === "STAFF") fields = stripDeliveryOnlyFields(fields);
   // Редактирование закрытых заявок (решение Артёма 02.07.2026): правка полей разрешена и для
   // завершённых/отменённых, НО без смены даты (перенос завершённой запрещён — как в planTask).
   const terminal = task.status === "DONE" || task.status === "CANCELLED";
@@ -631,11 +675,19 @@ export async function updateTaskFields(
   let newCoDriverId: string | null = task.coDriverId;
   let newCoDriverName = "";
   if (fields.coDriverId !== undefined && !terminal) {
-    const wanted = fields.coDriverId ? await assertAssignableDriver(fields.coDriverId) : null;
+    // Кого можно взять напарником, решает контур задачи (16.08.2026): в доставку — водителя,
+    // в цех — того, кому открыт доступ к задачам сотрудникам.
+    const wanted = fields.coDriverId ? await assertAssignableFor(task.kind, fields.coDriverId) : null;
     newCoDriverId = checkCoDriverRules(wanted, task.assigneeId);
-    // Жёсткий запрет (20.07): в АКТИВНУЮ задачу нельзя добавить напарника, занятого другой активной
-    // (своей или парной) — иначе он был бы «в работе» в двух местах сразу.
-    if (newCoDriverId && newCoDriverId !== task.coDriverId && task.status === "IN_PROGRESS") {
+    // Жёсткий запрет (20.07): в АКТИВНУЮ доставку нельзя добавить напарника, занятого другой
+    // активной доставкой (своей или парной) — иначе он был бы «в работе» в двух местах сразу.
+    // Цеха это правило не касается (15.08): контуры параллельны, работа в цехе не занимает маршрут.
+    if (
+      newCoDriverId &&
+      newCoDriverId !== task.coDriverId &&
+      task.status === "IN_PROGRESS" &&
+      task.kind === "DELIVERY"
+    ) {
       const busy = await prisma.task.findFirst({
         where: {
           OR: [{ assigneeId: newCoDriverId }, { coDriverId: newCoDriverId }],
@@ -1324,6 +1376,17 @@ export async function addComment(
       at: resolveOccurredAt(opts.occurredAt), // офлайн: момент написания, не досылки
     },
   });
+}
+
+/**
+ * Следующий номер задачи цеха из последовательности staff_task_number_seq (16.08.2026).
+ * Последовательность, а не «max+1»: два диспетчера, ставящие задачи одновременно, иначе получили бы
+ * один номер и упёрлись в уникальный индекс. nextval атомарен и не откатывается — «дырка» в
+ * нумерации при откате транзакции безобиднее дубля.
+ */
+async function nextStaffNumber(tx: Prisma.TransactionClient): Promise<number> {
+  const rows = await tx.$queryRaw<{ nextval: bigint }[]>`SELECT nextval('staff_task_number_seq') AS nextval`;
+  return Number(rows[0].nextval);
 }
 
 // Проверяет, что назначаемый — активный водитель. Возвращает его id.

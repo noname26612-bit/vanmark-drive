@@ -13,13 +13,21 @@ export function Badge({
   className,
   size = "sm",
   children,
+  // Метка для тестов. TypeScript пропускает любые data-* атрибуты в JSX, поэтому места вызова
+  // передавали её и раньше — а до DOM она не доходила, и тест по такому селектору не нашёл бы
+  // ничего (16.08.2026: обнаружено на бейдже пары).
+  "data-testid": testId,
 }: {
   className?: string;
   size?: keyof typeof BADGE_SIZE;
   children: ReactNode;
+  "data-testid"?: string;
 }) {
   return (
-    <span className={cn("inline-flex items-center rounded font-medium", BADGE_SIZE[size], className)}>
+    <span
+      className={cn("inline-flex items-center rounded font-medium", BADGE_SIZE[size], className)}
+      data-testid={testId}
+    >
       {children}
     </span>
   );

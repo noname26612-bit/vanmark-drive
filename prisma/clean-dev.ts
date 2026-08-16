@@ -66,6 +66,8 @@ async function main(): Promise<void> {
   // за тысячу.
   await prisma.$executeRawUnsafe(`ALTER SEQUENCE task_number_seq RESTART WITH 1`);
   await prisma.$executeRawUnsafe(`ALTER SEQUENCE machine_number_seq RESTART WITH 1`);
+  // Своя нумерация цеха «Ц-N» (16.08.2026) — тоже с единицы.
+  await prisma.$executeRawUnsafe(`ALTER SEQUENCE staff_task_number_seq RESTART WITH 1`);
 
   console.log(
     `После очистки: задач ${await prisma.task.count()}, событий ${await prisma.taskEvent.count()}, ` +

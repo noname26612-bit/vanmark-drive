@@ -27,13 +27,13 @@ async function performers(page: Page): Promise<{ id: string; name: string }[]> {
 async function createStaffTask(
   page: Page,
   data: Record<string, unknown>,
-): Promise<{ id: string; number: number }> {
+): Promise<{ id: string; number: number; staffNumber: number | null }> {
   const res = await page.request.post("/api/tasks", { data: { kind: "STAFF", ...data } });
   expect(res.status()).toBe(201);
   return (await res.json()).data;
 }
 
-test("Милена ставит задачу сотруднику через вкладку «Сотрудники»", async ({ page }) => {
+test("Милена ставит задачу сотруднику через вкладку «Цех»", async ({ page }) => {
   await login(page, "milena");
   await page.goto("/staff");
 
@@ -54,7 +54,7 @@ test("задача сотруднику не мешается на экрана�
   const title = unique("Разобрать поддон");
   await createStaffTask(page, { title, assigneeId: alexandr.id });
 
-  // Доска «Сегодня» и планирование — про заявки водителям.
+  // Доска «Водители» и планирование — про заявки водителям.
   await page.goto("/board");
   await expect(page.getByText(title)).toHaveCount(0);
   await page.goto("/planning");
@@ -199,4 +199,203 @@ test("задачи сотрудникам не попадают в KPI-нару�
   if (res.status() === 200) {
     expect(JSON.stringify(await res.json())).not.toContain(title);
   }
+});
+
+// ─────────────────── Доработки 16.08.2026 (решения Артёма) ───────────────────
+
+test("вкладки: «Водители» и сразу за ними «Цех»", async ({ page }) => {
+  await login(page, "milena");
+  await page.goto("/board");
+
+  // Подписи переименованы: «Сегодня» → «Водители», «Сотрудники» → «Цех».
+  await expect(page.getByRole("link", { name: "Водители", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Цех", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Сегодня", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Сотрудники", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: /^Водители · / })).toBeVisible();
+
+  // Порядок в меню: «Цех» идёт вторым, сразу за «Водителями».
+  const labels = await page.locator("nav a").evaluateAll((els) => els.map((e) => e.textContent?.trim() ?? ""));
+  expect(labels.slice(0, 2)).toEqual(["Водители", "Цех"]);
+
+  // Заголовок вкладки цеха — тоже «Цех».
+  await page.getByRole("link", { name: "Цех", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Цех", exact: true })).toBeVisible();
+});
+
+test("нумерация цеха своя, с приставкой «Ц-» и по порядку", async ({ page }) => {
+  await login(page, "milena");
+  const first = await createStaffTask(page, { title: unique("Нумерация раз") });
+  const title = unique("Нумерация два");
+  const second = await createStaffTask(page, { title });
+
+  // Номер цеха — отдельный от сквозного и идёт подряд.
+  expect(first.staffNumber).not.toBeNull();
+  expect(second.staffNumber).toBe((first.staffNumber ?? 0) + 1);
+  expect(second.staffNumber).toBeLessThan(second.number); // сквозной у заявок давно за 800
+
+  // На доске цеха и во «Все задачи» показывается «Ц-N», а не сквозной номер.
+  await page.goto("/staff");
+  const card = page.getByTestId("staff-columns").locator("div", { hasText: title }).first();
+  await expect(card).toContainText(`Ц-${second.staffNumber}`);
+  await expect(card).not.toContainText(`№${second.number}`);
+
+  await page.goto("/tasks");
+  await page.getByTestId("tasks-kind-STAFF").click();
+  const row = page.getByRole("row", { name: new RegExp(title) });
+  await expect(row).toContainText(`Ц-${second.staffNumber}`);
+
+  // Поиск понимает и «Ц-5», и просто число — обе формы находят ту же задачу.
+  for (const query of [`Ц-${second.staffNumber}`, String(second.staffNumber)]) {
+    const found = await page.request.get(
+      `/api/tasks?kind=STAFF&q=${encodeURIComponent(query)}&scope=all`,
+    );
+    expect(found.status()).toBe(200);
+    const ids = ((await found.json()).data as { id: string }[]).map((t) => t.id);
+    expect(ids, `поиск «${query}»`).toContain(second.id);
+  }
+});
+
+test("задача цеха в паре: видна обоим, статусы ведёт ответственный", async ({ page }) => {
+  await login(page, "milena");
+  const list = await performers(page);
+  const alexandr = list.find((p) => p.name === "Александр")!;
+  const nikolay = list.find((p) => p.name === "Николай")!;
+
+  const title = unique("Собрать вдвоём");
+  const task = await createStaffTask(page, {
+    title,
+    assigneeId: alexandr.id,
+    coDriverId: nikolay.id,
+  });
+
+  // На доске задача стоит в колонках обоих: у ответственного обычной карточкой, у напарника —
+  // зеркалом (перетаскивать нельзя, правда живёт у ответственного).
+  await page.goto("/staff");
+  const own = page.getByTestId(`staff-col-staff:${alexandr.id}`);
+  const mirror = page.getByTestId(`staff-col-staff:${nikolay.id}`);
+  await expect(own.getByText(title)).toBeVisible();
+  await expect(mirror.getByText(title)).toBeVisible();
+  await expect(mirror.getByTestId("staff-card-mirror").filter({ hasText: title })).toHaveCount(1);
+  // Бейджи ищем ВНУТРИ своей карточки: на общей dev-БД парных задач много, и «в паре · Николай»
+  // встречается у чужих тоже.
+  const ownCard = own.getByTestId(`staff-card-${task.number}`);
+  await expect(ownCard.getByTestId("staff-pair-badge")).toHaveText(/в паре · Николай/);
+  await expect(
+    mirror.getByTestId("staff-card-mirror").filter({ hasText: title }).getByTestId("staff-pair-badge"),
+  ).toHaveText(/напарник · отв\. Александр/);
+
+  // Напарник видит задачу в телефоне, но статусы ему недоступны — как в парной доставке.
+  await login(page, "nikolay");
+  await page.goto("/m");
+  await expect(page.getByText(title)).toBeVisible();
+  const blocked = await page.request.post(`/api/tasks/${task.id}/transition`, {
+    data: { toStatus: "IN_PROGRESS" },
+  });
+  expect(blocked.status()).toBeGreaterThanOrEqual(400);
+
+  // Ответственный ведёт задачу как обычно.
+  await login(page, "alexandr");
+  const start = await page.request.post(`/api/tasks/${task.id}/transition`, {
+    data: { toStatus: "IN_PROGRESS" },
+  });
+  expect(start.status()).toBe(200);
+  const done = await page.request.post(`/api/tasks/${task.id}/transition`, {
+    data: { toStatus: "DONE" },
+  });
+  expect(done.status()).toBe(200);
+});
+
+test("напарником в цехе — только тот, кому открыт доступ", async ({ page }) => {
+  await login(page, "artem"); // список водителей отдаёт админская ручка
+  const list = await performers(page);
+  const alexandr = list.find((p) => p.name === "Александр")!;
+  const drivers = (await (await page.request.get("/api/admin/drivers")).json()).data as {
+    id: string;
+    name: string;
+  }[];
+  const kashirskiy = drivers.find((d) => d.name.includes("Каширский"))!;
+
+  const res = await page.request.post("/api/tasks", {
+    data: {
+      kind: "STAFF",
+      title: unique("Чужой напарник"),
+      assigneeId: alexandr.id,
+      coDriverId: kashirskiy.id,
+    },
+  });
+  expect(res.status()).toBe(422);
+  expect((await res.json()).error.message).toContain("доступ");
+
+  // Пара без ответственного не собирается — правило общее с доставками.
+  const orphan = await page.request.post("/api/tasks", {
+    data: { kind: "STAFF", title: unique("Пара без ведущего"), coDriverId: alexandr.id },
+  });
+  expect(orphan.status()).toBe(422);
+});
+
+test("пулы цеха перетаскиваются, порядок сохраняется в аккаунте", async ({ page }) => {
+  await login(page, "artem");
+  await page.request.put("/api/ui-prefs", { data: { key: "staff.order", value: [] } });
+  await page.goto("/staff");
+  await expect(page.getByTestId("staff-columns")).toBeVisible();
+
+  const keys = () =>
+    page
+      .locator('[data-testid="staff-columns"] > [data-testid]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute("data-testid") ?? ""));
+
+  const before = await keys();
+  expect(before.length).toBeGreaterThanOrEqual(3);
+
+  // Тащим последнюю колонку за шапку на место первой.
+  await page
+    .locator(`[data-testid="${before[before.length - 1]}"] > div`)
+    .first()
+    .dragTo(page.locator(`[data-testid="${before[0]}"] > div`).first());
+
+  const expected = [before[before.length - 1], ...before.slice(0, -1)];
+  await expect.poll(keys).toEqual(expected);
+
+  // Порядок пережил перезагрузку — он лежит в аккаунте, а не в памяти вкладки.
+  await page.reload();
+  await expect(page.getByTestId("staff-columns")).toBeVisible();
+  expect(await keys()).toEqual(expected);
+
+  await page.request.put("/api/ui-prefs", { data: { key: "staff.order", value: [] } }); // cleanup
+});
+
+test("задача цеха правится своей формой, поля доставки к ней не липнут", async ({ page }) => {
+  await login(page, "milena");
+  const title = unique("Правка цеха");
+  const task = await createStaffTask(page, { title });
+
+  await page.goto(`/tasks/${task.id}`);
+  await page.getByRole("button", { name: "Редактировать", exact: true }).first().click();
+
+  // Форма своего контура: ни типа, ни адреса, ни оплаты — их у задачи цеха не бывает.
+  const modal = page.getByRole("dialog");
+  await expect(modal.getByText("Что сделать")).toBeVisible();
+  await expect(modal.getByText("Адрес")).toHaveCount(0);
+  await expect(modal.getByText("Тип", { exact: true })).toHaveCount(0);
+
+  const renamed = `${title} (уточнено)`;
+  await page.getByTestId("staff-title").fill(renamed);
+  await page.getByTestId("staff-save").click();
+  await expect(page.getByRole("heading", { name: renamed })).toBeVisible();
+
+  // Прямой PATCH полями доставки контур не размывает: их просто не существует у этой задачи.
+  const patched = await page.request.patch(`/api/tasks/${task.id}`, {
+    data: {
+      op: "edit",
+      address: "Москва, Ленинградское шоссе, 1",
+      paymentType: "ON_SITE",
+      paymentAmount: 5000,
+    },
+  });
+  expect(patched.status()).toBe(200);
+  const after = (await (await page.request.get(`/api/tasks/${task.id}`)).json()).data;
+  expect(after.address).toBe("");
+  expect(after.paymentType).toBe("NONE");
+  expect(after.paymentAmount).toBeNull();
 });
