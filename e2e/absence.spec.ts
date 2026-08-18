@@ -103,11 +103,13 @@ test("№9: в дни отпуска не штрафуем «невыполне�
   await mctx.close();
 });
 
-test("№9: отпуск можно завести только водителю", async ({ browser }) => {
+test("№9: отпуск можно завести только действующему сотруднику", async ({ browser }) => {
   const mctx = await browser.newContext();
   const milena = await mctx.newPage();
   await login(milena, "milena");
-  // Несуществующий/не-водительский id → отказ (валидация на сервере).
+  // Несуществующий id → отказ (валидация на сервере). С 18.08.2026 роль больше не проверяется —
+  // отпуск заводится любому действующему сотруднику компании (вкладка «Команда», PRD §18),
+  // см. e2e/team.spec.ts. Проверка «внешнему нельзя» — там же.
   const r = await milena.request.post("/api/absences", {
     data: { driverId: "00000000-0000-0000-0000-000000000000", dateFrom: today, dateTo: today },
   });

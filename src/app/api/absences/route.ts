@@ -23,7 +23,8 @@ export async function GET(req: Request) {
 }
 
 // POST /api/absences {driverId, dateFrom, dateTo, type, note} — завести отсутствие (№9). Только Д/А.
-// driverId — за другого (валидируется как DRIVER в сервисе); создавший — из сессии.
+// driverId — за другого; с 18.08.2026 это любой действующий сотрудник компании, не только водитель
+// (вкладка «Команда», PRD §18) — валидация в сервисе. Создавший — из сессии.
 export async function POST(req: Request) {
   try {
     const user = await requireDispatcher();

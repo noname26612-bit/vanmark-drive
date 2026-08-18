@@ -1,7 +1,14 @@
-// Доменный сервис отсутствий водителя (этап E, №9): отпуск/больничный/прочее на диапазон дат.
+// Доменный сервис отсутствий сотрудника (этап E, №9): отпуск/больничный/прочее на диапазон дат.
 // Заводят админ и диспетчер (гейт requireDispatcher в route). ВАЖНО (исключение из CLAUDE.md §1):
-// отпуск ставят ЗА ДРУГОГО — driverId приходит в теле и валидируется как существующий DRIVER,
-// а не берётся из сессии. Личность создавшего (createdById) — из сессии.
+// отпуск ставят ЗА ДРУГОГО — driverId приходит в теле и валидируется в сервисе, а не берётся
+// из сессии. Личность создавшего (createdById) — из сессии.
+//
+// С 18.08.2026 (вкладка «Команда», PRD §18) отпуск можно завести ЛЮБОМУ действующему сотруднику
+// компании, а не только водителю: Артёму нужно видеть отпуска всего коллектива в одном месте.
+// Проверка стала «действующий и не внешний» вместо «роль = DRIVER». Имена модели и поля остались
+// историческими (driverId) — таблица живая, переименование дало бы миграцию ради косметики.
+// Календарь загрузки и KPI читают эти же записи, но только по водителям, поэтому отпуск Милены
+// или цехового сотрудника на их расчёты не влияет.
 import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
 import type { AbsenceType } from "@/generated/prisma/enums";
@@ -64,7 +71,28 @@ export async function listAbsencesInRange(fromKey: string, toKey: string): Promi
   return rows.map(toView);
 }
 
-/** Завести отсутствие. driverId — за другого (валидируем как DRIVER); создавший — из сессии. */
+/**
+ * Отсутствия ДЕЙСТВУЮЩИХ сотрудников, которые ещё не закончились на день `fromKey` (текущие и
+ * запланированные). Для вкладки «Команда»: верхней границы нет — отпуска планируют на месяцы вперёд.
+ *
+ * Фильтр по сотруднику обязателен: записи ушедшего мы не удаляем (история), но показывать «отпуск»
+ * человека, которого уже нет в справочнике, — значит показывать призрака.
+ */
+export async function listAbsencesFrom(fromKey: string): Promise<AbsenceView[]> {
+  const from = parseDate(fromKey);
+  const rows = await prisma.driverAbsence.findMany({
+    where: { dateTo: { gte: from }, driver: { isActive: true, isExternal: false } },
+    include: { driver: { select: { name: true } } },
+    orderBy: [{ dateFrom: "asc" }],
+  });
+  return rows.map(toView);
+}
+
+/**
+ * Завести отсутствие. driverId — за другого: валидируем как ДЕЙСТВУЮЩЕГО ВНУТРЕННЕГО сотрудника
+ * любой роли (18.08.2026); создавший — из сессии. Внешний перевозчик исключён: он не в штате,
+ * отпусков у него не бывает.
+ */
 export async function createAbsence(
   input: { driverId: string; dateFrom: string; dateTo: string; type?: string; note?: string | null },
   actor: Actor,
@@ -75,11 +103,13 @@ export async function createAbsence(
   const type: AbsenceType = ABSENCE_TYPES.includes(input.type as AbsenceType)
     ? (input.type as AbsenceType)
     : "VACATION";
-  const driver = await prisma.user.findUnique({
+  const person = await prisma.user.findUnique({
     where: { id: input.driverId },
-    select: { id: true, role: true },
+    select: { id: true, isActive: true, isExternal: true },
   });
-  if (!driver || driver.role !== "DRIVER") throw Errors.validation("Отпуск можно завести только водителю");
+  if (!person || !person.isActive || person.isExternal) {
+    throw Errors.validation("Отпуск можно завести только действующему сотруднику компании");
+  }
   const created = await prisma.driverAbsence.create({
     data: {
       driverId: input.driverId,

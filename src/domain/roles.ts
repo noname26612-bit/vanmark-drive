@@ -18,6 +18,13 @@ export function homeForRole(role: Role): string {
     case "SERVICE_MANAGER":
       // Менеджер-сервисник (Максим, 05.08.2026): весь его сервис — картотека станков (PRD §16).
       return "/machines";
+    case "EMPLOYEE":
+      // Сотрудник без доступа в систему (18.08.2026, вкладка «Команда»): стартового экрана у него
+      // нет и быть не должно. Сюда попасть невозможно — учётка заводится с canLogin=false, пароль
+      // случайный, а включить вход некому: админские ручки доступа работают только с role=DRIVER
+      // (requireDriverUser в src/domain/users.ts). Значение — страховка типизации.
+      // Если цеху когда-нибудь дадут вход — сначала этот кейс, иначе будет петля редиректов /login.
+      return "/login";
     default: {
       // Если в enum добавят роль и забудут маршрут — упадёт типизация здесь.
       const exhaustive: never = role;
@@ -37,6 +44,8 @@ export function roleLabel(role: Role): string {
       return "Водитель";
     case "SERVICE_MANAGER":
       return "Менеджер-сервисник";
+    case "EMPLOYEE":
+      return "Сотрудник";
     default: {
       const exhaustive: never = role;
       return exhaustive;
