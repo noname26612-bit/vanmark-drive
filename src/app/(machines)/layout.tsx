@@ -16,13 +16,12 @@ import { TaskDraftsProvider } from "@/app/(dispatcher)/_components/task-drafts";
 // каждому только его разделы; водителю с флагом — ровно две вкладки оборудования.
 export default async function MachinesLayout({ children }: { children: ReactNode }) {
   const user = await requireEquipmentUser();
-  const isStaff = user.role === "DISPATCHER" || user.role === "ADMIN";
   return (
     <div className="min-h-screen bg-neutral-50">
       <AppHeader name={user.name} role={user.role} position={user.position} />
-      {/* Установку приложения предлагаем всем (Максим работает с Android), а уведомления — только
-          тем, кому их реально шлют: пуши таргетированы по ролям и менеджера-сервисника не достают. */}
-      <PwaControls withPush={isStaff} />
+      {/* Уведомления предлагаем всем: с 18.08.2026 дни рождения коллег (PRD §18) приходят каждому
+          сотруднику со входом, в том числе менеджеру-сервиснику — раньше ему пуши не слали вовсе. */}
+      <PwaControls />
       <DispatcherNav role={user.role} equipmentAccess={user.equipmentAccess} />
       {/* Черновики свёрнутых заявок доступны и здесь: без провайдера плашка с черновиком пропадала
           при заходе на оборудование и возвращалась только на вкладках задач — выглядело как потеря. */}

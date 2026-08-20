@@ -37,6 +37,9 @@ const LINKS: { href: string; label: string; roles: readonly Role[]; equipment?: 
   // У Милены те же права, что у менеджера-сервисника.
   { href: "/machines", label: "Листогибы", roles: MACHINE_ROLES, equipment: true },
   { href: "/seamers", label: "Фальцепрокатники", roles: MACHINE_ROLES, equipment: true },
+  // Справочник коллектива: дни рождения и отпуска (18.08.2026, PRD §18). Стоит в конце, рядом с
+  // «Управлением»: заходят сюда раз в неделю, а не каждый день, — ежедневные вкладки не сдвигаем.
+  { href: "/team", label: "Команда", roles: TASK_ROLES },
   { href: "/admin", label: "Управление", roles: ["ADMIN"] },
 ];
 

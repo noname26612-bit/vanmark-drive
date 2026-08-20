@@ -130,6 +130,40 @@ export function buildPassWarningPayload(taskCount: number): PushPayload {
   };
 }
 
+// Дни рождения коллег (09:00, решение Артёма 18.08.2026, PRD §18). Три разных текста:
+// за 3 дня — чтобы успеть сброситься на подарок; в сам день — чтобы никто не забыл поздравить;
+// самому имениннику — поздравление вместо напоминания о себе же.
+//
+// url: "/" — корень разводит по ролям (у водителя своё приложение, у офиса доска), а вкладки
+// «Команда» у водителя нет вовсе. Год рождения в текстах не участвует: возраст — не наше дело.
+// tag — на конкретного человека, иначе два именинника в один день схлопнулись бы в одно уведомление.
+export function buildBirthdaySoonPayload(name: string, dateLabel: string, personId: string): PushPayload {
+  return {
+    title: "Скоро день рождения",
+    body: `Через 3 дня день рождения у коллеги: ${name} — ${dateLabel}`,
+    url: "/",
+    tag: `birthday-soon-${personId}`,
+  };
+}
+
+export function buildBirthdayTodayPayload(name: string, personId: string): PushPayload {
+  return {
+    title: "Сегодня день рождения 🎉",
+    body: `${name} — не забудьте поздравить!`,
+    url: "/",
+    tag: `birthday-today-${personId}`,
+  };
+}
+
+export function buildBirthdayGreetingPayload(name: string): PushPayload {
+  return {
+    title: "С днём рождения! 🎉",
+    body: `${name}, команда VanMark поздравляет вас с днём рождения!`,
+    url: "/",
+    tag: "birthday-greeting",
+  };
+}
+
 // Склонение «задача/задачи/задач».
 export function pluralTasks(n: number): string {
   const mod10 = n % 10;

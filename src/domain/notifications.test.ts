@@ -6,6 +6,9 @@ import {
   buildMorningPayload,
   buildPassWarningPayload,
   buildActViolationsPayload,
+  buildBirthdaySoonPayload,
+  buildBirthdayTodayPayload,
+  buildBirthdayGreetingPayload,
   pluralTasks,
   validateSubscriptionInput,
 } from "./notifications";
@@ -115,6 +118,40 @@ describe("buildMorningPayload / buildPassWarningPayload", () => {
     expect(buildActViolationsPayload(1).title).toBe("Акты не приложены");
     expect(buildActViolationsPayload(1).url).toBe("/kpi");
     expect(buildActViolationsPayload(1).tag).toBe("act-deadline");
+  });
+});
+
+describe("пуши о днях рождения (18.08.2026)", () => {
+  it("за 3 дня — с именем и датой без года", () => {
+    const p = buildBirthdaySoonPayload("Милена", "21 августа", "u1");
+    expect(p.title).toBe("Скоро день рождения");
+    expect(p.body).toBe("Через 3 дня день рождения у коллеги: Милена — 21 августа");
+    expect(p.url).toBe("/");
+    // Тег на человека: два именинника в один день не должны схлопнуться в одно уведомление.
+    expect(p.tag).toBe("birthday-soon-u1");
+  });
+
+  it("в сам день — напоминание поздравить", () => {
+    const p = buildBirthdayTodayPayload("Алексей Писарев", "u2");
+    expect(p.title).toBe("Сегодня день рождения 🎉");
+    expect(p.body).toBe("Алексей Писарев — не забудьте поздравить!");
+    expect(p.tag).toBe("birthday-today-u2");
+  });
+
+  it("имениннику — поздравление, а не напоминание о себе", () => {
+    const p = buildBirthdayGreetingPayload("Милена");
+    expect(p.title).toBe("С днём рождения! 🎉");
+    expect(p.body).toBe("Милена, команда VanMark поздравляет вас с днём рождения!");
+    expect(p.tag).toBe("birthday-greeting");
+  });
+
+  it("в текстах нет года рождения", () => {
+    const texts = [
+      buildBirthdaySoonPayload("Милена", "21 августа", "u1").body,
+      buildBirthdayTodayPayload("Милена", "u1").body,
+      buildBirthdayGreetingPayload("Милена").body,
+    ];
+    for (const t of texts) expect(t).not.toMatch(/\d{4}/);
   });
 });
 

@@ -8,7 +8,11 @@ import {
   buildMorningPayload,
   buildPassWarningPayload,
   buildCloseShiftPayload,
+  buildBirthdaySoonPayload,
+  buildBirthdayTodayPayload,
+  buildBirthdayGreetingPayload,
 } from "./notifications";
+import { birthdaysOn, formatBirthdayLabel, type BirthdayPerson } from "./birthdays";
 
 // --- Подписки -------------------------------------------------------------
 
@@ -84,6 +88,59 @@ export async function runCloseShiftReminders(): Promise<void> {
     select: { driverId: true },
   });
   await Promise.all(shifts.map((s) => sendPushToUser(s.driverId, buildCloseShiftPayload())));
+}
+
+// Дата в таймзоне РФ как ключ «YYYY-MM-DD» — для сравнения дней рождения (день и месяц).
+function moscowDateKey(offsetDays: number): string {
+  return moscowDateAt(offsetDays).toISOString().slice(0, 10);
+}
+
+/**
+ * 09:00 — дни рождения коллег (решение Артёма 18.08.2026, PRD §18). Два повода в одной задаче:
+ * за 3 дня (успеть подготовиться) и в сам день (не забыть поздравить). Имениннику вместо
+ * напоминания о себе приходит поздравление.
+ *
+ * Получатели — действующие сотрудники компании со входом в систему: внешний перевозчик не коллега,
+ * а у сотрудников без входа (EMPLOYEE) и подписок-то нет. Именинника из своей же рассылки исключаем.
+ * Дедупликация не нужна: задача суточная, как и остальные напоминания (src/lib/cron.ts).
+ */
+export async function runBirthdayReminders(): Promise<void> {
+  const rows = await prisma.user.findMany({
+    where: { isActive: true, isExternal: false, birthday: { not: null } },
+    select: { id: true, name: true, birthday: true },
+  });
+  if (rows.length === 0) return;
+  const people: BirthdayPerson[] = rows.map((u) => ({
+    id: u.id,
+    name: u.name,
+    birthday: u.birthday ? u.birthday.toISOString().slice(0, 10) : null,
+  }));
+
+  const todayCelebrating = birthdaysOn(people, moscowDateKey(0));
+  const soonCelebrating = birthdaysOn(people, moscowDateKey(3));
+  if (todayCelebrating.length === 0 && soonCelebrating.length === 0) return;
+
+  const recipients = await prisma.user.findMany({
+    where: { isActive: true, canLogin: true, isExternal: false },
+    select: { id: true },
+  });
+
+  const sends: Promise<void>[] = [];
+  for (const person of soonCelebrating) {
+    const payload = buildBirthdaySoonPayload(person.name, formatBirthdayLabel(person.birthday), person.id);
+    for (const r of recipients) {
+      if (r.id !== person.id) sends.push(sendPushToUser(r.id, payload));
+    }
+  }
+  for (const person of todayCelebrating) {
+    const payload = buildBirthdayTodayPayload(person.name, person.id);
+    for (const r of recipients) {
+      if (r.id !== person.id) sends.push(sendPushToUser(r.id, payload));
+    }
+    // Имениннику — поздравление. Если у него нет входа или подписок, отправка тихо ничего не сделает.
+    sends.push(sendPushToUser(person.id, buildBirthdayGreetingPayload(person.name)));
+  }
+  await Promise.allSettled(sends);
 }
 
 /** 16:00 — диспетчерам: на завтра есть N задач с пропуском «нужен, не заказан». */
