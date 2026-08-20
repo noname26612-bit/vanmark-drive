@@ -188,8 +188,9 @@ export function DriverTaskClient({
 
   const [busy, setBusy] = useState(false);
   const [photoBusy, setPhotoBusy] = useState(false);
-  // Полноэкранный просмотр фото (URL вложения) — закрытие крестиком/свайпом/«назад».
-  const [lightbox, setLightbox] = useState<string | null>(null);
+  // Полноэкранный просмотр фото — закрытие крестиком/свайпом/«назад». Храним всю группу и стартовый
+  // снимок: листать имеет смысл только внутри своей группы (фото диспетчера отдельно от своих).
+  const [lightbox, setLightbox] = useState<{ urls: string[]; index: number } | null>(null);
   // Стартовое значение — детект «страница перезапустилась во время съёмки» (маячок выше): рестарт
   // TWA возвращает водителя в эту же карточку, и он сразу видит, почему фото надо снять заново.
   const [actionError, setActionError] = useState<string | null>(() =>
@@ -265,6 +266,10 @@ export function DriverTaskClient({
     a.createdById === t.assigneeId || (t.coDriverId !== null && a.createdById === t.coDriverId);
   const myPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && isCrew(a));
   const refPhotos = t.attachments.filter((a) => a.kind === "PHOTO" && !isCrew(a));
+  // Ссылки по группам: в лайтбоксе листается только та группа, в которой открыли снимок —
+  // мешать фото диспетчера со своим отчётом водителю незачем.
+  const myPhotoUrls = myPhotos.map((a) => `/api/attachments/${a.id}`);
+  const refPhotoUrls = refPhotos.map((a) => `/api/attachments/${a.id}`);
   const docs = t.attachments.filter((a) => a.kind === "DOCUMENT");
   const requiresSignedDoc = t.requiresSignedDoc; // требование акта на уровне задачи (этап 11; не блокирует DONE)
   // Ведомость работ + расценка (этап 12) скрыты под флагом PRICING_ENABLED (06.07): процессом пока
@@ -659,11 +664,11 @@ export function DriverTaskClient({
           <section className="rounded-xl border border-neutral-200 p-3">
             <p className="text-xs uppercase tracking-wide text-neutral-400">Фото от диспетчера</p>
             <div className="mt-2 flex flex-wrap gap-2">
-              {refPhotos.map((a) => (
+              {refPhotos.map((a, idx) => (
                 <button
                   key={a.id}
                   type="button"
-                  onClick={() => setLightbox(`/api/attachments/${a.id}`)}
+                  onClick={() => setLightbox({ urls: refPhotoUrls, index: idx })}
                   className="block"
                 >
                   <img
@@ -682,11 +687,11 @@ export function DriverTaskClient({
           <section className="rounded-xl border border-neutral-200 p-3">
             <p className="text-xs uppercase tracking-wide text-neutral-400">Моё фото отчёта</p>
             <div className="mt-2 flex flex-wrap gap-2">
-              {myPhotos.map((a) => (
+              {myPhotos.map((a, idx) => (
                 <button
                   key={a.id}
                   type="button"
-                  onClick={() => setLightbox(`/api/attachments/${a.id}`)}
+                  onClick={() => setLightbox({ urls: myPhotoUrls, index: idx })}
                   className="block"
                 >
                   <img
@@ -703,8 +708,10 @@ export function DriverTaskClient({
         {/* Фото, снятые офлайн и ещё не отправленные (O10): превью из локального blob очереди. */}
         <PendingPhotos taskId={taskId} />
 
-        {/* Полноэкранный просмотр фото (крестик / свайп вверх-вниз / «назад») */}
-        {lightbox ? <PhotoLightbox url={lightbox} onClose={() => setLightbox(null)} /> : null}
+        {/* Полноэкранный просмотр фото (листание вбок / крестик / свайп вверх-вниз / «назад») */}
+        {lightbox ? (
+          <PhotoLightbox urls={lightbox.urls} index={lightbox.index} onClose={() => setLightbox(null)} />
+        ) : null}
 
         {/* Ведомость работ — типы с расценкой (этап 12). Водитель фиксирует работы без цен. */}
         {requiresPricing ? (

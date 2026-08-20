@@ -5,12 +5,14 @@
 //
 // Фото в черновик не входят: File в localStorage не живёт; сохраняются только поля (PRD §16.5).
 import { EquipmentFamily, EquipmentKind, MachineCategory } from "@/generated/prisma/enums";
+import { configurationOptionsFor } from "./machine-configuration";
 
 // Ключ версионирован (образец DRAFTS_STORAGE_KEY у задач): поменяется структура — старый
 // черновик просто не прочитается, а не уронит форму.
 // Черновик свой у каждого раздела (15.08.2026): начатый листогиб не должен всплывать в форме
 // фальцепрокатника — там другие виды и другая нумерация.
-const KEY_PREFIX = "vanmark:machine-draft:v2:";
+// v3 (20.08.2026): категория стала списком, старый черновик с одиночной категорией не читаем.
+const KEY_PREFIX = "vanmark:machine-draft:v3:";
 const keyFor = (family: EquipmentFamily): string => KEY_PREFIX + family;
 
 export const EMPTY_MACHINE_FORM = {
@@ -18,17 +20,14 @@ export const EMPTY_MACHINE_FORM = {
   ourNumber: "",
   configuration: "",
   metalThickness: "",
-  serialNumber: "",
-  orgName: "",
+  price: "",
   contactName: "",
-  contactPhone: "",
   invoice1C: "",
   responsibleId: "",
   deliveredBy: "",
   arrivedAt: "",
   dueDate: "",
   defectNotes: "",
-  location: "",
   notes: "",
   isUrgent: false,
 };
@@ -36,38 +35,44 @@ export const EMPTY_MACHINE_FORM = {
 export type MachineFormState = typeof EMPTY_MACHINE_FORM;
 
 export type MachineDraft = {
-  category: MachineCategory;
+  categories: MachineCategory[];
   kind: EquipmentKind;
+  /** Остаток складской позиции: он живёт вне form, но теряться при закрытии модалки не должен. */
+  quantity: string;
   form: MachineFormState;
   savedAt: string; // ISO
 };
 
-/** Есть ли что терять: заполнено хоть одно поле (выбор категории/вида сам по себе не в счёт). */
+/** Есть ли что терять: заполнено хоть одно поле (выбор категорий/вида сам по себе не в счёт). */
 export function isDirtyMachineForm(form: MachineFormState): boolean {
   return Object.values(form).some((v) => (typeof v === "string" ? v.trim() !== "" : v === true));
 }
 
 // Поля, спрятанные за «Показать все поля»: если в черновике заполнено хоть одно — форму
 // разворачиваем сразу, чтобы восстановленные значения не оказались невидимыми.
+// Цена и толщина металла в списке НЕ значатся: с 20.08.2026 они видны сразу.
 const HIDDEN_KEYS = [
-  "configuration",
-  "metalThickness",
-  "serialNumber",
-  "orgName",
   "contactName",
-  "contactPhone",
   "invoice1C",
   "responsibleId",
   "deliveredBy",
   "arrivedAt",
   "dueDate",
   "defectNotes",
-  "location",
   "notes",
 ] as const;
 
-export function hasHiddenFieldValues(form: MachineFormState): boolean {
-  return HIDDEN_KEYS.some((k) => form[k].trim() !== "");
+/**
+ * Есть ли в черновике значения полей, которых на свёрнутой форме не видно.
+ *
+ * Комплектация — особый случай: у листогиба и фальцепрокатника она показывается сразу галочками,
+ * а у ножа, фальц машинки и складских видов остаётся текстовым полем под кнопкой. Поэтому вид
+ * обязателен: иначе восстановленный черновик ножа прятал бы уже введённую комплектацию, и человек
+ * сохранял бы карточку со значением, которого не видел.
+ */
+export function hasHiddenFieldValues(form: MachineFormState, kind: EquipmentKind): boolean {
+  if (HIDDEN_KEYS.some((k) => form[k].trim() !== "")) return true;
+  return configurationOptionsFor(kind).length === 0 && form.configuration.trim() !== "";
 }
 
 export function saveMachineDraft(family: EquipmentFamily, draft: Omit<MachineDraft, "savedAt">): void {
@@ -97,9 +102,12 @@ export function loadMachineDraft(family: EquipmentFamily): MachineDraft | null {
     const p = parsed as Record<string, unknown>;
     if (!p.form || typeof p.form !== "object") return null;
 
-    const category = Object.values(MachineCategory).includes(p.category as MachineCategory)
-      ? (p.category as MachineCategory)
-      : "CLIENT";
+    // Категории — список; всё, что не похоже на набор известных значений, лечится дефолтом.
+    const categories = Array.isArray(p.categories)
+      ? (p.categories.filter((c): c is MachineCategory =>
+          Object.values(MachineCategory).includes(c as MachineCategory),
+        ) as MachineCategory[])
+      : [];
     const kind = Object.values(EquipmentKind).includes(p.kind as EquipmentKind)
       ? (p.kind as EquipmentKind)
       : "MACHINE";
@@ -117,8 +125,9 @@ export function loadMachineDraft(family: EquipmentFamily): MachineDraft | null {
     }
 
     return {
-      category,
+      categories: categories.length > 0 ? categories : ["CLIENT"],
       kind,
+      quantity: typeof p.quantity === "string" ? p.quantity : "1",
       form,
       savedAt: typeof p.savedAt === "string" ? p.savedAt : new Date().toISOString(),
     };

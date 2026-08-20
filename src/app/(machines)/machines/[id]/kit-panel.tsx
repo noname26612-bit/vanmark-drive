@@ -12,13 +12,12 @@ import { newActionId as newIdempotencyKey } from "@/lib/offline/id";
 import { isHeadKind, isStockKind } from "@/domain/machine-status";
 import { EQUIPMENT_KIND_SHORT, MACHINE_STATUS_LABEL, formatMachineNumber } from "@/lib/machine-ui";
 import type { MachineDetail } from "@/lib/machine-dto";
-import type { EquipmentKind, MachineCategory } from "@/generated/prisma/enums";
+import type { EquipmentKind } from "@/generated/prisma/enums";
 
 type Candidate = {
   id: string;
   ourNumber: number | null;
   clientNumber: number | null;
-  category: MachineCategory;
   kind: EquipmentKind;
   model: string;
   free: number;

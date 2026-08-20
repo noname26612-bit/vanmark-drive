@@ -8,7 +8,9 @@
 // Сам порядок карточек серверный и стабильный — по учётному номеру (machine-service). Здесь
 // только представление: как разложить уже упорядоченный список.
 import type { MachineListItem } from "./machine-dto";
-import { EQUIPMENT_KIND_PLURAL, MACHINE_CATEGORY_LABEL, MACHINE_STATUS_LABEL } from "./machine-ui";
+import { EQUIPMENT_KIND_PLURAL, MACHINE_STATUS_LABEL } from "./machine-ui";
+import { categoriesLabel, normalizeCategories } from "@/domain/machine-status";
+import type { MachineCategory } from "@/generated/prisma/enums";
 
 export type GroupBy = "none" | "status" | "category" | "kind";
 export type Direction = "asc" | "desc";
@@ -82,12 +84,18 @@ export function saveView(family: string, view: EquipmentView): void {
 export type EquipmentGroup = { key: string; title: string | null; items: MachineListItem[] };
 
 // Порядок групп — жизненный цикл, а не алфавит: сначала то, чем занимаются, потом остальное.
-const STATUS_ORDER = ["NEEDS_REPAIR", "IN_REPAIR", "ACCEPTED", "READY", "RENTED"] as const;
-const CATEGORY_ORDER = ["CLIENT", "OUR_SALE", "OUR_RENTAL"] as const;
+// «Принят» выведен из оборота 20.08.2026, в порядке его больше нет (у старых карточек состояние
+// уже переписано миграцией, а группа с неизвестным ключом просто уезжает в конец).
+const STATUS_ORDER = ["NEEDS_REPAIR", "IN_REPAIR", "READY", "RENTED"] as const;
+
+// Группировка по категориям идёт по КОМБИНАЦИИ (20.08.2026): станок, который и продаётся, и
+// сдаётся, — это своя группа «Наш на продажу + Наш арендный», а не строка, задвоенная в двух
+// списках. Порядок: чужое, наше на продажу, наше арендное, наше двойного назначения.
+const CATEGORY_ORDER = ["CLIENT", "OUR_SALE", "OUR_RENTAL", "OUR_SALE+OUR_RENTAL"] as const;
 
 function groupKeyOf(item: MachineListItem, groupBy: GroupBy): string {
   if (groupBy === "status") return item.status;
-  if (groupBy === "category") return item.category;
+  if (groupBy === "category") return normalizeCategories(item.categories).join("+");
   if (groupBy === "kind") return item.kind;
   return "";
 }
@@ -95,7 +103,8 @@ function groupKeyOf(item: MachineListItem, groupBy: GroupBy): string {
 function groupTitleOf(key: string, groupBy: GroupBy): string {
   if (groupBy === "status") return MACHINE_STATUS_LABEL[key as keyof typeof MACHINE_STATUS_LABEL] ?? key;
   if (groupBy === "category") {
-    return MACHINE_CATEGORY_LABEL[key as keyof typeof MACHINE_CATEGORY_LABEL] ?? key;
+    const parts = key.split("+").filter(Boolean) as MachineCategory[];
+    return parts.length > 0 ? categoriesLabel(parts) : key;
   }
   return EQUIPMENT_KIND_PLURAL[key as keyof typeof EQUIPMENT_KIND_PLURAL] ?? key;
 }

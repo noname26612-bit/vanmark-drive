@@ -83,3 +83,40 @@ describe("machine-models: пул подсказок с моделями из Б�
     expect(pool).toEqual([...MACHINE_MODELS]);
   });
 });
+
+// Крестик в списке подсказок (20.08.2026): в карточку иногда заносят временное название вроде
+// «Хз ждём Михаила», и оно потом предлагается всем. Скрытое имя перестаёт всплывать в подсказках,
+// но карточку, где оно уже записано, не трогает — это настройка подсказок, а не переименование.
+describe("machine-models: скрытые модели (suppressed)", () => {
+  it("скрытое БД-значение исчезает из пула, остальные остаются", () => {
+    const pool = modelSuggestionPool(["Хз ждём Михаила", "Аякс 2М"], ["Хз ждём Михаила"]);
+    expect(pool).not.toContain("Хз ждём Михаила");
+    expect(pool).toContain("Аякс 2М");
+  });
+
+  it("скрыть можно и базовую строку справочника — раздел, где такой модели нет, её не увидит", () => {
+    const pool = modelSuggestionPool([], ["Prod Masz"]);
+    expect(pool).not.toContain("Prod Masz");
+    expect(pool).toHaveLength(MACHINE_MODELS.length - 1);
+  });
+
+  it("сравнение без регистра и лишних пробелов — прячут по названию, а не по написанию", () => {
+    const pool = modelSuggestionPool(["Свой станок"], ["  sorex LBM 200 ", "СВОЙ СТАНОК"]);
+    expect(pool).not.toContain("Sorex LBM 200");
+    expect(pool).not.toContain("Свой станок");
+    expect(pool).toContain("Sorex LBM 250"); // соседние модели не задеты
+  });
+
+  it("пустой список скрытых — пул как без аргумента вовсе", () => {
+    expect(modelSuggestionPool(["Аякс 2М"], [])).toEqual(modelSuggestionPool(["Аякс 2М"]));
+  });
+
+  it("скрытие несуществующего названия ничего не ломает", () => {
+    expect(modelSuggestionPool([], ["такой модели нет"])).toEqual([...MACHINE_MODELS]);
+  });
+
+  it("скрытые модели не подставляются и в подбор по вводу", () => {
+    const pool = modelSuggestionPool([], ["Sorex LBM 200"]);
+    expect(filterModelSuggestions(pool, "лбм")).toEqual(["Sorex LBM 250", "Sorex LBM 300"]);
+  });
+});

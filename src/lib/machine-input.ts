@@ -22,6 +22,20 @@ export function parseCategory(v: unknown): MachineCategory | undefined {
     : undefined;
 }
 
+/**
+ * Набор категорий из тела запроса (20.08.2026). Мусор внутри массива отбрасывается молча — что
+ * набор непустой и что комбинация допустима, проверяет домен: это правила, а не форма значения.
+ */
+export function parseCategories(v: unknown): MachineCategory[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: MachineCategory[] = [];
+  for (const item of v) {
+    const c = parseCategory(item);
+    if (c && !out.includes(c)) out.push(c);
+  }
+  return out;
+}
+
 export function parseMachineStatus(v: unknown): MachineStatus | undefined {
   return typeof v === "string" && Object.values(MachineStatus).includes(v as MachineStatus)
     ? (v as MachineStatus)
@@ -39,13 +53,9 @@ const STRINGS = [
   "model",
   "configuration",
   "metalThickness",
-  "serialNumber",
-  "orgName",
   "contactName",
-  "contactPhone",
   "invoice1C",
   "deliveredBy",
-  "location",
   "defectNotes",
   "notes",
   "arrivedAt",
@@ -81,12 +91,20 @@ export function parseMachineFields(body: Record<string, unknown>): EditMachineIn
     const v = body.quantity;
     if (typeof v === "number" && Number.isFinite(v)) out.quantity = Math.trunc(v);
   }
+  // Цена в рублях. Явный null = «стереть цену», а вот мусор поле НЕ трогает: иначе сорванный ввод
+  // (в number-инпуте запятая даёт пустую строку) молча стирал бы уже сохранённую цену, и вернуть её
+  // было бы неоткуда — журнал только на запись.
+  if ("price" in body) {
+    const v = body.price;
+    if (v === null) out.price = null;
+    else if (typeof v === "number" && Number.isFinite(v)) out.price = Math.trunc(v);
+  }
 
   return out as EditMachineInput;
 }
 
 /** Флаг-плитка сводки, по которой фильтруется список (белый список — из query приходит что угодно). */
-const FLAGS = ["noInvoice1C", "urgent", "awaitingDiagnosis", "staleVerification", "duePressing"] as const;
+const FLAGS = ["urgent", "awaitingDiagnosis", "notVerified", "duePressing"] as const;
 export type MachineFlagFilter = (typeof FLAGS)[number];
 
 export function parseFlag(v: string | null): MachineFlagFilter | undefined {

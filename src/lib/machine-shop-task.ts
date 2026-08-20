@@ -8,19 +8,16 @@
 import { utcDateKey } from "@/domain/kpi";
 import { EQUIPMENT_KIND_LABEL } from "@/domain/machine-status";
 import { machineTitle, formatDay } from "./machine-ui";
-import type { EquipmentKind, MachineCategory } from "@/generated/prisma/enums";
+import type { EquipmentKind } from "@/generated/prisma/enums";
 
 export type ShopTaskMachine = {
   ourNumber: number | null;
   clientNumber: number | null;
-  /** Номер станка читается по категории: «77-N» у своего парка, «К-N» у клиентского. */
-  category: MachineCategory;
   invoice1C: string | null;
   kind: EquipmentKind;
   model: string;
   metalThickness: string | null;
   configuration: string | null;
-  location: string | null;
   defectNotes: string | null;
   isUrgent: boolean;
   /** Date — с сервера (@db.Date), строка «YYYY-MM-DD» — из DTO на клиенте. */
@@ -36,7 +33,6 @@ export function buildShopTaskText(m: ShopTaskMachine, note: string | null): stri
   lines.push(`Модель: ${m.model}`);
   if (m.metalThickness?.trim()) lines.push(`Металл: ${m.metalThickness.trim()}`);
   if (m.configuration?.trim()) lines.push(`Комплектация: ${m.configuration.trim()}`);
-  if (m.location?.trim()) lines.push(`Место: ${m.location.trim()}`);
   if (m.defectNotes?.trim()) lines.push(`Дефектовка: ${m.defectNotes.trim()}`);
   const noteTrimmed = note?.trim();
   if (noteTrimmed) lines.push(`Что сделать: ${noteTrimmed}`);

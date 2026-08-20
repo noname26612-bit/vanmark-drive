@@ -40,7 +40,6 @@ export type KitPartView = {
   id: string;
   ourNumber: number | null;
   clientNumber: number | null;
-  category: MachineCategory; // номер читается по категории («77-N» / «К-N»)
   kind: EquipmentKind;
   model: string;
   status: MachineStatus;
@@ -53,7 +52,6 @@ export type KitHeadView = {
   id: string;
   ourNumber: number | null;
   clientNumber: number | null;
-  category: MachineCategory;
   model: string;
   qty: number;
 };
@@ -64,7 +62,7 @@ export type MachineListItem = {
   number: number;
   /** «77-N» у своего железа; у клиентского пусто — там свой номер (см. clientNumber). */
   ourNumber: number | null;
-  /** «К-N» у клиентского железа; у своего пусто. Номер читается по категории. */
+  /** «К-N» у клиентского железа; у своего пусто. Заполнено не больше одного номерного поля. */
   clientNumber: number | null;
   family: EquipmentFamily;
   kind: EquipmentKind;
@@ -76,17 +74,16 @@ export type MachineListItem = {
   kitParts: KitPartView[];
   /** В чьих комплектах числится эта карточка (заполнено у комплектующих). */
   kitHeads: KitHeadView[];
-  category: MachineCategory;
+  /** Категории — список: наш станок бывает и на продажу, и арендным (20.08.2026). */
+  categories: MachineCategory[];
   status: MachineStatus;
   model: string;
   configuration: string | null;
   metalThickness: string | null;
-  serialNumber: string | null;
-  orgName: string | null;
+  /** Цена в рублях, целыми. */
+  price: number | null;
   contactName: string | null;
-  contactPhone: string | null;
   invoice1C: string | null;
-  location: string | null;
   deliveredBy: string | null;
   defectNotes: string | null;
   notes: string | null;
@@ -113,8 +110,6 @@ export type MachineDetail = MachineListItem & {
 export type MachineListResult = {
   machines: MachineListItem[];
   summary: MachineSummary;
-  /** Уже использованные места на площадке — подсказка (datalist) при вводе. */
-  locations: string[];
   /** Есть ли ещё записи за пределами выданной страницы (архив грузится порциями). */
   hasMore: boolean;
   total: number; // сколько записей подошло под фильтр (до пагинации)

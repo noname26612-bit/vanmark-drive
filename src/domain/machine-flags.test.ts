@@ -1,139 +1,115 @@
 import { describe, it, expect } from "vitest";
 import {
   daysBetween,
-  isWeekend,
   machineDueState,
   machineFlags,
   summarize,
-  workdaysBetween,
   type FlaggableMachine,
 } from "./machine-flags";
-import type { MachineCategory, MachineStatus } from "@/generated/prisma/enums";
+import type { MachineCategory } from "@/generated/prisma/enums";
 
 // Опорные даты (МСК = UTC+3, полдень — чтобы день не «уезжал» через границу суток).
-// 2026-08-03 — понедельник, 2026-08-08 — суббота, 2026-08-09 — воскресенье.
 const at = (day: string, time = "12:00") => new Date(`${day}T${time}:00.000+03:00`);
 const dateOnly = (day: string) => new Date(`${day}T00:00:00.000Z`); // как @db.Date
 
+// По умолчанию станок «чистый»: обе обязательные отметки сделаны, индикаторы молчат. Каждый тест
+// гасит ровно то, что проверяет, — так видно, от чего именно загорается лампочка.
 const machine = (over: Partial<FlaggableMachine> = {}): FlaggableMachine => ({
   kind: "MACHINE",
-  category: "CLIENT" as MachineCategory,
-  status: "ACCEPTED" as MachineStatus,
-  invoice1C: "4512",
+  categories: ["CLIENT"],
+  status: "NEEDS_REPAIR",
   isUrgent: false,
-  arrivedAt: dateOnly("2026-08-03"),
   dueDate: null,
-  diagnosedAt: null,
+  diagnosedAt: at("2026-08-03"),
   lastVerifiedAt: at("2026-08-03"),
   createdAt: at("2026-08-03"),
   ...over,
 });
 
-describe("machine-flags: рабочие дни", () => {
-  it("суббота и воскресенье — выходные", () => {
-    expect(isWeekend("2026-08-08")).toBe(true);
-    expect(isWeekend("2026-08-09")).toBe(true);
-    expect(isWeekend("2026-08-07")).toBe(false); // пятница
-  });
+const BOTH: MachineCategory[] = ["OUR_SALE", "OUR_RENTAL"];
 
-  it("считает рабочие дни строго после начальной даты", () => {
-    expect(workdaysBetween("2026-08-03", "2026-08-03")).toBe(0); // тот же день
-    expect(workdaysBetween("2026-08-03", "2026-08-04")).toBe(1); // пн → вт
-    expect(workdaysBetween("2026-08-03", "2026-08-05")).toBe(2); // пн → ср
-  });
-
-  it("выходные не считаются: пятница → понедельник это один рабочий день", () => {
-    expect(workdaysBetween("2026-08-07", "2026-08-10")).toBe(1);
-    expect(workdaysBetween("2026-08-07", "2026-08-11")).toBe(2);
-  });
-
-  it("обратный и некорректный диапазон — ноль", () => {
-    expect(workdaysBetween("2026-08-10", "2026-08-03")).toBe(0);
-    expect(workdaysBetween("", "2026-08-03")).toBe(0);
-  });
-
-  it("календарные дни считаются напрямую", () => {
+describe("machine-flags: календарные дни", () => {
+  it("считает дни напрямую, обратный диапазон — ноль", () => {
     expect(daysBetween("2026-08-03", "2026-08-10")).toBe(7);
     expect(daysBetween("2026-08-10", "2026-08-03")).toBe(0);
+    expect(daysBetween("", "2026-08-03")).toBe(0);
   });
 });
 
-describe("machine-flags: индикаторы станка", () => {
-  it("клиентский без заказа 1С подсвечивается, с заказом — нет", () => {
-    expect(machineFlags(machine({ invoice1C: null }), at("2026-08-03")).noInvoice1C).toBe(true);
-    expect(machineFlags(machine({ invoice1C: "  " }), at("2026-08-03")).noInvoice1C).toBe(true);
-    expect(machineFlags(machine({ invoice1C: "4512" }), at("2026-08-03")).noInvoice1C).toBe(false);
+// Диагностика и сверка переделаны 20.08.2026: это не «просрочка по календарю», а обязательная
+// операция, которую делают один раз — при заведении карточки и при возврате из аренды. Поэтому
+// признак предельно простой: отметки нет — горит, есть — не горит. Никаких порогов рабочих дней.
+describe("machine-flags: диагностика и сверка — по факту отметки", () => {
+  it("нет отметки диагностики — индикатор горит; появилась — гаснет", () => {
+    expect(machineFlags(machine({ diagnosedAt: null }), at("2026-08-11")).awaitingDiagnosis).toBe(true);
+    expect(machineFlags(machine({ diagnosedAt: at("2026-08-11") }), at("2026-08-11")).awaitingDiagnosis).toBe(
+      false,
+    );
   });
 
-  it("наш станок без заказа 1С не подсвечивается — заказ бывает только у клиентских", () => {
-    const our = machine({ category: "OUR_SALE", invoice1C: null });
-    expect(machineFlags(our, at("2026-08-03")).noInvoice1C).toBe(false);
+  it("нет отметки сверки — индикатор горит; появилась — гаснет", () => {
+    expect(machineFlags(machine({ lastVerifiedAt: null }), at("2026-08-11")).notVerified).toBe(true);
+    expect(machineFlags(machine({ lastVerifiedAt: at("2026-08-11") }), at("2026-08-11")).notVerified).toBe(
+      false,
+    );
   });
 
-  it("ждёт диагностики только когда прошло БОЛЬШЕ рабочего дня", () => {
-    const m = machine({ status: "ACCEPTED", diagnosedAt: null });
-    expect(machineFlags(m, at("2026-08-03")).awaitingDiagnosis).toBe(false); // день приёмки
-    expect(machineFlags(m, at("2026-08-04")).awaitingDiagnosis).toBe(false); // норматив — 1 раб. день
-    expect(machineFlags(m, at("2026-08-05")).awaitingDiagnosis).toBe(true); // просрочка
+  it("возраст отметки не важен: диагностика полугодовой давности индикатор не зажигает", () => {
+    // Отметки сбрасывает сервер при возврате из аренды — сравнивать даты здесь нечему и незачем.
+    const old = machine({ diagnosedAt: at("2026-01-10"), lastVerifiedAt: at("2026-01-10") });
+    const flags = machineFlags(old, at("2026-08-11"));
+    expect(flags.awaitingDiagnosis).toBe(false);
+    expect(flags.notVerified).toBe(false);
   });
 
-  it("выходные не превращают приёмку в пятницу в просрочку понедельника", () => {
-    const m = machine({ arrivedAt: dateOnly("2026-08-07") }); // пятница
-    expect(machineFlags(m, at("2026-08-10")).awaitingDiagnosis).toBe(false); // понедельник
-    expect(machineFlags(m, at("2026-08-11")).awaitingDiagnosis).toBe(true); // вторник
+  it("день недели ничего не решает — в выходные индикатор ведёт себя так же", () => {
+    const m = machine({ diagnosedAt: null, lastVerifiedAt: null });
+    const saturday = machineFlags(m, at("2026-08-08"));
+    const monday = machineFlags(m, at("2026-08-10"));
+    expect(saturday).toEqual(monday);
   });
 
-  it("проведённая диагностика снимает индикатор", () => {
-    const m = machine({ diagnosedAt: at("2026-08-04") });
-    expect(machineFlags(m, at("2026-08-10")).awaitingDiagnosis).toBe(false);
+  it("в аренде обе отметки гаснут — станок у клиента, осматривать и сверять некому", () => {
+    const rented = machine({ status: "RENTED", diagnosedAt: null, lastVerifiedAt: null });
+    const flags = machineFlags(rented, at("2026-08-11"));
+    expect(flags.awaitingDiagnosis).toBe(false);
+    expect(flags.notVerified).toBe(false);
   });
 
-  it("повторный заезд снова требует диагностики — старая отметка не засчитывается", () => {
-    // Клиент привозит тот же станок второй раз: карточка живёт та же (PRD §16.3), но диагностика
-    // с прошлого заезда к новому отношения не имеет — иначе индикатор не загорится уже никогда.
-    const secondVisit = machine({
-      status: "ACCEPTED",
-      diagnosedAt: at("2026-07-10"), // диагностика прошлого заезда
-      arrivedAt: dateOnly("2026-08-03"), // новое поступление
+  it("«срочно» в аренде НЕ гаснет — это пометка про саму работу, а не про площадку", () => {
+    const rented = machine({ status: "RENTED", isUrgent: true, diagnosedAt: null });
+    expect(machineFlags(rented, at("2026-08-11")).urgent).toBe(true);
+  });
+
+  it("складская позиция не подсвечивается ничем — это остатки, а не станок", () => {
+    const stock = machine({
+      kind: "UNCOILER",
+      quantity: 4,
+      isUrgent: true,
+      diagnosedAt: null,
+      lastVerifiedAt: null,
+      dueDate: dateOnly("2026-08-01"),
     });
-    expect(machineFlags(secondVisit, at("2026-08-05")).awaitingDiagnosis).toBe(true);
-  });
-
-  it("диагностика в день поступления засчитывается", () => {
-    const m = machine({ arrivedAt: dateOnly("2026-08-03"), diagnosedAt: at("2026-08-03") });
-    expect(machineFlags(m, at("2026-08-10")).awaitingDiagnosis).toBe(false);
-  });
-
-  it("индикатор диагностики только у принятых (в ремонте — уже не ждёт)", () => {
-    const m = machine({ status: "IN_REPAIR", diagnosedAt: null });
-    expect(machineFlags(m, at("2026-08-10")).awaitingDiagnosis).toBe(false);
-  });
-
-  it("«давно не сверялся» загорается после недели", () => {
-    const m = machine({ lastVerifiedAt: at("2026-08-03") });
-    expect(machineFlags(m, at("2026-08-10")).staleVerification).toBe(false); // ровно 7 дней
-    expect(machineFlags(m, at("2026-08-11")).staleVerification).toBe(true);
-  });
-
-  it("ни разу не сверялся — отсчёт от дня заведения карточки", () => {
-    const m = machine({ lastVerifiedAt: null, createdAt: at("2026-08-03") });
-    expect(machineFlags(m, at("2026-08-05")).staleVerification).toBe(false); // свежая карточка
-    expect(machineFlags(m, at("2026-08-12")).staleVerification).toBe(true);
+    expect(machineFlags(stock, at("2026-08-11"))).toEqual({
+      urgent: false,
+      awaitingDiagnosis: false,
+      notVerified: false,
+      duePressing: false,
+    });
   });
 
   it("архивный станок не подсвечивается ничем — его на площадке нет", () => {
     const gone = machine({
       status: "RELEASED",
-      invoice1C: null,
       isUrgent: true,
-      lastVerifiedAt: at("2026-01-01"),
+      diagnosedAt: null,
+      lastVerifiedAt: null,
       dueDate: dateOnly("2026-08-01"), // даже просроченный срок в архиве не горит
     });
     expect(machineFlags(gone, at("2026-08-11"))).toEqual({
-      noInvoice1C: false,
       urgent: false,
       awaitingDiagnosis: false,
-      staleVerification: false,
+      notVerified: false,
       duePressing: false,
     });
   });
@@ -172,10 +148,14 @@ describe("machine-flags: срок готовности/выдачи", () => {
     ).toBe(null);
   });
 
+  it("у выведенного из оборота «Принят» срок не горит — его нет среди активных состояний", () => {
+    expect(machineDueState({ status: "ACCEPTED", dueDate: "2026-08-01" }, now)).toBe(null);
+  });
+
   it("принимает дату и строкой YYYY-MM-DD (клиентский DTO) — порог один на всех", () => {
-    expect(machineDueState({ status: "ACCEPTED", dueDate: "2026-08-12" }, now)).toBe("soon");
-    expect(machineDueState({ status: "ACCEPTED", dueDate: "2026-08-10" }, now)).toBe("overdue");
-    expect(machineDueState({ status: "ACCEPTED", dueDate: "мусор" }, now)).toBe(null);
+    expect(machineDueState({ status: "IN_REPAIR", dueDate: "2026-08-12" }, now)).toBe("soon");
+    expect(machineDueState({ status: "IN_REPAIR", dueDate: "2026-08-10" }, now)).toBe("overdue");
+    expect(machineDueState({ status: "IN_REPAIR", dueDate: "мусор" }, now)).toBe(null);
   });
 
   it("граница МСК-суток: в 23:30 UTC по Москве уже следующий день", () => {
@@ -198,21 +178,37 @@ describe("machine-flags: счётчики сводки", () => {
   it("считает парк по категориям и состояниям, архив отдельно", () => {
     const s = summarize(
       [
-        machine({ category: "CLIENT", status: "ACCEPTED" }),
-        machine({ category: "CLIENT", status: "IN_REPAIR" }),
-        machine({ category: "OUR_SALE", status: "READY" }),
-        machine({ category: "OUR_RENTAL", status: "RENTED" }),
-        machine({ category: "CLIENT", status: "RELEASED" }), // архив
-        machine({ category: "OUR_SALE", status: "SOLD" }), // архив
+        machine({ categories: ["CLIENT"], status: "NEEDS_REPAIR" }),
+        machine({ categories: ["CLIENT"], status: "IN_REPAIR" }),
+        machine({ categories: ["OUR_SALE"], status: "READY" }),
+        machine({ categories: ["OUR_RENTAL"], status: "RENTED" }),
+        machine({ categories: ["CLIENT"], status: "RELEASED" }), // архив
+        machine({ categories: ["OUR_SALE"], status: "SOLD" }), // архив
       ],
       now,
     );
     expect(s.total).toBe(4);
     expect(s.archived).toBe(2);
     expect(s.byCategory).toEqual({ CLIENT: 2, OUR_SALE: 1, OUR_RENTAL: 1 });
-    expect(s.byStatus.ACCEPTED).toBe(1);
+    expect(s.byStatus.NEEDS_REPAIR).toBe(1);
     expect(s.byStatus.RENTED).toBe(1);
     expect(s.byStatus.RELEASED).toBe(1);
+  });
+
+  it("станок двойного назначения считается в ОБЕИХ категориях — сумма больше парка", () => {
+    // Это не ошибка счёта: плитка «Наш арендный» должна показывать всё, что можно сдать, а плитка
+    // «Наш на продажу» — всё, что можно продать. Один станок правда стоит и там, и там.
+    const s = summarize([machine({ categories: BOTH, status: "READY" })], now);
+    expect(s.total).toBe(1);
+    expect(s.byCategory).toEqual({ CLIENT: 0, OUR_SALE: 1, OUR_RENTAL: 1 });
+    const sumByCategory = s.byCategory.CLIENT + s.byCategory.OUR_SALE + s.byCategory.OUR_RENTAL;
+    expect(sumByCategory).toBeGreaterThan(s.total);
+  });
+
+  it("порядок категорий в карточке на счёт не влияет", () => {
+    const straight = summarize([machine({ categories: ["OUR_SALE", "OUR_RENTAL"] })], now);
+    const reversed = summarize([machine({ categories: ["OUR_RENTAL", "OUR_SALE"] })], now);
+    expect(straight.byCategory).toEqual(reversed.byCategory);
   });
 
   it("аннулированные не входят в парк и не попадают в архивный счётчик", () => {
@@ -229,36 +225,71 @@ describe("machine-flags: счётчики сводки", () => {
   it("индикаторы суммируются только по активным", () => {
     const s = summarize(
       [
-        machine({ invoice1C: null, isUrgent: true }), // без заказа + срочный
-        machine({ invoice1C: null, status: "RELEASED" }), // архив — не считается
-        machine({ status: "ACCEPTED", arrivedAt: dateOnly("2026-08-03") }), // ждёт диагностики
+        machine({ isUrgent: true, diagnosedAt: null, lastVerifiedAt: null }),
+        machine({ status: "RELEASED", diagnosedAt: null, lastVerifiedAt: null }), // архив — не считается
+        machine({ status: "RENTED", diagnosedAt: null, lastVerifiedAt: null }), // в аренде — не считается
+        machine({ diagnosedAt: null }), // только диагностика
       ],
       now,
     );
-    expect(s.noInvoice1C).toBe(1);
     expect(s.urgent).toBe(1);
     expect(s.awaitingDiagnosis).toBe(2);
+    expect(s.notVerified).toBe(1);
   });
 
   it("пустой парк — нули без падений", () => {
     const s = summarize([], now);
     expect(s.total).toBe(0);
-    expect(s.byStatus.ACCEPTED).toBe(0);
+    expect(s.byStatus.NEEDS_REPAIR).toBe(0);
     expect(s.byCategory.CLIENT).toBe(0);
-    expect(s.byKind).toEqual({ MACHINE: 0, ROLLER_KNIFE: 0, SEAMER: 0, UNCOILER: 0, INVERTER: 0 });
+    expect(s.byKind).toEqual({
+      MACHINE: 0,
+      ROLLER_KNIFE: 0,
+      FALZ_MACHINE: 0,
+      SEAMER: 0,
+      UNCOILER: 0,
+      INVERTER: 0,
+    });
     expect(s.duePressing).toBe(0);
   });
 
-  it("считает виды по активным: архивный нож в счётчик не входит", () => {
+  it("считает виды по активным: архивный нож в счётчик не входит, фальц машинка входит", () => {
     const s = summarize(
       [
         machine(),
         machine({ kind: "ROLLER_KNIFE" }),
+        machine({ kind: "FALZ_MACHINE" }),
         machine({ kind: "ROLLER_KNIFE", status: "RELEASED" }), // архив
       ],
       now,
     );
-    expect(s.byKind).toEqual({ MACHINE: 1, ROLLER_KNIFE: 1, SEAMER: 0, UNCOILER: 0, INVERTER: 0 });
+    expect(s.byKind).toEqual({
+      MACHINE: 1,
+      ROLLER_KNIFE: 1,
+      FALZ_MACHINE: 1,
+      SEAMER: 0,
+      UNCOILER: 0,
+      INVERTER: 0,
+    });
+  });
+
+  it("складские позиции считаются ШТУКАМИ и в парк не входят", () => {
+    // Карточка складского вида — это модель с остатком, а не экземпляр: у неё нет ни состояния,
+    // ни категории, поэтому плитки парка её не видят, а «Размотчики» показывают штуки.
+    const s = summarize(
+      [
+        machine({ kind: "UNCOILER", quantity: 5, status: "READY" }),
+        machine({ kind: "INVERTER", quantity: 2, status: "READY" }),
+        machine({ kind: "INVERTER" }), // без quantity — считается за одну штуку
+        machine({ kind: "MACHINE", status: "READY" }),
+      ],
+      now,
+    );
+    expect(s.byKind.UNCOILER).toBe(5);
+    expect(s.byKind.INVERTER).toBe(3);
+    expect(s.total).toBe(1);
+    expect(s.byStatus.READY).toBe(1); // складские в состояния не попали
+    expect(s.byCategory.CLIENT).toBe(1);
   });
 
   it("горящие сроки суммируются только по активным станкам", () => {
@@ -273,5 +304,14 @@ describe("machine-flags: счётчики сводки", () => {
       now,
     );
     expect(s.duePressing).toBe(2);
+  });
+
+  it("старые карточки со снятым «Принят» из парка не выпадают", () => {
+    // Состояние выведено из оборота, но в истории и в старых записях оно есть — счётчики должны
+    // считать такой станок обычным активным, иначе парк «похудеет» на ровном месте.
+    const s = summarize([machine({ status: "ACCEPTED" })], now);
+    expect(s.total).toBe(1);
+    expect(s.byStatus.ACCEPTED).toBe(1);
+    expect(s.archived).toBe(0);
   });
 });

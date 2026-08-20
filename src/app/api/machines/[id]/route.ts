@@ -2,13 +2,13 @@ import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
 import { requireMachineUser, errorResponse, readJson } from "@/lib/api-route";
 import {
-  changeCategory,
+  changeCategories,
   changeStatus,
   editMachine,
   getMachine,
   markChecked,
 } from "@/domain/machine-service";
-import { parseCategory, parseMachineFields, parseMachineStatus } from "@/lib/machine-input";
+import { parseCategories, parseMachineFields, parseMachineStatus } from "@/lib/machine-input";
 import { Errors } from "@/domain/errors";
 
 export const runtime = "nodejs";
@@ -29,8 +29,8 @@ export async function GET(_req: Request, { params }: Ctx) {
 
 // PATCH /api/machines/:id — операции над карточкой (op-style, как у задач и смен):
 //   edit      — правка полей (журнал пишет «было→стало»);
-//   status    — смена состояния (валидация совместимости с категорией; VOIDED требует причину);
-//   category  — смена категории (текущее состояние должно остаться совместимым);
+//   status    — смена состояния (валидация совместимости с категориями; VOIDED требует причину);
+//   category  — смена НАБОРА категорий целиком (текущее состояние должно остаться совместимым);
 //   diagnosed — отметка «Диагностика проведена»;
 //   verified  — отметка «Подтверждён на месте» (сверка при обходе площадки).
 export async function PATCH(req: Request, { params }: Ctx) {
@@ -53,9 +53,11 @@ export async function PATCH(req: Request, { params }: Ctx) {
         return NextResponse.json(ok(await changeStatus(id, { status, reason, withKit }, user)));
       }
       case "category": {
-        const category = parseCategory(body.category);
-        if (!category) throw Errors.validation("Неизвестная категория");
-        return NextResponse.json(ok(await changeCategory(id, { category }, user)));
+        // Приходит ПОЛНЫЙ набор галочек, а не «переключить одну»: так комбинация проверяется и
+        // применяется атомарно, без промежуточного состояния «ни одной категории».
+        const categories = parseCategories(body.categories);
+        if (!categories) throw Errors.validation("Укажите категории");
+        return NextResponse.json(ok(await changeCategories(id, { categories }, user)));
       }
       case "diagnosed":
         return NextResponse.json(ok(await markChecked(id, "diagnosed", user)));

@@ -7,44 +7,10 @@ import { dateKeyInTz, utcDateKey, KPI_TZ } from "./kpi";
 import { isArchivedStatus, isStockKind } from "./machine-status";
 import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
 
-/** Норматив диагностики: станок должен быть продиагностирован за один рабочий день (памятка должности). */
-export const DIAGNOSIS_WORKDAYS = 1;
-
-/** Порог сверки на площадке: не подтверждали больше недели — пора пройтись и сверить. */
-export const VERIFY_STALE_DAYS = 7;
-
 /** Горизонт «горящего» срока: дедлайн сегодня или в ближайшие 2 дня (решение Артёма 07.08). */
 export const DUE_SOON_DAYS = 2;
 
-// Потолок перебора дней: карточки бывают старыми, а точное число дней сверх порога никому не нужно.
-const MAX_SCAN_DAYS = 400;
-
-/** Выходной ли день (упрощённо: суббота/воскресенье; производственный календарь не заводим). */
-export function isWeekend(dayKey: string): boolean {
-  const d = new Date(`${dayKey}T00:00:00.000Z`);
-  if (Number.isNaN(d.getTime())) return false;
-  const dow = d.getUTCDay();
-  return dow === 0 || dow === 6;
-}
-
-/**
- * Сколько рабочих дней (пн–пт) прошло СТРОГО ПОСЛЕ fromKey и ДО toKey включительно.
- * Принят в понедельник и сегодня вторник → 1. Принят в пятницу, сегодня понедельник → 1.
- */
-export function workdaysBetween(fromKey: string, toKey: string): number {
-  if (!fromKey || !toKey || fromKey >= toKey) return 0;
-  const cur = new Date(`${fromKey}T00:00:00.000Z`);
-  const end = new Date(`${toKey}T00:00:00.000Z`);
-  if (Number.isNaN(cur.getTime()) || Number.isNaN(end.getTime())) return 0;
-  let count = 0;
-  for (let guard = 0; cur < end && guard < MAX_SCAN_DAYS; guard++) {
-    cur.setUTCDate(cur.getUTCDate() + 1);
-    if (!isWeekend(cur.toISOString().slice(0, 10))) count++;
-  }
-  return count;
-}
-
-/** Календарных дней между днями (для «давно не сверялся»). */
+/** Календарных дней между днями (для сроков). */
 export function daysBetween(fromKey: string, toKey: string): number {
   if (!fromKey || !toKey) return 0;
   const from = Date.parse(`${fromKey}T00:00:00.000Z`);
@@ -58,11 +24,9 @@ export type FlaggableMachine = {
   kind: EquipmentKind;
   /** Всего штук на складе (складские виды). У штучного оборудования всегда 1. */
   quantity?: number;
-  category: MachineCategory;
+  categories: MachineCategory[];
   status: MachineStatus;
-  invoice1C: string | null;
   isUrgent: boolean;
-  arrivedAt: Date | null;
   dueDate: Date | null;
   diagnosedAt: Date | null;
   lastVerifiedAt: Date | null;
@@ -70,10 +34,9 @@ export type FlaggableMachine = {
 };
 
 export type MachineFlags = {
-  noInvoice1C: boolean; // клиентский станок без № заказа 1С — янтарный, НЕ блокировка
   urgent: boolean;
-  awaitingDiagnosis: boolean; // принят и висит без диагностики дольше рабочего дня
-  staleVerification: boolean; // давно не подтверждали, что станок физически на месте
+  awaitingDiagnosis: boolean; // диагностику ни разу не отмечали (или отметку сняли после аренды)
+  notVerified: boolean; // не подтверждали, что станок физически на месте
   duePressing: boolean; // срок просрочен или горит (≤ DUE_SOON_DAYS) — см. machineDueState
 };
 
@@ -87,7 +50,6 @@ export type DueState = "overdue" | "soon" | null;
  * у клиента, в архиве — уехал совсем: там дата показывается нейтрально и в счётчики не попадает.
  */
 const DUE_ACTIVE_STATUSES: ReadonlySet<MachineStatus> = new Set<MachineStatus>([
-  "ACCEPTED",
   "NEEDS_REPAIR",
   "IN_REPAIR",
   "READY",
@@ -112,52 +74,47 @@ export function machineDueState(
 }
 
 /**
- * Индикаторы одного станка. Архивные (выдан/продан/аннулирован) не подсвечиваются никогда:
- * станка на площадке уже нет, требовать по нему диагностику или сверку бессмысленно. Складские
- * позиции (размотчики, частотники) — тоже: это остатки, а не станки; диагностика, сверка на месте
- * и срок готовности к ним не применяются.
+ * Индикаторы одного станка.
+ *
+ * ДИАГНОСТИКА И СВЕРКА (переделано 20.08.2026 вместе с баннером в карточке). Раньше здесь стояли
+ * пороги «рабочий день без диагностики» и «неделя без сверки» — то есть индикатор загорался сам
+ * собой по календарю, и погасить его было нечем, кроме как сходить и отметить. Артём переформулировал
+ * задачу: это не «просрочка», а ОБЯЗАТЕЛЬНАЯ ОПЕРАЦИЯ, которую делают один раз — когда станок завели
+ * или когда он вернулся из аренды. Значит и признак простой: отметки нет — индикатор горит, отметка
+ * есть — не горит. Ровно то же условие показывает баннер в карточке, и они не могут разойтись.
+ *
+ * Отметки сбрасываются сервером при возврате из аренды (src/domain/machine-service.ts) — именно
+ * поэтому здесь больше не нужно сравнивать дату отметки с датой заезда.
+ *
+ * Кто не подсвечивается никогда: архивные (выдан/продан/аннулирован) — станка на площадке уже нет;
+ * складские остатки (размотчики, частотники) — это не станки; и станки В АРЕНДЕ — они у клиента,
+ * подтверждать их наличие на площадке и осматривать некому.
  */
 export function machineFlags(m: FlaggableMachine, now: Date, tz: string = KPI_TZ): MachineFlags {
   if (isArchivedStatus(m.status) || isStockKind(m.kind)) {
     return {
-      noInvoice1C: false,
       urgent: false,
       awaitingDiagnosis: false,
-      staleVerification: false,
+      notVerified: false,
       duePressing: false,
     };
   }
-  const todayKey = dateKeyInTz(now, tz);
-
-  // Точка отсчёта ожидания — дата поступления; если её не заполнили, берём день заведения карточки.
-  const arrivedKey = m.arrivedAt ? utcDateKey(m.arrivedAt) : dateKeyInTz(m.createdAt, tz);
-  // Диагностика засчитывается только если она относится к ТЕКУЩЕМУ заезду. Иначе повторно
-  // привезённый станок (карточка живёт та же, PRD §16.3) навсегда оставался бы «продиагностированным»
-  // отметкой с прошлого раза, и индикатор больше никогда бы не загорелся.
-  const diagnosedThisVisit =
-    m.diagnosedAt !== null && dateKeyInTz(m.diagnosedAt, tz) >= arrivedKey;
-  const awaitingDiagnosis =
-    m.status === "ACCEPTED" &&
-    !diagnosedThisVisit &&
-    workdaysBetween(arrivedKey, todayKey) > DIAGNOSIS_WORKDAYS;
-
-  // Ни разу не сверяли — считаем от дня заведения карточки (иначе новые станки сразу «протухшие»).
-  const verifiedKey = m.lastVerifiedAt
-    ? dateKeyInTz(m.lastVerifiedAt, tz)
-    : dateKeyInTz(m.createdAt, tz);
-  const staleVerification = daysBetween(verifiedKey, todayKey) > VERIFY_STALE_DAYS;
+  const onSite = m.status !== "RENTED";
 
   return {
-    noInvoice1C: m.category === "CLIENT" && !m.invoice1C?.trim(),
     urgent: m.isUrgent,
-    awaitingDiagnosis,
-    staleVerification,
+    awaitingDiagnosis: onSite && m.diagnosedAt === null,
+    notVerified: onSite && m.lastVerifiedAt === null,
     duePressing: machineDueState(m, now, tz) !== null,
   };
 }
 
 export type MachineSummary = {
-  /** Активные (не архивные и не аннулированные) по категориям. */
+  /**
+   * Активные (не архивные и не аннулированные) по категориям. Станок с двумя категориями
+   * считается в ОБЕИХ, поэтому сумма по категориям может быть больше `total` — это не ошибка,
+   * а прямое следствие того, что один станок правда стоит и на продажу, и в аренду.
+   */
   byCategory: Record<MachineCategory, number>;
   /** Активные по видам оборудования (станки/роликовые ножи). */
   byKind: Record<EquipmentKind, number>;
@@ -166,10 +123,9 @@ export type MachineSummary = {
   total: number; // всего активных
   archived: number; // в архиве (выдан/продан), без аннулированных
   voided: number; // аннулированные — отдельно, в счётчики парка не входят
-  noInvoice1C: number;
   urgent: number;
   awaitingDiagnosis: number;
-  staleVerification: number;
+  notVerified: number;
   duePressing: number;
 };
 
@@ -178,7 +134,7 @@ function emptyByCategory(): Record<MachineCategory, number> {
 }
 
 function emptyByKind(): Record<EquipmentKind, number> {
-  return { MACHINE: 0, ROLLER_KNIFE: 0, SEAMER: 0, UNCOILER: 0, INVERTER: 0 };
+  return { MACHINE: 0, ROLLER_KNIFE: 0, FALZ_MACHINE: 0, SEAMER: 0, UNCOILER: 0, INVERTER: 0 };
 }
 
 function emptyByStatus(): Record<MachineStatus, number> {
@@ -208,10 +164,9 @@ export function summarize(machines: FlaggableMachine[], now: Date, tz: string = 
     total: 0,
     archived: 0,
     voided: 0,
-    noInvoice1C: 0,
     urgent: 0,
     awaitingDiagnosis: 0,
-    staleVerification: 0,
+    notVerified: 0,
     duePressing: 0,
   };
 
@@ -232,13 +187,14 @@ export function summarize(machines: FlaggableMachine[], now: Date, tz: string = 
       continue;
     }
     out.total += 1;
-    out.byCategory[m.category] += 1;
+    // Станок считается в КАЖДОЙ своей категории: он и правда стоит и на продажу, и в аренду,
+    // а плитка «Наш арендный» должна показывать всё, что можно сдать.
+    for (const c of m.categories) out.byCategory[c] += 1;
     out.byKind[m.kind] += 1;
     const f = machineFlags(m, now, tz);
-    if (f.noInvoice1C) out.noInvoice1C += 1;
     if (f.urgent) out.urgent += 1;
     if (f.awaitingDiagnosis) out.awaitingDiagnosis += 1;
-    if (f.staleVerification) out.staleVerification += 1;
+    if (f.notVerified) out.notVerified += 1;
     if (f.duePressing) out.duePressing += 1;
   }
   return out;

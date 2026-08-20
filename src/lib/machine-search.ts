@@ -1,6 +1,10 @@
 // Умный поиск по картотеке станков (PRD §16.5). Предметная надстройка над общим движком
-// `search-core.ts` — тем же, что ищет заявки: номер, модель, заказчик, телефон в любом формате,
-// № заказа 1С, серийник, место на площадке; регистр и ё/е не важны, неверная раскладка чинится.
+// `search-core.ts` — тем же, что ищет заявки: номер в любой схеме и написании («77-5», «К-5», «k5»),
+// модель, № заказа 1С, комплектация, дефектовка, подписи состояния и категорий; регистр и ё/е не
+// важны, неверная раскладка чинится.
+//
+// Поиск по заказчику, телефону, серийнику и месту на площадке убран 20.08.2026 вместе с самими
+// полями (решение Артёма: карточка распухла, а эти данные живут в 1С).
 //
 // Активные станки (десятки) фильтруются на клиенте мгновенно; архив ищется на сервере — ЭТИМ ЖЕ
 // модулем (listMachines в machine-service вызывает machineMatches), поэтому ответы клиента и
@@ -34,17 +38,13 @@ export type SearchableMachine = {
   ourNumber: number | null;
   clientNumber?: number | null;
   kind: EquipmentKind;
-  category: MachineCategory;
+  categories: MachineCategory[];
   status: MachineStatus;
   model: string;
   configuration?: string | null;
   metalThickness?: string | null;
-  serialNumber?: string | null;
-  orgName?: string | null;
   contactName?: string | null;
-  contactPhone?: string | null;
   invoice1C?: string | null;
-  location?: string | null;
   deliveredBy?: string | null;
   defectNotes?: string | null;
   notes?: string | null;
@@ -55,18 +55,18 @@ export function formatOurNumber(m: NumberedMachine): string | null {
   return formatMachineNumber(m);
 }
 
-// Текстовые поля станка (телефон отдельно — он сравнивается по цифрам). Подписи категории и
-// состояния тоже ищутся: «в ремонте» и «арендный» — естественные слова запроса.
+// Текстовые поля станка. Подписи категорий и состояния тоже ищутся: «в ремонте» и «арендный» —
+// естественные слова запроса. Станок с двумя категориями находится по любой из них.
+//
+// Подпись вида добавляется всем, кроме головных: «нож», «машинка» находят комплектующие, а слово
+// «листогиб» в разделе листогибов было бы запросом-пустышкой, матчащим всю картотеку.
 function textFields(m: SearchableMachine): string[] {
   return [
     m.model,
     m.configuration,
     m.metalThickness,
-    m.serialNumber,
-    m.orgName,
     m.contactName,
     m.invoice1C,
-    m.location,
     m.deliveredBy,
     m.defectNotes,
     m.notes,
@@ -74,15 +74,13 @@ function textFields(m: SearchableMachine): string[] {
     // «к5», «k-5» и прочие написания клиентского номера — человек ищет как набралось.
     ...machineNumberSearchVariants(m),
     MACHINE_STATUS_LABEL[m.status],
-    MACHINE_CATEGORY_LABEL[m.category],
-    // Подпись вида — только у ножей: «нож»/«роликовый» находит их, а слово «станок» не
-    // превращается в запрос-пустышку, матчащий всю картотеку.
+    ...m.categories.map((c) => MACHINE_CATEGORY_LABEL[c]),
     !isHeadKind(m.kind) ? EQUIPMENT_KIND_LABEL[m.kind] : null,
   ].filter((v): v is string => typeof v === "string" && v.length > 0);
 }
 
-// Числовые «стога»: учётный номер (и как «5», и как «775» — чтобы находился запрос «77-5»), цифры
-// № заказа 1С и серийника. Сквозной системный номер из поиска убран вместе с его показом (15.08.2026):
+// Числовые «стога»: учётный номер (и как «5», и как «775» — чтобы находился запрос «77-5») и цифры
+// № заказа 1С. Сквозной системный номер из поиска убран вместе с его показом (15.08.2026):
 // искать по числу, которого человек больше нигде не видит, — только ложные совпадения.
 function numberHaystacks(m: SearchableMachine): string[] {
   const out: string[] = [];
@@ -90,35 +88,35 @@ function numberHaystacks(m: SearchableMachine): string[] {
   if (value !== null) {
     // «5» — сам номер; «775» — чтобы находился запрос «77-5» (дефис поиск не различает).
     out.push(String(value));
-    if (m.category !== "CLIENT") out.push(`77${value}`);
+    if (m.ourNumber !== null) out.push(`77${value}`);
   }
-  for (const raw of [m.invoice1C, m.serialNumber]) {
-    if (!raw) continue;
-    const { digits } = digitsWithMap(raw);
+  if (m.invoice1C) {
+    const { digits } = digitsWithMap(m.invoice1C);
     if (digits) out.push(digits);
   }
   return out;
 }
 
-/** Подходит ли станок под запрос (AND по токенам, как у задач). */
+/**
+ * Подходит ли станок под запрос (AND по токенам, как у задач).
+ *
+ * Телефона у станка больше нет (поле выведено из интерфейса 20.08.2026), поэтому «телефонный»
+ * аргумент общего движка всегда пуст — цифровой путь остаётся только у номера и заказа 1С.
+ */
 export function machineMatches(m: SearchableMachine, q: ParsedQuery): boolean {
-  return matchesFields(q, textFields(m), numberHaystacks(m), m.contactPhone);
+  return matchesFields(q, textFields(m), numberHaystacks(m), null);
 }
 
-export type HiddenMatch = { label: string; text: string; phone: boolean };
+export type HiddenMatch = { label: string; text: string };
 
-// Карточка списка показывает номера, модель, состояние и место. Остальное — «скрытые» поля:
+// Карточка списка показывает номер, модель, состояние, цену и толщину. Остальное — «скрытые» поля:
 // если нашлось по ним, показываем строчку-сниппет «почему нашлось».
 const HIDDEN_FIELDS: {
-  key: "contactPhone" | "contactName" | "orgName" | "invoice1C" | "serialNumber" | "configuration" | "defectNotes";
+  key: "contactName" | "invoice1C" | "configuration" | "defectNotes";
   label: string;
-  phone?: boolean;
 }[] = [
-  { key: "contactPhone", label: "Тел.", phone: true },
-  { key: "orgName", label: "Заказчик" },
   { key: "contactName", label: "Контакт" },
   { key: "invoice1C", label: "Заказ 1С" },
-  { key: "serialNumber", label: "Серийник" },
   { key: "configuration", label: "Компл." },
   { key: "defectNotes", label: "Дефект" },
 ];
@@ -135,10 +133,9 @@ export function firstHiddenMachineMatch(
   for (const f of HIDDEN_FIELDS) {
     const value = m[f.key];
     if (!value) continue;
-    const hit = f.phone
-      ? phoneHighlightRanges(value, q).length > 0 || highlightRanges(value, q).length > 0
-      : highlightRanges(value, q).length > 0;
-    if (hit) return { label: f.label, text: value, phone: f.phone ?? false };
+    // Телефонной ветки здесь больше нет: поле «Телефон» выведено из карточки 20.08.2026,
+    // а среди оставшихся скрытых полей номеров не бывает.
+    if (highlightRanges(value, q).length > 0) return { label: f.label, text: value };
   }
   return null;
 }

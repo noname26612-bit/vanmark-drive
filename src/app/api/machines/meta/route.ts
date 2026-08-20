@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
 import { requireMachineUser, errorResponse } from "@/lib/api-route";
-import { listKnownModels, listResponsibles, nextNumbers } from "@/domain/machine-service";
+import {
+  listKnownModels,
+  listResponsibles,
+  listSuppressedModels,
+  nextNumbers,
+} from "@/domain/machine-service";
 import { parseFamily } from "@/lib/machine-input";
 
 export const runtime = "nodejs";
@@ -17,10 +22,11 @@ export async function GET(req: Request) {
   try {
     const user = await requireMachineUser();
     const family = parseFamily(new URL(req.url).searchParams.get("family"));
-    const [next, responsibles, models] = await Promise.all([
+    const [next, responsibles, models, suppressedModels] = await Promise.all([
       nextNumbers(user, family),
       listResponsibles(user),
       listKnownModels(user, family),
+      listSuppressedModels(user, family),
     ]);
     return NextResponse.json(
       ok({
@@ -28,6 +34,8 @@ export async function GET(req: Request) {
         nextClientNumber: next.clientNumber,
         responsibles,
         models,
+        // Скрытые крестиком подсказки: пул собирает клиент (modelSuggestionPool), ему нужны обе части.
+        suppressedModels,
       }),
     );
   } catch (e) {
