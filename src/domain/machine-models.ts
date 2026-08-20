@@ -105,8 +105,16 @@ export function modelHaystack(label: string): string[] {
  * Пул подсказок: базовые модели первыми в авторском порядке, затем реально введённые в картотеке
  * (из БД), которых нет среди базовых. Сравнение без регистра и лишних пробелов — «sorex lbm 200»
  * из БД не дублирует базовую строку.
+ *
+ * `suppressed` — названия, которые попросили не показывать (крестик в списке, 20.08.2026): в
+ * карточки иногда заносят временное имя вроде «Хз ждём Михаила», и оно потом предлагается всем.
+ * Скрывать можно и базовые строки справочника: раздел, где такой модели нет, не должен её видеть.
  */
-export function modelSuggestionPool(dbModels: readonly string[]): string[] {
+export function modelSuggestionPool(
+  dbModels: readonly string[],
+  suppressed: readonly string[] = [],
+): string[] {
+  const hidden = new Set(suppressed.map((m) => m.trim().toLowerCase()));
   const seen = new Set(MACHINE_MODELS.map((m) => m.trim().toLowerCase()));
   const extra: string[] = [];
   for (const raw of dbModels) {
@@ -117,7 +125,7 @@ export function modelSuggestionPool(dbModels: readonly string[]): string[] {
     extra.push(label);
   }
   extra.sort((a, b) => a.localeCompare(b, "ru"));
-  return [...MACHINE_MODELS, ...extra];
+  return [...MACHINE_MODELS, ...extra].filter((m) => !hidden.has(m.trim().toLowerCase()));
 }
 
 /**

@@ -7,6 +7,7 @@
 // своё название вписывается как раньше. Голый datalist не подошёл — его фильтрация браузерная,
 // без раскладки и транслита.
 import { useMemo, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Highlighted } from "@/components/highlight";
 import { filterModelSuggestions } from "@/domain/machine-models";
@@ -19,6 +20,7 @@ export function ModelCombobox({
   placeholder,
   testId,
   autoFocus,
+  onSuppress,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -27,6 +29,11 @@ export function ModelCombobox({
   placeholder?: string;
   testId?: string;
   autoFocus?: boolean;
+  /**
+   * Убрать подсказку из пула (крестик справа в списке). Не передан — крестиков нет: чистить
+   * справочник вправе не каждый экран, а карточка станка правит только собственную модель.
+   */
+  onSuppress?: (label: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1); // индекс подсвеченного пункта; -1 — ничего
@@ -34,6 +41,9 @@ export function ModelCombobox({
 
   const suggestions = useMemo(() => filterModelSuggestions(models, value), [models, value]);
   const query = useMemo(() => parseQuery(value), [value]);
+  // Крестик не рисуем у пункта, который сейчас и стоит в поле: прятать то, что человек только что
+  // выбрал, бессмысленно — а промах пальцем стоил бы ему подсказки.
+  const chosenKey = value.trim().toLowerCase();
 
   function choose(label: string) {
     onChange(label);
@@ -107,7 +117,7 @@ export function ModelCombobox({
           className="absolute left-0 right-0 top-full z-30 mt-1 max-h-56 overflow-y-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-lg"
         >
           {suggestions.map((label, i) => (
-            <li key={label}>
+            <li key={label} className="flex items-stretch">
               <button
                 type="button"
                 role="option"
@@ -117,12 +127,36 @@ export function ModelCombobox({
                   e.preventDefault();
                   choose(label);
                 }}
-                className={`block w-full px-3 py-2.5 text-left text-sm text-neutral-800 ${
+                className={`min-w-0 flex-1 px-3 py-2.5 text-left text-sm text-neutral-800 ${
                   i === active ? "bg-neutral-100" : "active:bg-neutral-100"
                 }`}
               >
                 <Highlighted text={label} query={query} />
               </button>
+              {onSuppress && label.trim().toLowerCase() !== chosenKey ? (
+                <button
+                  type="button"
+                  // Крестик — не пункт списка: стрелками на него не попадают, Enter его не нажимает.
+                  tabIndex={-1}
+                  aria-label="Убрать подсказку"
+                  title="Убрать подсказку"
+                  // Тот же preventDefault, что и у пункта (иначе blur закроет список), плюс
+                  // stopPropagation в обеих фазах: без него нажатие на крестик заодно ВЫБИРАЛО бы
+                  // модель, которую человек как раз убирает.
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Список сейчас укоротится — подсветка по старому индексу указывала бы не туда.
+                    setActive(-1);
+                    onSuppress(label);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  data-testid={`model-suppress-${i}`}
+                  className="flex w-8 shrink-0 items-center justify-center text-neutral-400 active:text-neutral-900 hover:text-neutral-700"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              ) : null}
             </li>
           ))}
         </ul>

@@ -432,16 +432,18 @@ estimate   = type.onSiteMinutes + travelMin     (round)
 
 ```prisma
 enum MachineCategory { CLIENT OUR_SALE OUR_RENTAL }              // чей станок: клиентский / наш на продажу / наш арендный
-enum MachineStatus   { ACCEPTED NEEDS_REPAIR IN_REPAIR READY RENTED RELEASED SOLD VOIDED }
+enum MachineStatus   { ACCEPTED NEEDS_REPAIR IN_REPAIR READY RENTED RELEASED SOLD VOIDED } // ACCEPTED выведен из оборота 20.08.2026, оставлен ради истории
 enum EquipmentFamily { BENDER SEAMER }                           // раздел: Листогибы / Фальцепрокатники (15.08.2026)
-enum EquipmentKind   { MACHINE ROLLER_KNIFE SEAMER UNCOILER INVERTER } // вид внутри раздела
+enum EquipmentKind   { MACHINE ROLLER_KNIFE FALZ_MACHINE SEAMER UNCOILER INVERTER } // вид внутри раздела (FALZ_MACHINE — 20.08.2026)
 
 // Карточка станка. number — сквозной системный № (Postgres sequence machine_number_seq), УБРАН из
 // интерфейса 15.08.2026. Учётный номер, который пишут маркером на железе, ведётся двумя схемами по
 // происхождению: ourNumber «77-N» у своего парка, clientNumber «К-N» у клиентского. Заполнено не
-// больше одного поля; при смене категории номер переезжает в схему новой категории
-// (src/domain/machine-number.ts + changeCategory). Дубль ловится @@unique и отдаётся человеческой
-// ошибкой ввода.
+// больше одного поля; при смене категорий номер переезжает в схему новых категорий
+// (src/domain/machine-number.ts + changeCategories). Схема ПЕЧАТАЕМОГО номера читается из
+// заполненного поля, а не из категорий (20.08.2026): «клиентскость» перестала быть одним значением,
+// а номерное поле само говорит, в какой схеме номер выдан. Дубль ловится @@unique и отдаётся
+// человеческой ошибкой ввода.
 model Machine {
   id             String          @id @default(uuid())
   number         Int             @unique @default(dbgenerated("nextval('machine_number_seq'::regclass)")) // УБРАН из интерфейса 15.08.2026
@@ -450,15 +452,16 @@ model Machine {
   family         EquipmentFamily @default(BENDER)     // раздел: он же область уникальности номера
   kind           EquipmentKind   @default(MACHINE)    // своих полей у видов нет — общих хватает (PRD §16.3)
   quantity       Int             @default(1)          // остаток на складе; >1 только у UNCOILER/INVERTER
-  category       MachineCategory
-  status         MachineStatus   @default(ACCEPTED)
-  model          String                               // обязательное поле №2 (кроме категории)
-  configuration  String?                              // комплектация: нож, машинка, стойка…
+  categories     MachineCategory[]                    // СПИСОК с 20.08.2026: наш станок бывает и на продажу, и арендным
+  status         MachineStatus   @default(NEEDS_REPAIR) // «Принят» выведен из оборота 20.08.2026
+  model          String                               // обязательное поле №2 (кроме категорий)
+  configuration  String?                              // комплектация: галочки в форме, в БД одна строка
   metalThickness String?                              // «0,7 мм»
-  serialNumber   String?
-  orgName        String?                              // заказчик (клиентские)
+  price          Int?                                 // цена в рублях, целыми (20.08.2026)
+  serialNumber   String?                              // ВЫВЕДЕНО ИЗ ИНТЕРФЕЙСА 20.08.2026 (данные оставлены)
+  orgName        String?                              // ВЫВЕДЕНО ИЗ ИНТЕРФЕЙСА 20.08.2026
   contactName    String?
-  contactPhone   String?
+  contactPhone   String?                              // ВЫВЕДЕНО ИЗ ИНТЕРФЕЙСА 20.08.2026
   invoice1C      String?                              // № заказа 1С — ТЕКСТ, интеграции нет (архив)
   responsibleId  String?                              // ответственный менеджер (Милена/Максим/Михаил/Артём)
   deliveredBy    String?                              // кто привёз (свободный текст + подсказки)
@@ -466,7 +469,7 @@ model Machine {
   dueDate        DateTime?       @db.Date             // срок готовности/выдачи — универсальный дедлайн (PRD §16.4)
   isUrgent       Boolean         @default(false)
   defectNotes    String?         @db.Text             // дефектовка
-  location       String?                              // место на площадке (свободный текст + datalist-подсказка)
+  location       String?                              // ВЫВЕДЕНО ИЗ ИНТЕРФЕЙСА 20.08.2026
   notes          String?         @db.Text
   voidReason     String?                              // причина аннулирования (обязательна при VOIDED)
   diagnosedAt    DateTime?                            // «Диагностика проведена»
@@ -479,7 +482,19 @@ model Machine {
   kitParts       MachineKitPart[] @relation("kitHead")
   kitOf          MachineKitPart[] @relation("kitPart")
   @@unique([family, ourNumber]) @@unique([family, clientNumber])
-  @@index([family, status]) @@index([category, status]) @@index([status]) @@index([updatedAt])
+  @@index([family, status]) @@index([status]) @@index([updatedAt])   // индекс по одиночной категории снят вместе с колонкой 20.08.2026
+}
+
+// Скрытые подсказки моделей (20.08.2026). Пул подсказок = справочник-константа + реально введённые
+// названия, поэтому временное имя из одной карточки предлагается всем и навсегда. Крестик в списке
+// кладёт имя сюда. Данные карточек не меняются; заведение карточки с тем же именем снимает запись.
+model MachineModelSuppression {
+  id          String          @id @default(uuid())
+  family      EquipmentFamily
+  nameLower   String                                  // сравнение регистронезависимое
+  createdById String
+  createdAt   DateTime        @default(now())
+  @@unique([family, nameLower])
 }
 
 // Комплектация (15.08.2026): что уезжает вместе с головным станком. Две механики в одной таблице,
@@ -528,12 +543,18 @@ model MachineAttachment {
 
 **Правила состояния** (`src/domain/machine-status.ts`, чистые функции + юнит-тесты):
 - **Жёсткой матрицы переходов НЕТ** — осознанно (PRD §16.3). Статусная матрица задач (§5) не менялась ни на строку и модулем станков не используется.
-- Проверяется **совместимость категории и состояния**: `RENTED` только у `OUR_RENTAL`, `SOLD` только у `OUR_SALE`, `RELEASED` только у `CLIENT`. Смена категории валидируется тем же предикатом (нельзя оставить `RENTED` у `OUR_SALE`).
+- **Категории — список** (20.08.2026). Инварианты держит домен, а не БД (это правила предметной области, они меняются вместе с продуктом): набор непустой; `CLIENT` не совмещается с `OUR_*`; `OUR_SALE` + `OUR_RENTAL` совмещаются. Функции: `normalizeCategories`, `isValidCategorySet`, `isOurCategories`, `categoriesLabel`.
+- Проверяется **совместимость категорий и состояния**: `RENTED` требует `OUR_RENTAL` в наборе, `SOLD` — `OUR_SALE`, `RELEASED` — `CLIENT`. Смена категорий валидируется тем же предикатом. `categoriesFollowingStatus` ДОБАВЛЯЕТ недостающую категорию своему железу, а не заменяет прежнюю: сдали в аренду то, что стояло на продажу, — станок теперь и продаётся, и сдаётся.
+- **`ACCEPTED` выведен из оборота** (20.08.2026): `SELECTABLE_MACHINE_STATUSES` его не содержит, сервер отказывает при попытке выставить, новые карточки заводятся в `NEEDS_REPAIR`. Значение оставлено в enum ради `MachineEvent` (удаление значения enum в Postgres требует пересоздания типа со всеми зависимостями).
 - **Архивные** (терминальные для списка, но обратимые): `RELEASED`, `SOLD`, `VOIDED`. `VOIDED` требует причину (`voidReason`) — лечение дублей инвентаризации в append-only картотеке, из счётчиков исключается. `RENTED` — **не архив** (аренда возвращается в цикл).
 - Переспрос перед архивным состоянием — на клиенте; возврат из архива разрешён (та же карточка, история копится).
 - **Optimistic-lock не делаем** — осознанно (пользователей три, конфликт правки практически невозможен; журнал «было→стало» позволяет разобрать любой спор постфактум).
 
-**Индикаторы сводки** (чистые функции, без cron и пушей — считаются при открытии экрана): «без заказа 1С» (`category=CLIENT && invoice1C пуст`), «срочные» (`isUrgent`), «горит срок» (`machineDueState`: `dueDate` в прошлом → overdue, сегодня…+`DUE_SOON_DAYS`=2 дня → soon; считается по МСК-дню и ТОЛЬКО в ACCEPTED/NEEDS_REPAIR/IN_REPAIR/READY — в RENTED и архиве срок нейтрален; функция принимает дату и как `Date`, и строкой `YYYY-MM-DD`, чтобы у клиента не завелось второй реализации порога), «ждёт диагностики» (`status=ACCEPTED && diagnosedAt=null` и прошло больше одного рабочего дня от `arrivedAt`; рабочие дни — упрощённо пн–пт, без производственного календаря), «давно не сверялся» (`lastVerifiedAt` старше 7 дней или пуст при возрасте карточки > 7 дней). Плюс счётчики по видам (`byKind`). При фильтре `flag=duePressing` список сортируется по `dueDate` asc.
+**Индикаторы сводки** (чистые функции, без cron и пушей — считаются при открытии экрана): «срочные» (`isUrgent`), «горит срок» (`machineDueState`: `dueDate` в прошлом → overdue, сегодня…+`DUE_SOON_DAYS`=2 дня → soon; считается по МСК-дню и ТОЛЬКО в NEEDS_REPAIR/IN_REPAIR/READY — в RENTED и архиве срок нейтрален; функция принимает дату и как `Date`, и строкой `YYYY-MM-DD`, чтобы у клиента не завелось второй реализации порога), «ждут диагностики» (`diagnosedAt = null`) и «не подтверждены» (`lastVerifiedAt = null`).
+
+Последние два переписаны 20.08.2026 вместе с баннером обязательных отметок в карточке. Раньше это были пороги «рабочий день без диагностики» и «неделя без сверки» — индикатор загорался сам по календарю, и это читалось как просрочка. Артём переформулировал: отметки — **обязательная операция**, которую делают один раз (при заведении и заново после возврата из аренды). Поэтому признак простой: отметки нет — горит. Ровно это же условие рисует баннер, и разойтись они не могут. Сброс отметок при выходе из `RENTED` делает `applyStatusChangeTx` (плюс запись в журнал). Индикаторы не горят у архивных, складских и **у станков в аренде** (они у клиента — осматривать некому).
+
+Счётчик `byCategory` считает станок в КАЖДОЙ его категории, поэтому сумма по категориям может превышать `total`. Плюс счётчики по видам (`byKind`). При фильтре `flag=duePressing` список сортируется по `dueDate` asc.
 
 **«Задание в цех»** (07.08.2026): текст собирается чистой функцией `buildShopTaskText` (`src/lib/machine-shop-task.ts`) — единственный источник и для живого предпросмотра в модалке, и для записи на сервере; событие `kind=shop_task` хранит полный текст в `comment` (≤2000, при переполнении — человеческая ошибка, не обрезка). `sendShopTask` одной транзакцией пишет событие и (по флагу) переводит станок в `IN_REPAIR` через общий с `changeStatus` хелпер. Копирование/шаринг — `src/lib/clipboard.ts` (navigator.clipboard + фолбэк textarea; navigator.share только на Android/https), вызывается синхронно в жесте клика (transient activation), запись события — после; отмена системного шита событие не пишет.
 
@@ -656,14 +677,15 @@ model MachineAttachment {
 
 | Метод и путь | Кто | Что |
 |---|---|---|
-| GET /api/machines?family=BENDER\|SEAMER&scope=active\|archive&category&status&kind&flag&q&take&skip | С, Д, А | список станков + счётчики сводки. `scope` — область просмотра (площадка/архив), `kind` — вид (`MACHINE`\|`ROLLER_KNIFE`), `flag` — фильтр по плитке сводки (`urgent`, `duePressing`, `awaitingDiagnosis`, `noInvoice1C`, `staleVerification`; при `duePressing` — сортировка по `dueDate` asc). Активные отдаются целиком (десятки), архив — постранично с серверным поиском `q` (номер в любой схеме и написании — «77-5», «К-5», «k5», модель, заказчик, телефон по цифрам, № заказа 1С) |
-| POST /api/machines | С, Д, А | завести станок. Обязательны только `category` и `model`; `number` выдаёт сервер (sequence), `ourNumber` — подсказка следующего или ручной ввод |
+| GET /api/machines?family=BENDER\|SEAMER&scope=active\|archive&category&status&kind&flag&q&take&skip | С, Д, А | список станков + счётчики сводки. `scope` — область просмотра (площадка/архив), `category` — одна категория, фильтрует через `categories has` (станок с двумя категориями виден в обеих), `kind` — вид, `flag` — фильтр по плитке сводки (`urgent`, `duePressing`, `awaitingDiagnosis`, `notVerified`; при `duePressing` — сортировка по `dueDate` asc). Активные отдаются целиком (десятки), архив — постранично с серверным поиском `q` (номер в любой схеме и написании — «77-5», «К-5», «k5», модель, № заказа 1С, комплектация, дефектовка) |
+| POST /api/machines {categories: [...], ...} | С, Д, А | завести станок. Обязательны только `categories` (непустой допустимый набор) и `model`; `number` выдаёт сервер (sequence), `ourNumber`/`clientNumber` — подсказка следующего или ручной ввод. Состояние новой карточки — `NEEDS_REPAIR` |
 | GET /api/machines/:id/kit | С, Д, А | свободные комплектующие раздела: ножи вне чужих комплектов и складские позиции с ненулевым остатком |
 | POST /api/machines/:id/kit {partId, qty} | С, Д, А | поставить комплектующую в комплект (повтор с тем же partId = правка количества). Idempotency-Key обязателен по смыслу: повтор после таймаута не должен списывать остаток дважды |
 | DELETE /api/machines/:id/kit/:partId | С, Д, А | разобрать комплект; списанную связь (проданный комплект) разобрать нельзя — она история |
-| GET /api/machines/meta?family=BENDER\|SEAMER | С, Д, А | справочные данные формы одним запросом: подсказки следующего свободного номера сразу по обеим схемам (`nextOurNumber` «77-N», `nextClientNumber` «К-N» — категорию в форме переключают, и подсказка меняется без второго запроса) + сотрудники офиса для поля «ответственный» + `models` (distinct по картотеке — сырьё подсказок комбобокса) |
+| GET /api/machines/meta?family=BENDER\|SEAMER | С, Д, А | справочные данные формы одним запросом: подсказки следующего свободного номера сразу по обеим схемам (`nextOurNumber` «77-N», `nextClientNumber` «К-N» — категории в форме переключают, и подсказка меняется без второго запроса) + сотрудники офиса для поля «ответственный» + `models` (distinct по картотеке — сырьё подсказок комбобокса) + `suppressedModels` (скрытые крестиком названия; пул собирает клиент) |
+| POST \| DELETE /api/machines/models {family, name} | С, Д, А | скрыть / вернуть подсказку модели (20.08.2026). Обе операции идемпотентны по природе (upsert и deleteMany), Idempotency-Key не нужен. Карточки не меняются — прячется только подсказка; заведение карточки с этим названием снимает подавление |
 | GET /api/machines/:id | С, Д, А | карточка + журнал + фото |
-| PATCH /api/machines/:id {op:edit\|status\|category\|diagnosed\|verified, withKit?} | С, Д, А | правка полей, включая `kind` и `dueDate` (журнал пишет «было→стало»), смена состояния (валидация совместимости с категорией; `VOIDED` требует причину), смена категории, отметки «диагностика проведена» / «подтверждён на месте» |
+| PATCH /api/machines/:id {op:edit\|status\|category\|diagnosed\|verified, withKit?} | С, Д, А | правка полей, включая `kind`, `price` и `dueDate` (журнал пишет «было→стало»), смена состояния (валидация совместимости с категориями; `VOIDED` требует причину; выход из `RENTED` в неархивное сбрасывает отметки диагностики и сверки), смена НАБОРА категорий (`{categories: [...]}` — приходит полный набор, проверяется и применяется атомарно), отметки «диагностика проведена» / «подтверждён на месте» |
 | POST /api/machines/:id/comments | С, Д, А | комментарий в журнал (лента «Комментарии» карточки) |
 | POST /api/machines/:id/shop-task {note, toInRepair} | С, Д, А | зафиксировать «Задание в цех»: событие `shop_task` с полным текстом (собирается сервером из карточки + `note`); при `toInRepair` — той же транзакцией перевод в `IN_REPAIR`. Idempotency-Key обязателен по смыслу: повтор после таймаута не плодит дубли задания |
 | POST /api/machines/:id/attachments (multipart) | С, Д, А | фото станка (сжатие ~1920px на клиенте); карточка сохраняется до фото, догрузка с автоповтором |

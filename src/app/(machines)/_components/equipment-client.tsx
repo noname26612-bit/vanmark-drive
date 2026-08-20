@@ -2,22 +2,19 @@
 
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import useSWR from "swr";
-import { ArrowDownAZ, ArrowUpAZ, Plus, Search, X } from "lucide-react";
+import { Plus, Search, X } from "lucide-react";
 import { fetcher } from "@/lib/fetcher";
 import { cn } from "@/lib/cn";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { machineMatches, parseQuery } from "@/lib/machine-search";
 import {
   KINDS_BY_FAMILY,
-  MACHINE_CATEGORIES,
-  MACHINE_STATUSES,
+  SELECTABLE_MACHINE_STATUSES,
   headKindOf,
   isArchivedStatus,
   isStockKind,
-  statusesForCategory,
 } from "@/domain/machine-status";
 import {
   EQUIPMENT_KIND_LABEL,
@@ -27,7 +24,6 @@ import {
   formatMachineNumber,
 } from "@/lib/machine-ui";
 import {
-  GROUP_OPTIONS,
   applyView,
   parseView,
   saveView,
@@ -41,19 +37,24 @@ import type { EquipmentFamily, EquipmentKind, MachineCategory, MachineStatus } f
 import { MachineFormModal } from "../machines/_components/machine-form-modal";
 import { uploadMachinePhotos } from "@/lib/machine-photo-upload";
 import { EquipmentList } from "./equipment-list";
+import { EquipmentFilters } from "./equipment-filters";
 
-type FlagKey = "noInvoice1C" | "urgent" | "awaitingDiagnosis" | "staleVerification" | "duePressing";
+type FlagKey = "urgent" | "awaitingDiagnosis" | "notVerified" | "duePressing";
 
-// Индикаторы. Первые два — тревожные: они остаются в свёрнутой строке счётчиков всегда, потому что
-// именно по ним решают, за что хвататься. Остальные прячутся под «Ещё» (решение Артёма 15.08.2026:
-// шестнадцать плиток съедали пол-экрана до списка).
-const FLAG_TILES: { key: FlagKey; label: string; hint: string; always?: boolean }[] = [
-  { key: "duePressing", label: "Горит срок", hint: "срок прошёл или в ближайшие 2 дня", always: true },
-  { key: "urgent", label: "Срочные", hint: "помечены как срочные", always: true },
-  { key: "awaitingDiagnosis", label: "Ждут диагностики", hint: "приняты больше рабочего дня назад" },
-  { key: "noInvoice1C", label: "Без заказа 1С", hint: "клиентские без номера заказа" },
-  { key: "staleVerification", label: "Давно не сверялись", hint: "не подтверждали больше недели" },
+// Индикаторы-подсказки. Все живут под «Ещё»: наверху строки счётчиков с 20.08.2026 стоят то, по
+// чему Артём смотрит парк каждый день, — категории и аренда, а не поводы для беспокойства.
+const FLAG_TILES: { key: FlagKey; label: string; hint: string }[] = [
+  { key: "duePressing", label: "Горит срок", hint: "срок прошёл или в ближайшие 2 дня" },
+  { key: "urgent", label: "Срочные", hint: "помечены как срочные" },
+  { key: "awaitingDiagnosis", label: "Ждут диагностики", hint: "диагностику ещё не отмечали" },
+  { key: "notVerified", label: "Не подтверждены", hint: "не отмечали, что станок на месте" },
 ];
+
+// Постоянная строка счётчиков (решение Артёма 20.08.2026: «нужно выводить Всего, Наш на продажу,
+// Наш арендный, Клиентский, В аренде; остальное — по кнопке "Ещё"»). Порядок его: сначала своё,
+// потом чужое — так парк и обсуждают. Поэтому это не MACHINE_CATEGORIES, а отдельный список.
+const PRIMARY_CATEGORIES: readonly MachineCategory[] = ["OUR_SALE", "OUR_RENTAL", "CLIENT"];
+const PRIMARY_STATUSES: readonly MachineStatus[] = ["RENTED"];
 
 // Фоновая догрузка фото после создания карточки: статус показываем плашкой, чтобы человек видел,
 // что снимки уезжают, и не думал, что они потерялись.
@@ -147,8 +148,8 @@ export function EquipmentClient({
   const filtersOn = Boolean(category || status || kind || flag || q.trim());
 
   // Переключение области просмотра: фильтры, несовместимые с новой областью, снимаем сразу.
-  // Иначе комбинации молча дают пустой список — «Архив» + состояние «Принят» (его в архиве не бывает)
-  // или «Архив» + плитка-индикатор (индикаторы считаются только по оборудованию на площадке).
+  // Иначе комбинации молча дают пустой список — «Архив» + состояние с площадки или «Архив» +
+  // плитка-индикатор (индикаторы считаются только по оборудованию на площадке).
   function switchScope(next: "active" | "archive") {
     setScope(next);
     setArchivePages(1);
@@ -220,7 +221,7 @@ export function EquipmentClient({
         </div>
       ) : null}
 
-      {/* ── Счётчики одной строкой: ненулевые состояния + тревожные; остальное под «Ещё» ── */}
+      {/* ── Счётчики: чем меряют парк каждый день; остальное под «Ещё» ── */}
       {summary && !stockOnly ? (
         <div className="mb-3 flex flex-wrap items-center gap-1.5 sm:justify-center sm:gap-2">
           <SummaryChip
@@ -232,8 +233,44 @@ export function EquipmentClient({
               resetFilters();
             }}
           />
-          {MACHINE_STATUSES.filter((s) => !isArchivedStatus(s))
-            .filter((s) => moreCounters || summary.byStatus[s] > 0 || status === s)
+          {/* Категории и «В аренде» — постоянный ряд (решение Артёма 20.08.2026): именно так он
+              смотрит парк — сколько своего на продажу, сколько арендного, сколько чужого и сколько
+              сейчас у клиентов. Станок с двумя категориями считается в обеих, поэтому сумма по
+              категориям бывает больше «Всего» — это не ошибка, а тот же станок в двух ролях. */}
+          {PRIMARY_CATEGORIES.map((c) => (
+            <SummaryChip
+              key={c}
+              label={MACHINE_CATEGORY_LABEL[c]}
+              value={summary.byCategory[c]}
+              active={category === c && scope === "active"}
+              onClick={() => {
+                switchScope("active");
+                setStatus("");
+                setFlag("");
+                setCategory(category === c ? "" : c);
+              }}
+            />
+          ))}
+          {PRIMARY_STATUSES.map((s) => (
+            <SummaryChip
+              key={s}
+              label={MACHINE_STATUS_LABEL[s]}
+              value={summary.byStatus[s]}
+              active={status === s && scope === "active"}
+              onClick={() => {
+                switchScope("active");
+                setCategory("");
+                setFlag("");
+                setStatus(status === s ? "" : s);
+              }}
+            />
+          ))}
+          {/* Под «Ещё» — остальные состояния и индикаторы. Выбранный чип показываем всегда, иначе
+              свёрнутая строка молча теряла бы активный фильтр, а список оставался отфильтрованным. */}
+          {SELECTABLE_MACHINE_STATUSES.filter(
+            (s) => !isArchivedStatus(s) && !PRIMARY_STATUSES.includes(s),
+          )
+            .filter((s) => moreCounters || status === s)
             .map((s) => (
               <SummaryChip
                 key={s}
@@ -242,45 +279,29 @@ export function EquipmentClient({
                 active={status === s && scope === "active"}
                 onClick={() => {
                   switchScope("active");
+                  setCategory("");
+                  setFlag("");
                   setStatus(status === s ? "" : s);
                 }}
               />
             ))}
-          {FLAG_TILES.filter((t) => t.always || moreCounters || summary[t.key] > 0 || flag === t.key).map(
-            (t) => (
-              <SummaryChip
-                key={t.key}
-                label={t.label}
-                hint={t.hint}
-                value={summary[t.key]}
-                accent={summary[t.key] > 0}
-                active={flag === t.key && scope === "active"}
-                onClick={() => {
-                  const next = flag === t.key ? "" : t.key;
-                  switchScope("active");
-                  setCategory("");
-                  setStatus("");
-                  setFlag(next);
-                }}
-              />
-            ),
-          )}
-          {moreCounters ? (
-            <>
-              {MACHINE_CATEGORIES.map((c) => (
-                <SummaryChip
-                  key={c}
-                  label={MACHINE_CATEGORY_LABEL[c]}
-                  value={summary.byCategory[c]}
-                  active={category === c && scope === "active"}
-                  onClick={() => {
-                    switchScope("active");
-                    setCategory(category === c ? "" : c);
-                  }}
-                />
-              ))}
-            </>
-          ) : null}
+          {FLAG_TILES.filter((t) => moreCounters || flag === t.key).map((t) => (
+            <SummaryChip
+              key={t.key}
+              label={t.label}
+              hint={t.hint}
+              value={summary[t.key]}
+              accent={summary[t.key] > 0}
+              active={flag === t.key && scope === "active"}
+              onClick={() => {
+                const next = flag === t.key ? "" : t.key;
+                switchScope("active");
+                setCategory("");
+                setStatus("");
+                setFlag(next);
+              }}
+            />
+          ))}
           <button
             type="button"
             onClick={() => setMoreCounters((v) => !v)}
@@ -292,136 +313,82 @@ export function EquipmentClient({
         </div>
       ) : null}
 
-      {/* ── Поиск, фильтры и вид списка ── */}
-      <div className="mb-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
-        <div className="relative col-span-2 lg:col-span-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
-          <Input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Поиск: № / модель / заказчик / телефон"
-            className="pl-9 pr-9"
-            data-testid="machine-search"
-          />
-          {q ? (
-            <button
-              type="button"
-              onClick={() => setQ("")}
-              aria-label="Очистить поиск"
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-100"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          ) : null}
-        </div>
-
-        {/* Группировка и направление — рядом: это одна настройка «как разложить список». */}
-        <div className="flex min-w-0 items-center gap-2">
-          <Select
-            value={view.groupBy}
-            onChange={(e) =>
-              changeView({ ...view, groupBy: e.target.value as EquipmentView["groupBy"] })
-            }
-            className="min-w-0 flex-1"
-            data-testid="machine-group-by"
+      {/* ── Поиск ── */}
+      <div className="relative mb-3">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
+        <Input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Поиск: № / модель / заказ 1С"
+          className="pl-9 pr-9"
+          data-testid="machine-search"
+        />
+        {q ? (
+          <button
+            type="button"
+            onClick={() => setQ("")}
+            aria-label="Очистить поиск"
+            className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-100"
           >
-            {GROUP_OPTIONS.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
-              </option>
-            ))}
-          </Select>
-          <Button
-            variant="secondary"
-            onClick={() =>
-              changeView({ ...view, direction: view.direction === "asc" ? "desc" : "asc" })
-            }
-            className="shrink-0 px-3"
-            aria-label={view.direction === "asc" ? "Сначала маленькие номера" : "Сначала большие номера"}
-            title={view.direction === "asc" ? "Сначала маленькие номера" : "Сначала большие номера"}
-            data-testid="machine-direction"
-          >
-            {view.direction === "asc" ? (
-              <ArrowUpAZ className="h-4 w-4" />
-            ) : (
-              <ArrowDownAZ className="h-4 w-4" />
-            )}
-          </Button>
-        </div>
-
-        {stockOnly ? (
-          <Select value="" disabled data-testid="machine-filter-status">
-            <option value="">Остатки на складе</option>
-          </Select>
-        ) : (
-          <Select
-            value={status}
-            onChange={(e) => setStatus(e.target.value as MachineStatus | "")}
-            data-testid="machine-filter-status"
-          >
-            <option value="">Любое состояние</option>
-            {(category ? statusesForCategory(category) : MACHINE_STATUSES)
-              .filter((s) => isArchivedStatus(s) === (scope === "archive"))
-              .map((s) => (
-                <option key={s} value={s}>
-                  {MACHINE_STATUS_LABEL[s]}
-                </option>
-              ))}
-          </Select>
-        )}
-
-        {/* Область просмотра и «Сбросить» — соседи в одной ячейке сетки: на 360px они не помещались
-            рядом по отдельности, поэтому селект тянется, а кнопка не сжимается. */}
-        <div className="flex min-w-0 items-center gap-2">
-          <Select
-            value={scope}
-            onChange={(e) => switchScope(e.target.value as "active" | "archive")}
-            data-testid="machine-filter-scope"
-            className="min-w-0 flex-1"
-          >
-            <option value="active">На площадке</option>
-            <option value="archive">Архив</option>
-          </Select>
-          {filtersOn ? (
-            <Button variant="ghost" onClick={resetFilters} className="shrink-0 px-2">
-              Сбросить
-            </Button>
-          ) : null}
-        </div>
+            <X className="h-4 w-4" />
+          </button>
+        ) : null}
       </div>
 
-      {/* ── Список ── */}
-      {error ? (
-        <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          Не удалось загрузить картотеку. Проверьте связь и обновите страницу.
-        </p>
-      ) : isLoading && !data ? (
-        <p className="text-sm text-neutral-500">Загружаю…</p>
-      ) : machines.length === 0 ? (
-        <p className="rounded-lg border border-neutral-200 bg-white px-3 py-6 text-center text-sm text-neutral-500">
-          {filtersOn ? "Ничего не нашлось — попробуйте изменить фильтры." : "Пока пусто."}
-        </p>
-      ) : (
-        <>
-          <p className="mb-2 text-xs text-neutral-500">
-            {query?.active ? `Найдено: ${machines.length}` : `Показано: ${machines.length}`}
-          </p>
-          <EquipmentList groups={groups} query={query} basePath={basePath} />
-          {scope === "archive" && data?.hasMore ? (
-            <div className="mt-3 flex justify-center">
-              <Button variant="secondary" onClick={() => setArchivePages((p) => p + 1)}>
-                Показать ещё
-              </Button>
-            </div>
-          ) : null}
-        </>
-      )}
+      {/* Фильтры и вид — сбоку строками с галочками (решение Артёма 20.08.2026: выпадающие списки
+          он читать не хочет, а на широком экране слева всё равно пустует место). Фильтр «Любое
+          состояние» убран совсем: состояние выбирают чипами выше, и два разных способа фильтровать
+          одно и то же расходились между собой. */}
+      <div className="lg:flex lg:items-start lg:gap-4">
+        <aside className="mb-3 lg:mb-0 lg:w-52 lg:shrink-0">
+          <EquipmentFilters
+            view={view}
+            onView={changeView}
+            scope={scope}
+            onScope={switchScope}
+            filtersOn={filtersOn}
+            onReset={resetFilters}
+          />
+        </aside>
+
+        <div className="min-w-0 flex-1">
+          {error ? (
+            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              Не удалось загрузить картотеку. Проверьте связь и обновите страницу.
+            </p>
+          ) : isLoading && !data ? (
+            <p className="text-sm text-neutral-500">Загружаю…</p>
+          ) : machines.length === 0 ? (
+            <p className="rounded-lg border border-neutral-200 bg-white px-3 py-6 text-center text-sm text-neutral-500">
+              {filtersOn ? "Ничего не нашлось — попробуйте изменить фильтры." : "Пока пусто."}
+            </p>
+          ) : (
+            <>
+              <p className="mb-2 text-xs text-neutral-500">
+                {query?.active ? `Найдено: ${machines.length}` : `Показано: ${machines.length}`}
+              </p>
+              <EquipmentList
+                groups={groups}
+                query={query}
+                basePath={basePath}
+                family={family}
+              />
+              {scope === "archive" && data?.hasMore ? (
+                <div className="mt-3 flex justify-center">
+                  <Button variant="secondary" onClick={() => setArchivePages((p) => p + 1)}>
+                    Показать ещё
+                  </Button>
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      </div>
 
       <MachineFormModal
         open={createOpen}
         family={family}
         onClose={() => setCreateOpen(false)}
-        locations={data?.locations ?? []}
         onCreated={handleCreated}
       />
     </div>

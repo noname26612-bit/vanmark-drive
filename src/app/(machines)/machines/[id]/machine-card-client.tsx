@@ -2,14 +2,13 @@
 /* eslint-disable @next/next/no-img-element -- фото отдаются через /api/machines/photos/:id по сессионной
    куке; next/image ходит через свой прокси без куки и получил бы 404. */
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import useSWR from "swr";
-import { Camera, Copy, Factory, MapPin, Stethoscope, Trash2 } from "lucide-react";
+import { Camera, Copy, Factory, Pencil, Trash2 } from "lucide-react";
 import { fetcher, apiSend, ApiError } from "@/lib/fetcher";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Field } from "@/components/ui/field";
 import { DateField } from "@/components/ui/date-field";
@@ -18,17 +17,17 @@ import { BackLink } from "@/components/back-link";
 import {
   EQUIPMENT_KIND_LABEL,
   KINDS_BY_FAMILY,
-  MACHINE_CATEGORIES,
   isArchivedStatus,
   isStockKind,
+  normalizeCategories,
   reasonRequiredFor,
   selectableStatuses,
 } from "@/domain/machine-status";
 import { machineDueState } from "@/domain/machine-flags";
 import { machineNumberValue, numberFieldFor } from "@/domain/machine-number";
+import { modelSuggestionPool } from "@/domain/machine-models";
 import {
   EVENT_LABEL,
-  MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_ACTIVE,
   MACHINE_STATUS_LABEL,
   NUMBER_PREFIX,
@@ -42,8 +41,12 @@ import { copyText } from "@/lib/clipboard";
 import type { MachineDetail, MachineEventView } from "@/lib/machine-dto";
 import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
 import { MachineCategoryBadge, MachineKindBadge, MachineStatusBadge } from "../_components/machine-badges";
+import { CategoryCheckboxes } from "../_components/category-checkboxes";
 import { ModelCombobox } from "../_components/model-combobox";
 import { ShopTaskModal } from "./shop-task-modal";
+import { ChecksBanner } from "./checks-banner";
+import { ChoiceRows } from "../_components/choice-rows";
+import { ConfigurationField } from "../_components/configuration-field";
 import { KitPanel } from "./kit-panel";
 import { StatusKitModal } from "./status-kit-modal";
 import { uploadMachinePhotos } from "@/lib/machine-photo-upload";
@@ -63,14 +66,23 @@ export function MachineCardClient({
     { fallbackData: initial, revalidateOnFocus: true },
   );
   // Справочники формы: сотрудники офиса для «Ответственного» и модели для подсказок комбобокса.
-  const { data: meta } = useSWR<{ responsibles: { id: string; name: string }[]; models: string[] }>(
-    `/api/machines/meta?family=${initial.family}`,
-    fetcher,
+  const { data: meta } = useSWR<{
+    responsibles: { id: string; name: string }[];
+    models: string[];
+    suppressedModels: string[];
+  }>(`/api/machines/meta?family=${initial.family}`, fetcher);
+  // Пул подсказок «Модели» собирается так же, как в форме заведения: базовый справочник + реально
+  // введённые названия минус скрытые крестиком. Сырой список из БД (как было здесь раньше) оставлял
+  // правку без справочника — те же 25 моделей приходилось набирать руками.
+  const modelPool = useMemo(
+    () => modelSuggestionPool(meta?.models ?? [], meta?.suppressedModels ?? []),
+    [meta?.models, meta?.suppressedModels],
   );
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lightbox, setLightbox] = useState<string | null>(null);
+  // Лайтбокс держит ИНДЕКС фото, а не адрес: просмотрщик листает весь набор карточки (Артём 20.08.2026).
+  const [lightbox, setLightbox] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
   const [comment, setComment] = useState("");
   const [uploading, setUploading] = useState<{ done: number; total: number } | null>(null);
@@ -81,6 +93,7 @@ export function MachineCardClient({
   // Состояние, которое ждёт подтверждения в переспросе про комплект (null — переспроса нет).
   const [pendingStatus, setPendingStatus] = useState<MachineStatus | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const cardRef = useRef<HTMLElement>(null);
 
   async function send(body: Record<string, unknown>) {
     setBusy(true);
@@ -123,9 +136,23 @@ export function MachineCardClient({
     await send({ op: "status", status: next, reason });
   }
 
-  async function changeCategory(next: MachineCategory) {
-    if (next === machine.category) return;
-    await send({ op: "category", category: next });
+  // Категорий у станка может быть несколько (20.08.2026), и на сервер уходит ПОЛНЫЙ набор галочек:
+  // так комбинация проверяется целиком и станок не проваливается в состояние «ни одной категории».
+  async function changeCategories(next: MachineCategory[]) {
+    const normalized = normalizeCategories(next);
+    if (normalized.length === 0) return; // последнюю галочку снять нельзя — молча игнорируем
+    if (normalized.join() === normalizeCategories(machine.categories).join()) return;
+    await send({ op: "category", categories: normalized });
+  }
+
+  // Кнопка «Редактировать» в шапке (Артём 20.08.2026: правку в карточке просто не находили — она
+  // жила внизу, в блоке «Карточка»). Сама форма остаётся там же, поэтому после включения режима
+  // прокручиваем к ней: иначе нажатие выглядит как «ничего не произошло».
+  function startEdit() {
+    setEditing(true);
+    requestAnimationFrame(() =>
+      cardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
   }
 
   async function addPhotos(list: FileList | null) {
@@ -197,12 +224,21 @@ export function MachineCardClient({
           </h1>
           <MachineStatusBadge status={machine.status} size="md" />
           <MachineKindBadge kind={machine.kind} />
-          <MachineCategoryBadge category={machine.category} />
+          <MachineCategoryBadge categories={machine.categories} />
           {machine.isUrgent ? (
             <span className="rounded border border-amber-500 px-2 py-0.5 text-xs font-medium text-amber-700">
               Срочный
             </span>
           ) : null}
+          <Button
+            variant="secondary"
+            className="ml-auto"
+            onClick={startEdit}
+            data-testid="machine-edit-header"
+          >
+            <Pencil className="h-4 w-4" />
+            Редактировать
+          </Button>
         </div>
         <p className="text-base text-neutral-800">
           {machine.model}
@@ -219,6 +255,21 @@ export function MachineCardClient({
         <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           {error}
         </p>
+      ) : null}
+
+      {/* Обязательные отметки — над «Состоянием», как незакрытая смена над доской (Артём 20.08.2026).
+          Не показываем там, где осмотр требовать не с кого: станок в аренде стоит у клиента, архивный
+          уехал с площадки, а у складского остатка отметок не бывает вовсе. */}
+      {!stock &&
+      !archived &&
+      machine.status !== "RENTED" &&
+      (!machine.diagnosedAt || !machine.lastVerifiedAt) ? (
+        <ChecksBanner
+          diagnosedAt={machine.diagnosedAt}
+          lastVerifiedAt={machine.lastVerifiedAt}
+          busy={busy}
+          onMark={(op) => void send({ op })}
+        />
       ) : null}
 
       {/* Складская позиция (размотчик, частотник) — остаток, а не станок: ни состояния, ни
@@ -248,14 +299,14 @@ export function MachineCardClient({
           </p>
         </section>
       ) : (
-        /* ── Состояние и категория ── */
+        /* ── Состояние и категории ── */
       <section className="flex flex-col gap-3 rounded-lg border border-neutral-200 bg-white p-4">
         {/* Состояние — ряд кнопок (Артём 15.08.2026): весь путь станка виден сразу, «Продан» и
             «В аренде» не приходится искать в выпадашке, и попасть пальцем проще, чем в список.
             У своего железа доступны и «Продан», и «В аренде» — категория переедет сама. */}
         <Field label="Состояние">
           <div className="flex flex-wrap gap-2" data-testid="machine-status-buttons">
-            {selectableStatuses(machine.category).map((s) => {
+            {selectableStatuses(machine.categories).map((s) => {
               const active = s === machine.status;
               return (
                 <button
@@ -281,21 +332,17 @@ export function MachineCardClient({
           </div>
         </Field>
 
-        <div className="sm:w-1/2 sm:pr-1.5">
-          <Field label="Категория">
-            <Select
-              value={machine.category}
-              disabled={busy}
-              onChange={(e) => changeCategory(e.target.value as MachineCategory)}
-              data-testid="machine-category-select"
-            >
-              {MACHINE_CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {MACHINE_CATEGORY_LABEL[c]}
-                </option>
-              ))}
-            </Select>
-          </Field>
+        {/* Категории — галочки, а не выпадашка (Артём 20.08.2026: «мне очень не нравятся выпадающие
+            списки»), и выбор теперь множественный: наш станок бывает и на продажу, и арендным.
+            Подпись — обычный span, а не Field: тот сам по себе <label>, и вложенные в него галочки
+            щёлкали бы мимо. */}
+        <div className="flex flex-col gap-1">
+          <span className="text-sm font-medium text-neutral-700">Категории</span>
+          <CategoryCheckboxes
+            value={machine.categories}
+            onChange={(next) => void changeCategories(next)}
+            disabled={busy}
+          />
         </div>
 
         {/* Срок готовности/выдачи — оперативное поле, правится прямо здесь, без формы «Изменить».
@@ -337,25 +384,9 @@ export function MachineCardClient({
             <Factory className="h-4 w-4" />
             Задание в цех
           </Button>
-          <Button
-            variant="secondary"
-            disabled={busy}
-            onClick={() => send({ op: "diagnosed" })}
-            data-testid="machine-diagnosed"
-          >
-            <Stethoscope className="h-4 w-4" />
-            Диагностика проведена
-          </Button>
-          <Button
-            variant="secondary"
-            disabled={busy}
-            onClick={() => send({ op: "verified" })}
-            data-testid="machine-verified"
-          >
-            <MapPin className="h-4 w-4" />
-            Подтверждён на месте
-          </Button>
         </div>
+        {/* Кнопки отметок переехали наверх, в янтарный баннер: здесь остаётся только строка с датами
+            — по ней видно, когда станок смотрели в последний раз. */}
         <p className="text-xs text-neutral-500">
           Диагностика:{" "}
           {machine.diagnosedAt ? (
@@ -423,11 +454,11 @@ export function MachineCardClient({
           <p className="text-sm text-neutral-400">Фото пока нет.</p>
         ) : (
           <ul className="flex flex-wrap gap-2">
-            {machine.attachments.map((a) => (
+            {machine.attachments.map((a, i) => (
               <li key={a.id} className="relative">
                 <button
                   type="button"
-                  onClick={() => setLightbox(`/api/machines/photos/${a.id}`)}
+                  onClick={() => setLightbox(i)}
                   aria-label="Открыть фото во весь экран"
                   className="block"
                 >
@@ -453,7 +484,7 @@ export function MachineCardClient({
       </section>
 
       {/* ── Поля карточки ── */}
-      <section className="rounded-lg border border-neutral-200 bg-white p-4">
+      <section ref={cardRef} className="rounded-lg border border-neutral-200 bg-white p-4">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-medium text-neutral-700">Карточка</h2>
           <Button variant="ghost" onClick={() => setEditing((v) => !v)} data-testid="machine-edit">
@@ -468,7 +499,7 @@ export function MachineCardClient({
             machine={machine}
             busy={busy}
             responsibles={meta?.responsibles ?? []}
-            models={meta?.models ?? []}
+            models={modelPool}
             onSave={async (patch) => {
               const ok = await send({ op: "edit", ...patch });
               if (ok) setEditing(false);
@@ -477,17 +508,18 @@ export function MachineCardClient({
         ) : (
           <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
             <Row label="Комплектация" value={machine.configuration} />
-            <Row label="Серийный номер" value={machine.serialNumber} />
-            <Row label="Место на площадке" value={machine.location} />
+            {/* Толщина металла не дублируется: она стоит в шапке рядом с моделью.
+                Цена — рубли целыми, с разделителем разрядов: «1 250 000 ₽» читается с одного взгляда. */}
+            <Row
+              label="Цена"
+              value={machine.price === null ? null : `${machine.price.toLocaleString("ru-RU")} ₽`}
+            />
             <Row label="Дата поступления" value={machine.arrivedAt ? formatDay(machine.arrivedAt) : null} />
-            <Row label="Заказчик" value={machine.orgName} />
             <Row label="Контакт" value={machine.contactName} />
             <Row
-              label="Телефон"
-              value={machine.contactPhone}
-              href={machine.contactPhone ? `tel:${machine.contactPhone}` : undefined}
+              label="№ заказа 1С"
+              value={machine.invoice1C}
             />
-            <Row label="№ заказа 1С" value={machine.invoice1C} accent={machine.category === "CLIENT" && !machine.invoice1C} />
             <Row label="Ответственный" value={machine.responsibleName} />
             <Row label="Кто привёз" value={machine.deliveredBy} />
             <div className="sm:col-span-2">
@@ -664,7 +696,13 @@ export function MachineCardClient({
         />
       ) : null}
 
-      {lightbox ? <PhotoLightbox url={lightbox} onClose={() => setLightbox(null)} /> : null}
+      {lightbox !== null ? (
+        <PhotoLightbox
+          urls={machine.attachments.map((a) => `/api/machines/photos/${a.id}`)}
+          index={lightbox}
+          onClose={() => setLightbox(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -713,23 +751,23 @@ function LastShopTask({ event }: { event: MachineEventView }) {
   );
 }
 
+// Янтарной подсветки пустых значений здесь больше нет: единственным её случаем был «клиентский без
+// заказа 1С», а этот индикатор убран целиком 20.08.2026 (решение Артёма).
 function Row({
   label,
   value,
   href,
   block,
-  accent,
 }: {
   label: string;
   value: string | null;
   href?: string;
   block?: boolean;
-  accent?: boolean;
 }) {
   return (
     <div className={cn(block ? "flex flex-col gap-0.5" : "flex items-baseline gap-2")}>
       <dt className="shrink-0 text-neutral-500">{label}</dt>
-      <dd className={cn("text-neutral-900", accent && !value ? "text-amber-700" : "")}>
+      <dd className="text-neutral-900">
         {value ? (
           href ? (
             <a href={href} className="underline underline-offset-2">
@@ -738,8 +776,6 @@ function Row({
           ) : (
             value
           )
-        ) : accent ? (
-          "не указан"
         ) : (
           "—"
         )}
@@ -770,13 +806,11 @@ function MachineEditForm({
     number: machineNumberValue(machine) === null ? "" : String(machineNumberValue(machine)),
     configuration: machine.configuration ?? "",
     metalThickness: machine.metalThickness ?? "",
-    serialNumber: machine.serialNumber ?? "",
-    orgName: machine.orgName ?? "",
+    // Цена живёт в состоянии строкой: пустое поле — это «цены нет» (null), а не 0.
+    price: machine.price === null ? "" : String(machine.price),
     contactName: machine.contactName ?? "",
-    contactPhone: machine.contactPhone ?? "",
     invoice1C: machine.invoice1C ?? "",
     deliveredBy: machine.deliveredBy ?? "",
-    location: machine.location ?? "",
     arrivedAt: machine.arrivedAt ?? "",
     dueDate: machine.dueDate ?? "",
     defectNotes: machine.defectNotes ?? "",
@@ -794,23 +828,25 @@ function MachineEditForm({
           testId="machine-edit-model"
         />
       </Field>
-      <Field label="Вид">
-        <Select
+      {/* Вид и ответственный — строками с галочкой, как везде в разделе с 20.08.2026: выпадашки
+          Артём просил не использовать, а вариантов тут единицы. */}
+      <div>
+        <p className="mb-1 text-sm font-medium text-neutral-700">Вид</p>
+        <ChoiceRows
+          ariaLabel="Вид оборудования"
           value={f.kind}
-          onChange={(e) => set({ kind: e.target.value as EquipmentKind })}
-          data-testid="machine-edit-kind"
-        >
-          {KINDS_BY_FAMILY[machine.family].map((k) => (
-            <option key={k} value={k}>
-              {EQUIPMENT_KIND_LABEL[k]}
-            </option>
-          ))}
-        </Select>
-      </Field>
-      {/* Номер — в схеме своей категории: «77-N» у своего парка, «К-N» у клиентского. Переезд
-          между схемами делает смена категории (она же выдаёт следующий свободный), здесь номер
+          onChange={(v) => set({ kind: v as EquipmentKind })}
+          testIdPrefix="machine-edit-kind"
+          options={KINDS_BY_FAMILY[machine.family].map((k) => ({
+            value: k,
+            label: EQUIPMENT_KIND_LABEL[k],
+          }))}
+        />
+      </div>
+      {/* Номер — в схеме своего происхождения: «77-N» у своего парка, «К-N» у клиентского. Переезд
+          между схемами делает смена категорий (она же выдаёт следующий свободный), здесь номер
           только правится вручную. */}
-      <Field label={`Учётный номер (${NUMBER_PREFIX[numberSchemeFor(machine.category)]}N)`}>
+      <Field label={`Учётный номер (${NUMBER_PREFIX[numberSchemeFor(machine.categories)]}N)`}>
         <Input
           type="number"
           inputMode="numeric"
@@ -818,30 +854,29 @@ function MachineEditForm({
           onChange={(e) => set({ number: e.target.value })}
         />
       </Field>
-      <Field label="Комплектация">
-        <Input value={f.configuration} onChange={(e) => set({ configuration: e.target.value })} />
-      </Field>
+      {/* Комплектация галочками и в правке (20.08.2026): весь уже заведённый парк набран свободным
+          текстом, и если бы правка осталась строкой, разнобой написаний никуда бы не делся. */}
+      <ConfigurationField
+        kind={f.kind}
+        value={f.configuration}
+        onChange={(v) => set({ configuration: v })}
+        testId="machine-edit-configuration"
+      />
       <Field label="Толщина металла">
         <Input value={f.metalThickness} onChange={(e) => set({ metalThickness: e.target.value })} />
       </Field>
-      <Field label="Серийный номер">
-        <Input value={f.serialNumber} onChange={(e) => set({ serialNumber: e.target.value })} />
-      </Field>
-      <Field label="Место на площадке">
+      <Field label="Цена, ₽">
         <Input
-          value={f.location}
-          onChange={(e) => set({ location: e.target.value })}
-          data-testid="machine-location"
+          type="number"
+          inputMode="numeric"
+          min={0}
+          value={f.price}
+          onChange={(e) => set({ price: e.target.value })}
+          data-testid="machine-edit-price"
         />
-      </Field>
-      <Field label="Заказчик">
-        <Input value={f.orgName} onChange={(e) => set({ orgName: e.target.value })} />
       </Field>
       <Field label="Контакт">
         <Input value={f.contactName} onChange={(e) => set({ contactName: e.target.value })} />
-      </Field>
-      <Field label="Телефон">
-        <Input type="tel" value={f.contactPhone} onChange={(e) => set({ contactPhone: e.target.value })} />
       </Field>
       <Field label="№ заказа 1С">
         <Input value={f.invoice1C} onChange={(e) => set({ invoice1C: e.target.value })} />
@@ -849,20 +884,19 @@ function MachineEditForm({
       <Field label="Кто привёз">
         <Input value={f.deliveredBy} onChange={(e) => set({ deliveredBy: e.target.value })} />
       </Field>
-      <Field label="Ответственный">
-        <Select
+      <div>
+        <p className="mb-1 text-sm font-medium text-neutral-700">Ответственный</p>
+        <ChoiceRows
+          ariaLabel="Ответственный"
           value={f.responsibleId}
-          onChange={(e) => set({ responsibleId: e.target.value })}
-          data-testid="machine-responsible"
-        >
-          <option value="">Не выбран</option>
-          {responsibles.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.name}
-            </option>
-          ))}
-        </Select>
-      </Field>
+          onChange={(v) => set({ responsibleId: v })}
+          testIdPrefix="machine-responsible"
+          options={[
+            { value: "", label: "Не выбран" },
+            ...responsibles.map((r) => ({ value: r.id, label: r.name })),
+          ]}
+        />
+      </div>
       <Field label="Дата поступления">
         <DateField value={f.arrivedAt} onChange={(v) => set({ arrivedAt: v })} />
       </Field>
@@ -891,7 +925,9 @@ function MachineEditForm({
             onSave({
               ...f,
               responsibleId: f.responsibleId || null,
-              [numberFieldFor(machine.category)]: f.number ? Number(f.number) : null,
+              // Пустая цена — null («стереть»), мусорный ввод тоже: число обязано быть числом.
+              price: Number.isFinite(Number(f.price)) && f.price.trim() !== "" ? Number(f.price) : null,
+              [numberFieldFor(machine.categories)]: f.number ? Number(f.number) : null,
             })
           }
         >

@@ -8,15 +8,15 @@ import { fetcher, apiSend, ApiError } from "@/lib/fetcher";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Field } from "@/components/ui/field";
 import { DateField } from "@/components/ui/date-field";
 import { newActionId as newIdempotencyKey } from "@/lib/offline/id";
-import { KINDS_BY_FAMILY, MACHINE_CATEGORIES, headKindOf, isStockKind } from "@/domain/machine-status";
+import { KINDS_BY_FAMILY, headKindOf, isStockKind } from "@/domain/machine-status";
 import { modelSuggestionPool } from "@/domain/machine-models";
-import { EQUIPMENT_KIND_LABEL, MACHINE_CATEGORY_LABEL, NUMBER_PREFIX, numberSchemeFor } from "@/lib/machine-ui";
+import { EQUIPMENT_KIND_LABEL, NUMBER_PREFIX, numberSchemeFor } from "@/lib/machine-ui";
 import { numberFieldFor } from "@/domain/machine-number";
+import { configurationOptionsFor } from "@/lib/machine-configuration";
 import {
   EMPTY_MACHINE_FORM,
   clearMachineDraft,
@@ -26,6 +26,9 @@ import {
   saveMachineDraft,
 } from "@/lib/machine-draft";
 import { cn } from "@/lib/cn";
+import { CategoryCheckboxes } from "./category-checkboxes";
+import { ConfigurationField } from "./configuration-field";
+import { ChoiceRows } from "./choice-rows";
 import { ModelCombobox } from "./model-combobox";
 import type { MachineDetail } from "@/lib/machine-dto";
 import type { EquipmentFamily, EquipmentKind, MachineCategory } from "@/generated/prisma/enums";
@@ -38,14 +41,23 @@ type Meta = {
   nextClientNumber: number;
   responsibles: { id: string; name: string }[];
   models: string[];
+  /** Названия, убранные крестиком из подсказок — пул собирается из обеих частей. */
+  suppressedModels: string[];
 };
 
 // Структура формы живёт в machine-draft.ts — её же сохраняет и восстанавливает черновик.
 const EMPTY = EMPTY_MACHINE_FORM;
 
 /**
- * Форма заведения станка. Цель — ≤30 секунд с телефона (PRD §16.5): наверху только вид, категория,
- * модель и фото, всё остальное — за «Показать все поля» (сворачивается обратно той же кнопкой).
+ * Форма заведения станка. Цель — ≤30 секунд с телефона (PRD §16.5): наверху вид, категории, модель,
+ * цена с толщиной металла, комплектация и фото; всё остальное — за «Показать все поля»
+ * (сворачивается обратно той же кнопкой).
+ *
+ * Правка 20.08.2026 (Артём): категорий стало несколько (галочками — CategoryCheckboxes); цена и
+ * толщина металла подняты из свёрнутых полей на видное место — их спрашивают первым делом, а из-под
+ * кнопки их не заполняли; комплектация у листогиба и фальцепрокатника набирается галочками, а не
+ * строкой; серийный номер, место на площадке, заказчик и телефон убраны совсем — на площадке их не
+ * ведут, и они только удлиняли форму.
  *
  * Ключевое: карточка сохраняется ДО фото. Ответ приходит сразу, форма закрывается, а снимки
  * догружаются фоном с автоповтором (uploadMachinePhotos) — обрыв связи на площадке не теряет ввод.
@@ -58,18 +70,18 @@ export function MachineFormModal({
   open,
   family,
   onClose,
-  locations,
   onCreated,
 }: {
   open: boolean;
   family: EquipmentFamily;
   onClose: () => void;
-  locations: string[];
   onCreated: (machine: MachineDetail, photos: File[]) => void;
 }) {
   const kinds = KINDS_BY_FAMILY[family];
   const defaultKind = headKindOf(family);
-  const [category, setCategory] = useState<MachineCategory>("CLIENT");
+  // Категория — набор, а не одно значение (Артём 20.08.2026): наш станок стоит и под продажу, и под
+  // аренду одновременно. Правила совместимости держит CategoryCheckboxes.
+  const [categories, setCategories] = useState<MachineCategory[]>(["CLIENT"]);
   const [kind, setKind] = useState<EquipmentKind>(defaultKind);
   // Складская позиция (размотчик, частотник) заводится количеством: ни категории, ни состояния у
   // остатка нет — вместо них одно поле «Сколько на складе».
@@ -91,8 +103,14 @@ export function MachineFormModal({
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
 
   // Справочники формы (следующий «77-N», ответственные, модели для подсказок) — только когда открыта.
-  const { data: meta } = useSWR<Meta>(open ? `/api/machines/meta?family=${family}` : null, fetcher);
-  const modelPool = useMemo(() => modelSuggestionPool(meta?.models ?? []), [meta?.models]);
+  const { data: meta, mutate: refreshMeta } = useSWR<Meta>(
+    open ? `/api/machines/meta?family=${family}` : null,
+    fetcher,
+  );
+  const modelPool = useMemo(
+    () => modelSuggestionPool(meta?.models ?? [], meta?.suppressedModels ?? []),
+    [meta?.models, meta?.suppressedModels],
+  );
 
   // Сброс при каждом открытии — паттерн React «adjust state on prop change» (setState во время
   // рендера, не в эффекте: см. DateField). Вместо пустой формы поднимаем черновик, если он есть.
@@ -101,23 +119,29 @@ export function MachineFormModal({
     setPrevOpen(open);
     if (open) {
       const draft = loadMachineDraft(family);
-      if (draft && isDirtyMachineForm(draft.form)) {
-        setCategory(draft.category);
+      // Складскую позицию считаем начатой и по одному количеству: у неё кроме модели и штук в форме
+      // ничего и нет, а «1» по умолчанию — не пустое значение, которое можно молча выбросить.
+      const draftDirty =
+        draft !== null &&
+        (isDirtyMachineForm(draft.form) || (isStockKind(draft.kind) && draft.quantity !== "1"));
+      if (draft && draftDirty) {
+        setCategories(draft.categories);
         setKind(draft.kind);
         setForm(draft.form);
+        setQuantity(draft.quantity);
         // Восстановленные значения не должны прятаться за свёрнутыми полями.
-        setShowAll(hasHiddenFieldValues(draft.form));
+        setShowAll(hasHiddenFieldValues(draft.form, draft.kind));
         setOurNumberEdited(draft.form.ourNumber.trim() !== "");
         setRestoredDraft(true);
       } else {
-        setCategory("CLIENT");
+        setCategories(["CLIENT"]);
         setKind(defaultKind);
         setForm(EMPTY);
+        setQuantity("1");
         setShowAll(false);
         setOurNumberEdited(false);
         setRestoredDraft(false);
       }
-      setQuantity("1");
       setPhotos([]);
       setError(null);
       setIdempotencyKey(null);
@@ -126,14 +150,37 @@ export function MachineFormModal({
 
   const set = (patch: Partial<typeof EMPTY>) => setForm((f) => ({ ...f, ...patch }));
 
-  const dirty = isDirtyMachineForm(form);
+  // Складская позиция «заполнена» и одним количеством: кроме модели и штук в её форме ничего нет.
+  const dirty = isDirtyMachineForm(form) || (stock && quantity !== "1");
+
+  const configOptions = configurationOptionsFor(kind);
+
+  /**
+   * Крестик у подсказки модели (Артём 20.08.2026: «иногда туда заносят временное название»).
+   * Прячем только подсказку — карточки, где это название уже стоит, не трогаем. После ответа
+   * перечитываем мету: пул подсказок собирается из неё.
+   */
+  async function suppressModel(name: string) {
+    // Переспрос: крестик — узкая зона у самого края строки, промах пальцем убирал бы подсказку
+    // сразу и для всей команды, а вернуть её из интерфейса нечем (только завести карточку с этим
+    // же названием). Цена переспроса — один тап, цена промаха — пропавшая модель у всех.
+    if (!window.confirm(`Убрать «${name}» из подсказок? Карточки с этим названием не изменятся.`)) {
+      return;
+    }
+    try {
+      await apiSend("/api/machines/models", "POST", { family, name });
+      await refreshMeta();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Не удалось убрать подсказку");
+    }
+  }
 
   // Закрытие крестиком/фоном/Escape: заполненную форму молча уносим в черновик — случайный тап
   // по фону не должен терять ввод (ровно жалоба Артёма).
   function handleClose() {
     if (saving) return;
     if (dirty) {
-      saveMachineDraft(family, { category, kind, form });
+      saveMachineDraft(family, { categories, kind, quantity, form });
     } else {
       clearMachineDraft(family);
     }
@@ -151,9 +198,10 @@ export function MachineFormModal({
   // «Начать заново» на плашке восстановленного черновика.
   function startFresh() {
     clearMachineDraft(family);
-    setCategory("CLIENT");
+    setCategories(["CLIENT"]);
     setKind(defaultKind);
     setForm(EMPTY);
+    setQuantity("1");
     setShowAll(false);
     setOurNumberEdited(false);
     setRestoredDraft(false);
@@ -161,10 +209,10 @@ export function MachineFormModal({
   }
 
   // Подсказываем следующий свободный номер раздела, но он остаётся правимым: при инвентаризации
-  // номер уже написан маркером на железе и может быть любым (PRD §16.2). Схема зависит от категории
-  // («77-N» у своего парка, «К-N» у клиентского), поэтому подсказка перещёлкивается вместе с ней —
+  // номер уже написан маркером на железе и может быть любым (PRD §16.2). Схема зависит от категорий
+  // («77-N» у своего парка, «К-N» у клиентского), поэтому подсказка перещёлкивается вместе с ними —
   // ровно до тех пор, пока человек не ввёл номер руками.
-  const scheme = numberSchemeFor(category);
+  const scheme = numberSchemeFor(categories);
   const suggestedNumber = meta
     ? String(scheme === "OUR" ? meta.nextOurNumber : meta.nextClientNumber)
     : "";
@@ -191,31 +239,37 @@ export function MachineFormModal({
     if (!idempotencyKey) setIdempotencyKey(key);
     try {
       const number = numberValue.trim();
+      // Цена — целые рубли; пустое поле означает «цены нет», а не ноль.
+      const price = form.price.trim() === "" ? null : Number(form.price);
       const created = await apiSend<MachineDetail>(
         "/api/machines",
         "POST",
         {
           family,
-          category,
           kind,
-          ...(stock ? { quantity: Number(quantity) || 0 } : {}),
           model: form.model.trim(),
-          // Номер уезжает в поле своей схемы — сервер принимает только его (иначе номер разъедется
-          // с категорией).
-          [numberFieldFor(category)]: number ? Number(number) : null,
+          // Складская позиция — остаток на складе, а не станок: ни категорий, ни учётного номера у
+          // неё нет, и форма их даже не показывает. Слать их всё равно нельзя: сервер ставит
+          // складским свою категорию принудительно и отвергает номер чужой схемы — карточка
+          // размотчика просто не заводилась, а человек видел ошибку про номер, которого не вводил.
+          ...(stock
+            ? { quantity: Number(quantity) || 0 }
+            : {
+                categories,
+                // Номер уезжает в поле своей схемы — сервер принимает только его (иначе номер
+                // разъедется с категориями).
+                [numberFieldFor(categories)]: number ? Number(number) : null,
+              }),
           configuration: form.configuration,
           metalThickness: form.metalThickness,
-          serialNumber: form.serialNumber,
-          orgName: form.orgName,
+          price: price !== null && Number.isFinite(price) ? Math.trunc(price) : null,
           contactName: form.contactName,
-          contactPhone: form.contactPhone,
           invoice1C: form.invoice1C,
           responsibleId: form.responsibleId || null,
           deliveredBy: form.deliveredBy,
           arrivedAt: form.arrivedAt,
           dueDate: form.dueDate,
           defectNotes: form.defectNotes,
-          location: form.location,
           notes: form.notes,
           isUrgent: form.isUrgent,
         },
@@ -261,7 +315,9 @@ export function MachineFormModal({
           </div>
         ) : null}
 
-        {/* Вид оборудования — сегмент из двух кнопок (решение Артёма 07.08: ножи в общей картотеке). */}
+        {/* Вид оборудования — сегмент кнопок (решение Артёма 07.08: ножи в общей картотеке). В
+            «Листогибах» видов стало три (добавилась фальц машинка, 20.08), поэтому подписи в узкой
+            колонке переносятся — leading-tight держит такую кнопку в разумной высоте. */}
         <div
           role="radiogroup"
           aria-label="Вид оборудования"
@@ -276,7 +332,7 @@ export function MachineFormModal({
               onClick={() => setKind(k)}
               data-testid={`machine-kind-${k}`}
               className={cn(
-                "min-h-12 rounded-lg border px-3 py-2 text-sm font-medium transition-colors",
+                "min-h-12 rounded-lg border px-2 py-2 text-sm font-medium leading-tight transition-colors",
                 kind === k
                   ? "border-neutral-900 bg-neutral-900 text-white"
                   : "border-neutral-200 bg-white text-neutral-600 active:bg-neutral-50",
@@ -300,19 +356,14 @@ export function MachineFormModal({
             />
           </Field>
         ) : (
-          <Field label="Категория" required>
-            <Select
-              value={category}
-              onChange={(e) => setCategory(e.target.value as MachineCategory)}
-              data-testid="machine-category"
-            >
-              {MACHINE_CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {MACHINE_CATEGORY_LABEL[c]}
-                </option>
-              ))}
-            </Select>
-          </Field>
+          // Не Field: тот сам по себе <label>, а внутри — свои подписи галочек; вложенные label
+          // браузеры обрабатывают непредсказуемо (клик по заголовку переключал бы первую строку).
+          <div>
+            <span className="text-sm font-medium text-neutral-700">
+              Категории<span className="text-red-500"> *</span>
+            </span>
+            <CategoryCheckboxes value={categories} onChange={setCategories} />
+          </div>
         )}
 
         <Field label="Модель" required hint="Начните печатать — подскажем: «лбм», «ван», «tapco»…">
@@ -323,8 +374,33 @@ export function MachineFormModal({
             placeholder="Модель"
             autoFocus
             testId="machine-model"
+            onSuppress={suppressModel}
           />
         </Field>
+
+        {/* Цена и толщина металла — на виду (Артём 20.08): поля необязательные, но спрашивают о них
+            первым делом, а из-под «Показать все поля» толщину никто не заполнял. */}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Цена, ₽">
+            <Input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              value={form.price}
+              onChange={(e) => set({ price: e.target.value })}
+              placeholder="120000"
+              data-testid="machine-price"
+            />
+          </Field>
+          <Field label="Толщина металла">
+            <Input
+              value={form.metalThickness}
+              onChange={(e) => set({ metalThickness: e.target.value })}
+              placeholder="0,7 мм"
+              data-testid="machine-metal-thickness"
+            />
+          </Field>
+        </div>
 
         {stock ? null : (
           <Field label="Учётный номер" hint="Подсказан следующий свободный — можно исправить">
@@ -346,6 +422,16 @@ export function MachineFormModal({
             </div>
           </Field>
         )}
+
+        {/* Комплектация: у листогиба и фальцепрокатника — галочки, у остальных видов свободное поле
+            живёт в дополнительных (ниже), чтобы не удлинять короткую форму. */}
+        {configOptions.length > 0 ? (
+          <ConfigurationField
+            kind={kind}
+            value={form.configuration}
+            onChange={(v) => set({ configuration: v })}
+          />
+        ) : null}
 
         <div>
           <span className="text-sm font-medium text-neutral-700">Фото</span>
@@ -392,67 +478,38 @@ export function MachineFormModal({
 
         {showAll ? (
           <div className="grid gap-3 border-t border-neutral-200 pt-3 sm:grid-cols-2" data-testid="machine-extra-fields">
-            <Field label="Комплектация" hint="нож, машинка, стойка…">
-              <Input
+            {/* У видов с галочками комплектация уже показана выше — второе поле про то же самое
+                (и второй источник правды для одной строки) здесь только путало бы. */}
+            {configOptions.length === 0 ? (
+              <ConfigurationField
+                kind={kind}
                 value={form.configuration}
-                onChange={(e) => set({ configuration: e.target.value })}
+                onChange={(v) => set({ configuration: v })}
               />
-            </Field>
-            <Field label="Толщина металла">
-              <Input
-                value={form.metalThickness}
-                onChange={(e) => set({ metalThickness: e.target.value })}
-                placeholder="0,7 мм"
-              />
-            </Field>
-            <Field label="Серийный номер">
-              <Input value={form.serialNumber} onChange={(e) => set({ serialNumber: e.target.value })} />
-            </Field>
-            <Field label="Место на площадке">
-              <Input
-                value={form.location}
-                onChange={(e) => set({ location: e.target.value })}
-                list="machine-locations"
-                placeholder="Ряд Б, место 3"
-              />
-            </Field>
-            <datalist id="machine-locations">
-              {locations.map((l) => (
-                <option key={l} value={l} />
-              ))}
-            </datalist>
+            ) : null}
 
-            <Field label="Заказчик">
-              <Input value={form.orgName} onChange={(e) => set({ orgName: e.target.value })} />
-            </Field>
             <Field label="Контакт">
               <Input value={form.contactName} onChange={(e) => set({ contactName: e.target.value })} />
-            </Field>
-            <Field label="Телефон">
-              <Input
-                type="tel"
-                value={form.contactPhone}
-                onChange={(e) => set({ contactPhone: e.target.value })}
-                placeholder="+7 900 000-00-00"
-              />
             </Field>
             <Field label="№ заказа 1С">
               <Input value={form.invoice1C} onChange={(e) => set({ invoice1C: e.target.value })} />
             </Field>
 
-            <Field label="Ответственный">
-              <Select
+            {/* Ответственный — строками, а не выпадашкой: сотрудников офиса четверо, и весь
+                список честнее показать сразу (ui-guidelines, решение Артёма 20.08.2026). */}
+            <div>
+              <p className="mb-1 text-sm font-medium text-neutral-700">Ответственный</p>
+              <ChoiceRows
+                ariaLabel="Ответственный"
                 value={form.responsibleId}
-                onChange={(e) => set({ responsibleId: e.target.value })}
-              >
-                <option value="">Не выбран</option>
-                {(meta?.responsibles ?? []).map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
+                onChange={(v) => set({ responsibleId: v })}
+                testIdPrefix="machine-responsible"
+                options={[
+                  { value: "", label: "Не выбран" },
+                  ...(meta?.responsibles ?? []).map((r) => ({ value: r.id, label: r.name })),
+                ]}
+              />
+            </div>
             <Field label="Кто привёз">
               <Input
                 value={form.deliveredBy}

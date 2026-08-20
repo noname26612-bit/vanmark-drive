@@ -90,6 +90,9 @@ const MACHINE_API: [string, string][] = [
   ["GET", "/api/machines?family=SEAMER"],
   ["POST", "/api/machines"],
   ["GET", "/api/machines/meta"],
+  // Подсказки моделей (20.08.2026): скрыть крестиком и вернуть — та же картотека, тот же guard.
+  ["POST", "/api/machines/models"],
+  ["DELETE", "/api/machines/models"],
   ["GET", "/api/machines/00000000-0000-0000-0000-000000000000"],
   ["PATCH", "/api/machines/00000000-0000-0000-0000-000000000000"],
   ["POST", "/api/machines/00000000-0000-0000-0000-000000000000/comments"],
@@ -222,7 +225,7 @@ test.describe("Изоляция роли: водитель → модуль ст
     for (const [method, url] of MACHINE_API) {
       const res = await page.request.fetch(url, {
         method,
-        ...(method === "GET" || method === "DELETE" ? {} : { data: { category: "CLIENT", model: "x" } }),
+        ...(method === "GET" || method === "DELETE" ? {} : { data: { categories: ["CLIENT"], model: "x" } }),
       });
       expect(res.status(), `${method} ${url} должен быть 404 для водителя`).toBe(404);
     }
@@ -252,7 +255,7 @@ test.describe("Изоляция роли: водитель → модуль ст
   test("водитель не заводит станок даже с корректным телом запроса", async ({ page }) => {
     await login(page, "kashirskiy");
     const res = await page.request.post("/api/machines", {
-      data: { category: "OUR_SALE", model: "Попытка водителя" },
+      data: { categories: ["OUR_SALE"], model: "Попытка водителя" },
     });
     expect(res.status()).toBe(404);
   });

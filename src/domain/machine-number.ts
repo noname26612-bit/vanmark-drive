@@ -1,16 +1,22 @@
 // Учётный номер станка — одна правда для сервера, списка, карточки, формы и поиска.
 //
 // Схем две, по происхождению железа (решение Артёма 15.08.2026, вечер):
-//   своё (OUR_SALE, OUR_RENTAL) — «77-N»,  чужое (CLIENT) — «К-N».
-// Номер следует за категорией: перевели станок в клиентские — он получает следующий свободный
-// «К-N», а «77-N» освобождается (и наоборот). Внутри своей схемы (продажа ↔ аренда) номер не
-// меняется: это одно и то же железо одного парка.
+//   своё (наш на продажу / наш арендный) — «77-N»,  чужое (клиентский) — «К-N».
+// Номер следует за категориями: перевели станок в клиентские — он получает следующий свободный
+// «К-N», а «77-N» освобождается (и наоборот). Внутри своей схемы (продажа ↔ аренда, в том числе
+// когда обе категории стоят вместе) номер не меняется: это одно и то же железо одного парка.
+//
+// ПОЧЕМУ ФОРМАТ ЧИТАЕТСЯ ИЗ ПОЛЕЙ, А НЕ ИЗ КАТЕГОРИЙ (20.08.2026): с переходом на список категорий
+// «клиентскость» перестала быть одним значением, зато у станка по-прежнему заполнено не больше
+// одного номерного поля — и оно само говорит, в какой схеме номер выдан. Так номер печатается
+// одинаково везде, включая места, где категорий под рукой нет (комплект, задание в цех), и не
+// теряется в момент, когда категории меняют, а номер ещё переезжает.
 //
 // Буква «К» пишется КИРИЛЛИЦЕЙ — маркером на железе её пишут в русской раскладке, и весь интерфейс
 // русский. Поиск при этом понимает оба алфавита (см. machineNumberSearchVariants): человек ищет
 // как получилось, а не как задумано.
 import type { MachineCategory } from "@/generated/prisma/enums";
-import { isOurCategory } from "./machine-status";
+import { isOurCategories } from "./machine-status";
 
 export type NumberScheme = "OUR" | "CLIENT";
 
@@ -19,36 +25,44 @@ export const NUMBER_PREFIX: Record<NumberScheme, string> = {
   CLIENT: "К-",
 };
 
-/** Какой схемой нумеруется станок этой категории. */
-export function numberSchemeFor(category: MachineCategory): NumberScheme {
-  return isOurCategory(category) ? "OUR" : "CLIENT";
+/** Какой схемой нумеруется станок с такими категориями. Есть «Клиентский» — чужая схема. */
+export function numberSchemeFor(categories: readonly MachineCategory[]): NumberScheme {
+  return isOurCategories(categories) ? "OUR" : "CLIENT";
 }
 
-/** Поле номера, в котором живёт номер этой категории. Второе поле у станка всегда пустое. */
-export function numberFieldFor(category: MachineCategory): "ourNumber" | "clientNumber" {
-  return numberSchemeFor(category) === "OUR" ? "ourNumber" : "clientNumber";
+/** Поле номера для этих категорий. Второе поле у станка всегда пустое. */
+export function numberFieldFor(
+  categories: readonly MachineCategory[],
+): "ourNumber" | "clientNumber" {
+  return numberSchemeFor(categories) === "OUR" ? "ourNumber" : "clientNumber";
 }
 
 export type NumberedMachine = {
-  category: MachineCategory;
   ourNumber: number | null;
   clientNumber?: number | null;
 };
 
+/** Схема, в которой номер фактически выдан, или null — номера нет. */
+export function schemeOfNumber(m: NumberedMachine): NumberScheme | null {
+  if (m.ourNumber !== null && m.ourNumber !== undefined) return "OUR";
+  if (m.clientNumber !== null && m.clientNumber !== undefined) return "CLIENT";
+  return null;
+}
+
 /** Номер станка в его схеме (число), или null — номера нет. */
 export function machineNumberValue(m: NumberedMachine): number | null {
-  const value = numberSchemeFor(m.category) === "OUR" ? m.ourNumber : (m.clientNumber ?? null);
-  return value ?? null;
+  return m.ourNumber ?? m.clientNumber ?? null;
 }
 
 /** Номер так, как он написан маркером на железе: «77-5» или «К-5». null — номера нет. */
 export function formatMachineNumber(m: NumberedMachine): string | null {
+  const scheme = schemeOfNumber(m);
   const value = machineNumberValue(m);
-  if (value === null) return null;
-  return `${NUMBER_PREFIX[numberSchemeFor(m.category)]}${value}`;
+  if (scheme === null || value === null) return null;
+  return `${NUMBER_PREFIX[scheme]}${value}`;
 }
 
-/** Номер с явной схемой — когда категория ещё не выбрана (форма) или нужна чужая схема. */
+/** Номер с явной схемой — когда категории ещё не выбраны (форма) или нужна чужая схема. */
 export function formatNumberIn(scheme: NumberScheme, value: number | null | undefined): string | null {
   return value === null || value === undefined ? null : `${NUMBER_PREFIX[scheme]}${value}`;
 }
@@ -62,6 +76,6 @@ export function formatNumberIn(scheme: NumberScheme, value: number | null | unde
  */
 export function machineNumberSearchVariants(m: NumberedMachine): string[] {
   const value = machineNumberValue(m);
-  if (value === null || numberSchemeFor(m.category) !== "CLIENT") return [];
+  if (value === null || schemeOfNumber(m) !== "CLIENT") return [];
   return [`к-${value}`, `к${value}`, `k-${value}`, `k${value}`];
 }

@@ -23,12 +23,22 @@ export function MachineStatusBadge({
   );
 }
 
-/** Метка категории — всегда нейтральный графит: категория не состояние, подсвечивать нечего. */
-export function MachineCategoryBadge({ category }: { category: MachineCategory }) {
+/**
+ * Метки категорий — всегда нейтральный графит: категория не состояние, подсвечивать нечего.
+ *
+ * Категорий у станка может быть несколько (20.08.2026), и рисуем мы их отдельными метками, а не
+ * одной склеенной строкой: «Продажа» и «Аренда» рядом читаются с одного взгляда, а «Продажа +
+ * Аренда» в одной рамке выглядит как название третьей, несуществующей категории.
+ */
+export function MachineCategoryBadge({ categories }: { categories: MachineCategory[] }) {
   return (
-    <Badge className="border border-slate-300 text-slate-600">
-      {MACHINE_CATEGORY_SHORT[category]}
-    </Badge>
+    <>
+      {categories.map((c) => (
+        <Badge key={c} className="border border-slate-300 text-slate-600">
+          {MACHINE_CATEGORY_SHORT[c]}
+        </Badge>
+      ))}
+    </>
   );
 }
 

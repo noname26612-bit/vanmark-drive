@@ -9,18 +9,15 @@ import {
 
 const m = (over: Partial<SearchableMachine> = {}): SearchableMachine => ({
   ourNumber: null,
+  clientNumber: null,
   kind: "MACHINE",
-  category: "CLIENT",
+  categories: ["CLIENT"],
   status: "IN_REPAIR",
   model: "ЛБМ 200",
   configuration: "нож, дог. машинка",
   metalThickness: "0,7 мм",
-  serialNumber: "SN-98211",
-  orgName: "ДОМОСТРОЙ ЛОГИСТИК ООО",
-  contactName: "Павел",
-  contactPhone: "+7 915 327-57-16",
+  contactName: "Павел Домостроев",
   invoice1C: "4512",
-  location: "Ряд Б, место 3",
   deliveredBy: "Каширский",
   defectNotes: "не гнёт край",
   notes: null,
@@ -31,31 +28,34 @@ const find = (machine: SearchableMachine, q: string) => machineMatches(machine, 
 
 describe("machine-search: номера", () => {
   it("находит по учётному номеру, в том числе с решёткой", () => {
-    const our = m({ category: "OUR_SALE", ourNumber: 213 });
+    const our = m({ categories: ["OUR_SALE"], ourNumber: 213 });
     expect(find(our, "213")).toBe(true);
     expect(find(our, "№213")).toBe(true);
     expect(find(our, "999")).toBe(false);
   });
 
   it("находит станок по маркировке «77-N»", () => {
-    const our = m({ category: "OUR_SALE", ourNumber: 5 });
+    const our = m({ categories: ["OUR_SALE"], ourNumber: 5 });
     expect(find(our, "77-5")).toBe(true);
     expect(find(our, "77-6")).toBe(false);
+  });
+
+  it("клиентский находится по «К-N» в любом написании и раскладке", () => {
+    const client = m({ clientNumber: 5, invoice1C: null });
+    expect(find(client, "к-5")).toBe(true);
+    expect(find(client, "к5")).toBe(true);
+    expect(find(client, "k5")).toBe(true); // забытая раскладка
+    expect(find(client, "к-6")).toBe(false);
   });
 
   // Сквозной системный номер убран из интерфейса и из поиска (15.08.2026): человек его нигде не
   // видит, а совпадения по нему выглядели бы как случайные.
   it("не ищет по сквозному системному номеру", () => {
-    expect(find(m({ ourNumber: null }), "213")).toBe(false);
+    expect(find(m({ ourNumber: null, invoice1C: null }), "213")).toBe(false);
   });
 
   it("находит по № заказа 1С", () => {
     expect(find(m(), "4512")).toBe(true);
-  });
-
-  it("находит по серийному номеру", () => {
-    expect(find(m(), "98211")).toBe(true);
-    expect(find(m(), "SN-98211")).toBe(true);
   });
 });
 
@@ -65,11 +65,11 @@ describe("machine-search: текст", () => {
     expect(find(m(), "ЛБМ 200")).toBe(true);
   });
 
-  it("ищет по заказчику, месту, комплектации и дефектовке", () => {
-    expect(find(m(), "домострой")).toBe(true);
-    expect(find(m(), "ряд б")).toBe(true);
+  it("ищет по контакту, комплектации, дефектовке и тому, кто привёз", () => {
+    expect(find(m(), "павел")).toBe(true);
     expect(find(m(), "нож")).toBe(true);
     expect(find(m(), "гнёт")).toBe(true);
+    expect(find(m(), "каширский")).toBe(true);
   });
 
   it("ё и е не различаются", () => {
@@ -77,29 +77,13 @@ describe("machine-search: текст", () => {
     expect(find(m({ model: "Клен 300" }), "клён")).toBe(true);
   });
 
-  it("чинит неверную раскладку: «lj,jcnhjq» → «домострой»", () => {
-    expect(find(m(), "ljvjcnhjq")).toBe(true);
+  it("чинит неверную раскладку: «ljvjcnhj» → «домострой»", () => {
+    expect(find(m(), "ljvjcnhj")).toBe(true);
   });
 
   it("несколько слов — все должны найтись (AND)", () => {
-    expect(find(m(), "лбм домострой")).toBe(true);
+    expect(find(m(), "лбм домостроев")).toBe(true);
     expect(find(m(), "лбм сорекс")).toBe(false);
-  });
-
-  it("ищет по подписи состояния и категории", () => {
-    expect(find(m({ status: "IN_REPAIR" }), "в ремонте")).toBe(true);
-    expect(find(m({ category: "OUR_RENTAL" }), "арендный")).toBe(true);
-  });
-
-  it("роликовый нож находится по виду — даже без слова «нож» в полях", () => {
-    const knife = m({ kind: "ROLLER_KNIFE", model: "LBA 2007", configuration: null, defectNotes: null });
-    expect(find(knife, "нож")).toBe(true);
-    expect(find(knife, "роликовый")).toBe(true);
-  });
-
-  it("подпись вида не вешается на станки: «роликовый» чужой станок не находит", () => {
-    const machineOnly = m({ configuration: null, defectNotes: null });
-    expect(find(machineOnly, "роликовый")).toBe(false);
   });
 
   it("пустой запрос показывает всё", () => {
@@ -108,52 +92,86 @@ describe("machine-search: текст", () => {
   });
 });
 
-describe("machine-search: телефон", () => {
-  it("находит в любом формате записи", () => {
-    expect(find(m(), "9153275716")).toBe(true);
-    expect(find(m(), "+7 915 327-57-16")).toBe(true);
-    expect(find(m(), "327-57-16")).toBe(true);
+// Телефон, заказчик, серийник и место выведены из карточки 20.08.2026 — искать по ним больше
+// нечего. Тест держит границу: цифровой путь остался только у номера и заказа 1С.
+describe("machine-search: снятые поля", () => {
+  it("телефонный запрос больше ничего не находит", () => {
+    expect(find(m(), "9153275716")).toBe(false);
+    expect(find(m(), "+7 915 327-57-16")).toBe(false);
+    expect(find(m(), "327-57-16")).toBe(false);
+  });
+});
+
+describe("machine-search: подписи состояния, категорий и вида", () => {
+  it("ищет по подписи состояния", () => {
+    expect(find(m({ status: "IN_REPAIR" }), "в ремонте")).toBe(true);
+    expect(find(m({ status: "READY" }), "в ремонте")).toBe(false);
   });
 
-  it("«8…» и «+7…» — один и тот же номер", () => {
-    expect(find(m({ contactPhone: "8 915 327-57-16" }), "+79153275716")).toBe(true);
-    expect(find(m({ contactPhone: "+7 915 327-57-16" }), "89153275716")).toBe(true);
+  it("станок с двумя категориями находится по подписи ЛЮБОЙ из них", () => {
+    const dual = m({ categories: ["OUR_SALE", "OUR_RENTAL"] });
+    expect(find(dual, "арендный")).toBe(true);
+    expect(find(dual, "на продажу")).toBe(true);
+    expect(find(dual, "клиентский")).toBe(false);
   });
 
-  it("чужой номер не находится", () => {
-    expect(find(m(), "9990001122")).toBe(false);
+  it("одиночная категория ищется как раньше", () => {
+    expect(find(m({ categories: ["OUR_RENTAL"] }), "арендный")).toBe(true);
+    expect(find(m({ categories: ["OUR_SALE"] }), "арендный")).toBe(false);
+  });
+
+  it("роликовый нож находится по виду — даже без слова «нож» в полях", () => {
+    const knife = m({ kind: "ROLLER_KNIFE", model: "LBA 2007", configuration: null, defectNotes: null });
+    expect(find(knife, "нож")).toBe(true);
+    expect(find(knife, "роликовый")).toBe(true);
+  });
+
+  it("фальц машинка находится по своему виду", () => {
+    const falz = m({ kind: "FALZ_MACHINE", model: "Van Mark", configuration: null, defectNotes: null });
+    expect(find(falz, "фальц")).toBe(true);
+    expect(find(falz, "машинка")).toBe(true);
+  });
+
+  it("подпись вида не вешается на станки: «роликовый» чужой станок не находит", () => {
+    const machineOnly = m({ configuration: null, defectNotes: null });
+    expect(find(machineOnly, "роликовый")).toBe(false);
   });
 });
 
 describe("machine-search: сниппет «почему нашлось»", () => {
-  const visible = ["ЛБМ 200", "Ряд Б, место 3"];
+  const visible = ["ЛБМ 200", "0,7 мм"];
 
   it("совпадение по видимому полю сниппета не даёт", () => {
     expect(firstHiddenMachineMatch(m(), parseQuery("лбм"), visible)).toBeNull();
-    expect(firstHiddenMachineMatch(m(), parseQuery("213"), visible)).toBeNull();
+    expect(
+      firstHiddenMachineMatch(m({ ourNumber: 213 }), parseQuery("213"), visible),
+    ).toBeNull();
   });
 
-  it("совпадение по телефону показывает телефон", () => {
-    const hit = firstHiddenMachineMatch(m(), parseQuery("3275716"), visible);
-    expect(hit?.label).toBe("Тел.");
-    expect(hit?.phone).toBe(true);
-  });
-
-  it("совпадение по заказчику показывает заказчика", () => {
-    const hit = firstHiddenMachineMatch(m(), parseQuery("домострой"), visible);
-    expect(hit?.label).toBe("Заказчик");
-    expect(hit?.text).toContain("ДОМОСТРОЙ");
+  it("совпадение по контакту показывает контакт", () => {
+    const hit = firstHiddenMachineMatch(m(), parseQuery("павел"), visible);
+    expect(hit?.label).toBe("Контакт");
+    expect(hit?.text).toContain("Павел");
   });
 
   it("совпадение по заказу 1С показывает заказ", () => {
     expect(firstHiddenMachineMatch(m(), parseQuery("4512"), visible)?.label).toBe("Заказ 1С");
   });
+
+  it("совпадение по комплектации и дефектовке подписано своими метками", () => {
+    expect(firstHiddenMachineMatch(m(), parseQuery("дог"), visible)?.label).toBe("Компл.");
+    expect(firstHiddenMachineMatch(m(), parseQuery("гнёт"), visible)?.label).toBe("Дефект");
+  });
+
+  it("без активного запроса сниппета нет", () => {
+    expect(firstHiddenMachineMatch(m(), parseQuery("   "), visible)).toBeNull();
+  });
 });
 
 describe("machine-search: маркировка", () => {
-  it("номер отображается по происхождению: своё «77-N», чужое «К-N»", () => {
-    expect(formatOurNumber({ category: "OUR_SALE", ourNumber: 5, clientNumber: null })).toBe("77-5");
-    expect(formatOurNumber({ category: "CLIENT", ourNumber: null, clientNumber: 5 })).toBe("К-5");
-    expect(formatOurNumber({ category: "OUR_SALE", ourNumber: null, clientNumber: null })).toBeNull();
+  it("номер отображается по заполненному полю: своё «77-N», чужое «К-N»", () => {
+    expect(formatOurNumber({ ourNumber: 5, clientNumber: null })).toBe("77-5");
+    expect(formatOurNumber({ ourNumber: null, clientNumber: 5 })).toBe("К-5");
+    expect(formatOurNumber({ ourNumber: null, clientNumber: null })).toBeNull();
   });
 });

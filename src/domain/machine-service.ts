@@ -18,19 +18,23 @@ import {
   type NumberScheme,
 } from "./machine-number";
 import {
-  categoryFollowingStatus,
+  categoriesFollowingStatus,
+  categoriesLabel,
   isArchivedStatus,
-  isStatusAllowedForCategory,
+  isRetiredStatus,
+  isStatusAllowedForCategories,
+  isValidCategorySet,
   isKindInFamily,
   isStockKind,
   isHeadKind,
   headKindOf,
+  normalizeCategories,
   reasonRequiredFor,
   EQUIPMENT_KIND_LABEL,
   EQUIPMENT_FAMILY_LABEL,
   MACHINE_CATEGORY_LABEL,
   MACHINE_STATUS_LABEL,
-  STOCK_CATEGORY,
+  STOCK_CATEGORIES,
   STOCK_STATUS,
 } from "./machine-status";
 import {
@@ -67,6 +71,12 @@ import type {
  */
 export type Actor = { id: string; role: Role; equipmentAccess?: boolean };
 
+/**
+ * Состояние новой карточки. «Принят» выведен из оборота 20.08.2026 (решение Артёма): станок
+ * приезжает уже с работой, и карточку тут же переводили руками — лишний шаг убран.
+ */
+const DEFAULT_MACHINE_STATUS: MachineStatus = "NEEDS_REPAIR";
+
 const MAX_TEXT = 2000; // потолок на длинные текстовые поля (дефектовка/заметки)
 const MAX_SHORT = 200; // потолок на короткие поля (модель, место, контакт…)
 const CHANGE_VALUE_MAX = 120; // сколько символа значения храним в «было→стало» (журнал не архив текстов)
@@ -83,10 +93,9 @@ export type MachineFields = {
   model: string;
   configuration: string | null;
   metalThickness: string | null;
-  serialNumber: string | null;
-  orgName: string | null;
+  /** Цена в рублях, целыми (20.08.2026). Одна на продажу и аренду — см. schema.prisma. */
+  price: number | null;
   contactName: string | null;
-  contactPhone: string | null;
   invoice1C: string | null;
   responsibleId: string | null;
   deliveredBy: string | null;
@@ -94,17 +103,16 @@ export type MachineFields = {
   dueDate: string | null; // YYYY-MM-DD — срок готовности/выдачи
   isUrgent: boolean;
   defectNotes: string | null;
-  location: string | null;
   notes: string | null;
 };
 
 /**
- * Создание: обязательны ТОЛЬКО категория и модель (PRD §16.4) — инвентаризацию нельзя блокировать.
+ * Создание: обязательны ТОЛЬКО категории и модель (PRD §16.4) — инвентаризацию нельзя блокировать.
  * family приходит из раздела, в котором открыт экран, и потом не меняется: перенос карточки между
  * «Листогибами» и «Фальцепрокатниками» — это заведомо ошибка ввода, её лечат аннулированием.
  */
 export type CreateMachineInput = Partial<MachineFields> & {
-  category: MachineCategory;
+  categories: MachineCategory[];
   family?: EquipmentFamily;
 };
 export type EditMachineInput = Partial<MachineFields>;
@@ -123,7 +131,6 @@ const kitSelect = {
           id: true,
           ourNumber: true,
           clientNumber: true,
-          category: true,
           kind: true,
           model: true,
           status: true,
@@ -137,7 +144,7 @@ const kitSelect = {
       qty: true,
       consumedAt: true,
       head: {
-        select: { id: true, ourNumber: true, clientNumber: true, category: true, model: true },
+        select: { id: true, ourNumber: true, clientNumber: true, model: true },
       },
     },
     orderBy: { createdAt: "asc" },
@@ -152,17 +159,14 @@ const listSelect = {
   family: true,
   kind: true,
   quantity: true,
-  category: true,
+  categories: true,
   status: true,
   model: true,
   configuration: true,
   metalThickness: true,
-  serialNumber: true,
-  orgName: true,
+  price: true,
   contactName: true,
-  contactPhone: true,
   invoice1C: true,
-  location: true,
   deliveredBy: true,
   defectNotes: true,
   notes: true,
@@ -183,11 +187,9 @@ const listSelect = {
 const flagSelect = {
   kind: true,
   quantity: true,
-  category: true,
+  categories: true,
   status: true,
-  invoice1C: true,
   isUrgent: true,
-  arrivedAt: true,
   dueDate: true,
   diagnosedAt: true,
   lastVerifiedAt: true,
@@ -201,7 +203,6 @@ type KitPartRow = {
     id: string;
     ourNumber: number | null;
     clientNumber: number | null;
-    category: MachineCategory;
     kind: EquipmentKind;
     model: string;
     status: MachineStatus;
@@ -215,7 +216,6 @@ type KitHeadRow = {
     id: string;
     ourNumber: number | null;
     clientNumber: number | null;
-    category: MachineCategory;
     model: string;
   };
 };
@@ -228,17 +228,14 @@ type ListRow = {
   family: EquipmentFamily;
   kind: EquipmentKind;
   quantity: number;
-  category: MachineCategory;
+  categories: MachineCategory[];
   status: MachineStatus;
   model: string;
   configuration: string | null;
   metalThickness: string | null;
-  serialNumber: string | null;
-  orgName: string | null;
+  price: number | null;
   contactName: string | null;
-  contactPhone: string | null;
   invoice1C: string | null;
-  location: string | null;
   deliveredBy: string | null;
   defectNotes: string | null;
   notes: string | null;
@@ -261,7 +258,6 @@ function toKitPart(r: KitPartRow): KitPartView {
     id: r.part.id,
     ourNumber: r.part.ourNumber,
     clientNumber: r.part.clientNumber,
-    category: r.part.category,
     kind: r.part.kind,
     model: r.part.model,
     status: r.part.status,
@@ -275,7 +271,6 @@ function toKitHead(r: KitHeadRow): KitHeadView {
     id: r.head.id,
     ourNumber: r.head.ourNumber,
     clientNumber: r.head.clientNumber,
-    category: r.head.category,
     model: r.head.model,
     qty: r.qty,
   };
@@ -296,17 +291,14 @@ function toListItem(m: ListRow): MachineListItem {
     freeQuantity: isStockKind(m.kind) ? freeStock(m.quantity, kitOf) : m.quantity,
     kitParts: m.kitParts.map(toKitPart),
     kitHeads: m.kitOf.map(toKitHead),
-    category: m.category,
+    categories: normalizeCategories(m.categories),
     status: m.status,
     model: m.model,
     configuration: m.configuration,
     metalThickness: m.metalThickness,
-    serialNumber: m.serialNumber,
-    orgName: m.orgName,
+    price: m.price,
     contactName: m.contactName,
-    contactPhone: m.contactPhone,
     invoice1C: m.invoice1C,
-    location: m.location,
     deliveredBy: m.deliveredBy,
     defectNotes: m.defectNotes,
     notes: m.notes,
@@ -367,13 +359,9 @@ type FieldPatch = Record<string, unknown>;
 const SHORT_FIELDS = [
   ["configuration", "Комплектация"],
   ["metalThickness", "Толщина металла"],
-  ["serialNumber", "Серийный номер"],
-  ["orgName", "Заказчик"],
   ["contactName", "Контакт"],
-  ["contactPhone", "Телефон"],
   ["invoice1C", "№ заказа 1С"],
   ["deliveredBy", "Кто привёз"],
-  ["location", "Место на площадке"],
 ] as const;
 
 const LONG_FIELDS = [
@@ -387,7 +375,7 @@ const LONG_FIELDS = [
  */
 async function buildFields(
   input: EditMachineInput,
-  ctx: { category: MachineCategory; family: EquipmentFamily; kind: EquipmentKind },
+  ctx: { categories: readonly MachineCategory[]; family: EquipmentFamily; kind: EquipmentKind },
 ): Promise<FieldPatch> {
   const patch: FieldPatch = {};
 
@@ -403,6 +391,19 @@ async function buildFields(
     if (key in input) patch[key] = trimTo(input[key], MAX_TEXT, label);
   }
   if ("isUrgent" in input) patch.isUrgent = input.isUrgent === true;
+
+  // Цена в рублях, целыми. Потолок в сто миллионов — не «бизнес-правило», а защита от опечатки
+  // в лишний ноль: б/у листогиб столько не стоит, а поймать это на вводе дешевле, чем в отчёте.
+  if ("price" in input) {
+    const raw = input.price;
+    if (raw === null || raw === undefined) {
+      patch.price = null;
+    } else if (!Number.isInteger(raw) || raw < 0 || raw > 100_000_000) {
+      throw Errors.validation("Цена — целое число рублей от 0");
+    } else {
+      patch.price = raw;
+    }
+  }
 
   if ("arrivedAt" in input) {
     const raw = input.arrivedAt;
@@ -426,6 +427,15 @@ async function buildFields(
         `«${EQUIPMENT_KIND_LABEL[input.kind]}» — не из раздела «${EQUIPMENT_FAMILY_LABEL[ctx.family]}»`,
       );
     }
+    // Складской остаток и штучная карточка — разные сущности: у первого карточка = модель с
+    // количеством, у второго = конкретное железо с номером, состоянием и категориями. Превращение
+    // одного в другое оставляло карточку в невозможном виде — например «выдан клиенту» у остатка,
+    // которого нет ни в списке площадки, ни в архиве, и вернуть её оттуда было нечем.
+    if (isStockKind(input.kind) !== isStockKind(ctx.kind)) {
+      throw Errors.validation(
+        "Складской остаток и штучное оборудование — разные карточки: заведите новую",
+      );
+    }
     patch.kind = input.kind;
   }
 
@@ -443,8 +453,8 @@ async function buildFields(
   }
 
   // Учётный номер живёт в поле своей схемы: «77-N» у своего железа, «К-N» у клиентского
-  // (решение Артёма 15.08.2026, вечер). Категорию берём из карточки — форма шлёт номер той схемы,
-  // которую показывает; чужое поле принять нельзя, иначе номер разъедется с категорией.
+  // (решение Артёма 15.08.2026, вечер). Схему берём из категорий карточки — форма шлёт номер той
+  // схемы, которую показывает; чужое поле принять нельзя, иначе номер разъедется с категориями.
   for (const field of ["ourNumber", "clientNumber"] as const) {
     if (!(field in input)) continue;
     const raw = input[field];
@@ -455,9 +465,9 @@ async function buildFields(
     if (!Number.isInteger(raw) || raw < 1 || raw > 100_000) {
       throw Errors.validation("Учётный номер — целое число больше нуля");
     }
-    if (field !== numberFieldFor(ctx.category)) {
+    if (field !== numberFieldFor(ctx.categories)) {
       throw Errors.validation(
-        `Номер «${NUMBER_PREFIX[numberSchemeFor(ctx.category)]}N» — для категории «${MACHINE_CATEGORY_LABEL[ctx.category]}»`,
+        `Номер «${NUMBER_PREFIX[numberSchemeFor(ctx.categories)]}N» — для категорий «${categoriesLabel(ctx.categories)}»`,
       );
     }
     patch[field] = raw;
@@ -485,20 +495,20 @@ function isUniqueViolation(e: unknown): boolean {
 
 // Поля, попадающие в «было→стало». Ключевые для расследования («кто передвинул станок») идут
 // первыми; длинные тексты тоже пишем, но обрезанными — журнал не хранилище текстов.
-const TRACKED: { field: keyof MachineFields | "category"; label: string }[] = [
+const TRACKED: { field: keyof MachineFields | "categories"; label: string }[] = [
   { field: "kind", label: "Вид" },
-  { field: "category", label: "Категория" },
-  { field: "location", label: "Место на площадке" },
+  { field: "categories", label: "Категории" },
+  // Количество обязано быть здесь: правку пишет buildChanges, и поле, которого нет в списке, даёт
+  // пустой диф — editMachine выходит раньше записи, и остаток молча остаётся прежним.
+  { field: "quantity", label: "На складе, шт" },
   { field: "responsibleId", label: "Ответственный" },
   { field: "ourNumber", label: "Номер" },
   { field: "clientNumber", label: "Номер" },
   { field: "model", label: "Модель" },
   { field: "configuration", label: "Комплектация" },
   { field: "metalThickness", label: "Толщина металла" },
-  { field: "serialNumber", label: "Серийный номер" },
-  { field: "orgName", label: "Заказчик" },
+  { field: "price", label: "Цена" },
   { field: "contactName", label: "Контакт" },
-  { field: "contactPhone", label: "Телефон" },
   { field: "invoice1C", label: "Заказ 1С" },
   { field: "deliveredBy", label: "Кто привёз" },
   { field: "arrivedAt", label: "Дата поступления" },
@@ -512,11 +522,13 @@ const TRACKED: { field: keyof MachineFields | "category"; label: string }[] = [
 function displayValue(field: string, value: unknown, names: Map<string, string>): string | null {
   if (value === null || value === undefined) return null;
   if (field === "kind") return EQUIPMENT_KIND_LABEL[value as EquipmentKind];
-  if (field === "category") return MACHINE_CATEGORY_LABEL[value as MachineCategory];
+  if (field === "categories") return categoriesLabel(value as MachineCategory[]);
   if (field === "responsibleId") return names.get(String(value)) ?? "—";
   if (field === "ourNumber") return formatNumberIn("OUR", Number(value));
   if (field === "clientNumber") return formatNumberIn("CLIENT", Number(value));
   if (field === "isUrgent") return value === true ? "да" : "нет";
+  // Цена читается глазами в отчёте — «120 000 ₽» вместо «120000».
+  if (field === "price") return `${Number(value).toLocaleString("ru-RU")} ₽`;
   if (value instanceof Date) {
     const [y, m, d] = utcDateKey(value).split("-");
     return `${d}.${m}.${y}`;
@@ -524,6 +536,13 @@ function displayValue(field: string, value: unknown, names: Map<string, string>)
   const s = String(value);
   if (!s.trim()) return null;
   return s.length > CHANGE_VALUE_MAX ? `${s.slice(0, CHANGE_VALUE_MAX)}…` : s;
+}
+
+/** Сопоставимый ключ значения поля: дата — по времени, список — по содержимому, остальное как есть. */
+function changeKey(value: unknown): unknown {
+  if (value instanceof Date) return value.getTime();
+  if (Array.isArray(value)) return value.join("|");
+  return value;
 }
 
 /** Диф правки: только реально изменившиеся поля. Пустой диф → события не пишем и БД не трогаем. */
@@ -537,8 +556,10 @@ function buildChanges(
     if (!(field in patch)) continue;
     const from = before[field] ?? null;
     const to = patch[field] ?? null;
-    const fromKey = from instanceof Date ? from.getTime() : from;
-    const toKey = to instanceof Date ? to.getTime() : to;
+    // Сравниваем по «ключу», а не по ссылке: даты и списки категорий равны по содержимому, и без
+    // этого журнал писал бы событие «Категории: Наш на продажу → Наш на продажу» на каждую правку.
+    const fromKey = changeKey(from);
+    const toKey = changeKey(to);
     if (fromKey === toKey) continue;
     out.push({
       field: String(field),
@@ -571,17 +592,18 @@ export async function createMachine(input: CreateMachineInput, actor: Actor): Pr
   const kind = input.kind ?? headKindOf(family);
   const stock = isStockKind(kind);
 
-  // Складская позиция — остаток на складе, а не станок: категорию и состояние не спрашиваем и не
+  // Складская позиция — остаток на складе, а не станок: категории и состояние не спрашиваем и не
   // принимаем, а ставим фиксированные (иначе в интерфейсе появились бы поля, которых там быть не
   // должно, а в счётчиках — «размотчик, требующий ремонта»).
-  const category = stock ? STOCK_CATEGORY : input.category;
-  if (!category || !MACHINE_CATEGORY_LABEL[category]) {
-    throw Errors.validation("Выберите категорию станка");
-  }
+  const categories = stock
+    ? [...STOCK_CATEGORIES]
+    : normalizeCategories(input.categories ?? []);
+  assertCategorySet(categories);
   const model = trimTo(input.model, MAX_SHORT, "Модель");
   if (!model) throw Errors.validation("Укажите модель");
 
-  const patch = await buildFields({ ...input, model, kind }, { category, family, kind });
+  const patch = await buildFields({ ...input, model, kind }, { categories, family, kind });
+  const status = stock ? STOCK_STATUS : DEFAULT_MACHINE_STATUS;
 
   try {
     const created = await prisma.$transaction(async (tx) => {
@@ -591,8 +613,8 @@ export async function createMachine(input: CreateMachineInput, actor: Actor): Pr
           model,
           family,
           kind,
-          category,
-          ...(stock ? { status: STOCK_STATUS } : {}),
+          categories,
+          status,
           createdById: actor.id,
         },
         select: { id: true },
@@ -602,17 +624,32 @@ export async function createMachine(input: CreateMachineInput, actor: Actor): Pr
           machineId: machine.id,
           actorId: actor.id,
           kind: "created",
-          toStatus: stock ? STOCK_STATUS : "ACCEPTED",
+          toStatus: status,
         },
+      });
+      // Название снова в ходу — прятать подсказку не за чем (см. MachineModelSuppression).
+      await tx.machineModelSuppression.deleteMany({
+        where: { family, nameLower: model.toLowerCase() },
       });
       return machine;
     });
     return getMachine(created.id, actor);
   } catch (e) {
     if (isUniqueViolation(e)) {
-      throw Errors.validation(duplicateNumberMessage(family, category, input));
+      throw Errors.validation(duplicateNumberMessage(family, categories, input));
     }
     throw e;
+  }
+}
+
+/** Набор категорий проверяется одним местом: и при заведении, и при смене (правила — в домене). */
+function assertCategorySet(categories: readonly MachineCategory[]): void {
+  if (categories.length === 0) throw Errors.validation("Выберите хотя бы одну категорию");
+  if (categories.some((c) => !MACHINE_CATEGORY_LABEL[c])) {
+    throw Errors.validation("Неизвестная категория");
+  }
+  if (!isValidCategorySet(categories)) {
+    throw Errors.validation("«Клиентский» не совмещается с нашими категориями");
   }
 }
 
@@ -622,11 +659,11 @@ export async function createMachine(input: CreateMachineInput, actor: Actor): Pr
  */
 function duplicateNumberMessage(
   family: EquipmentFamily,
-  category: MachineCategory,
+  categories: readonly MachineCategory[],
   input: { ourNumber?: number | null; clientNumber?: number | null },
 ): string {
   const where = EQUIPMENT_FAMILY_LABEL[family].toLowerCase();
-  const scheme = numberSchemeFor(category);
+  const scheme = numberSchemeFor(categories);
   const value = scheme === "OUR" ? input.ourNumber : input.clientNumber;
   const label = formatNumberIn(scheme, value);
   return label
@@ -643,7 +680,7 @@ export type ListParams = {
   /** Вид оборудования внутри раздела. */
   kind?: EquipmentKind;
   /** Готовый фильтр-плитка из сводки. */
-  flag?: "noInvoice1C" | "urgent" | "awaitingDiagnosis" | "staleVerification" | "duePressing";
+  flag?: "urgent" | "awaitingDiagnosis" | "notVerified" | "duePressing";
   q?: string;
   take?: number;
   skip?: number;
@@ -680,12 +717,15 @@ export async function listMachines(params: ListParams, actor: Actor): Promise<Ma
     AND: [
       scopeFilter,
       ...(params.status ? [{ status: params.status, kind: { notIn: stockKinds } }] : []),
-      ...(params.category ? [{ category: params.category, kind: { notIn: stockKinds } }] : []),
+      // Категории — список, поэтому фильтр «has»: станок с двумя категориями показывается в обеих.
+      ...(params.category
+        ? [{ categories: { has: params.category }, kind: { notIn: stockKinds } }]
+        : []),
       ...(params.kind ? [{ kind: params.kind }] : []),
     ],
   };
 
-  const [rows, flagRows, locationRows] = await Promise.all([
+  const [rows, flagRows] = await Promise.all([
     prisma.machine.findMany({
       where,
       select: listSelect,
@@ -708,12 +748,6 @@ export async function listMachines(params: ListParams, actor: Actor): Promise<Ma
           ],
     }),
     prisma.machine.findMany({ where: { family }, select: flagSelect }),
-    prisma.machine.findMany({
-      where: { family, location: { not: null } },
-      select: { location: true },
-      distinct: ["location"],
-      orderBy: { location: "asc" },
-    }),
   ]);
 
   const summary = summarize(flagRows as FlaggableMachine[], new Date());
@@ -750,9 +784,6 @@ export async function listMachines(params: ListParams, actor: Actor): Promise<Ma
   return {
     machines: page,
     summary,
-    locations: locationRows
-      .map((r) => r.location)
-      .filter((v): v is string => typeof v === "string" && v.length > 0),
     hasMore: scope === "archive" ? skip + page.length < total : false,
     total,
   };
@@ -828,7 +859,7 @@ export async function editMachine(
   if (!before) throw Errors.notFound();
 
   const patch = await buildFields(input, {
-    category: before.category,
+    categories: before.categories,
     family: before.family,
     kind: before.kind,
   });
@@ -856,11 +887,17 @@ export async function editMachine(
       await tx.machineEvent.create({
         data: { machineId: id, actorId: actor.id, kind: "edit", changes },
       });
+      // Переименовали карточку в это название — значит оно снова в ходу, подсказку возвращаем.
+      if (typeof patch.model === "string") {
+        await tx.machineModelSuppression.deleteMany({
+          where: { family: before.family, nameLower: patch.model.toLowerCase() },
+        });
+      }
     });
   } catch (e) {
     if (isUniqueViolation(e)) {
       throw Errors.validation(
-        duplicateNumberMessage(before.family, before.category, {
+        duplicateNumberMessage(before.family, before.categories, {
           ourNumber: patch.ourNumber as number | null,
           clientNumber: patch.clientNumber as number | null,
         }),
@@ -872,18 +909,24 @@ export async function editMachine(
 }
 
 /**
- * Совместимость нового состояния с категорией — общая проверка changeStatus и sendShopTask.
- * Своё железо может переехать в подходящую категорию само (`categoryFollowingStatus`), и тогда
+ * Совместимость нового состояния с категориями — общая проверка changeStatus и sendShopTask.
+ * Своё железо может дописать себе подходящую категорию само (`categoriesFollowingStatus`), и тогда
  * несовместимости нет; запрет остаётся там, где он про суть: чужой станок не продают и не сдают.
  */
-function assertStatusAllowed(category: MachineCategory, status: MachineStatus): void {
+function assertStatusAllowed(
+  categories: readonly MachineCategory[],
+  status: MachineStatus,
+): void {
   if (!MACHINE_STATUS_LABEL[status]) throw Errors.validation("Неизвестное состояние");
+  if (isRetiredStatus(status)) {
+    throw Errors.validation(`Состояние «${MACHINE_STATUS_LABEL[status]}» больше не используется`);
+  }
   if (
-    !isStatusAllowedForCategory(category, status) &&
-    categoryFollowingStatus(category, status) === null
+    !isStatusAllowedForCategories(categories, status) &&
+    categoriesFollowingStatus(categories, status) === null
   ) {
     throw Errors.machineStatusCategory(
-      `«${MACHINE_STATUS_LABEL[status]}» не подходит категории «${MACHINE_CATEGORY_LABEL[category]}»`,
+      `«${MACHINE_STATUS_LABEL[status]}» не подходит категориям «${categoriesLabel(categories)}»`,
     );
   }
 }
@@ -894,21 +937,30 @@ function assertStatusAllowed(category: MachineCategory, status: MachineStatus): 
  */
 async function applyStatusChangeTx(
   tx: Prisma.TransactionClient,
-  before: { id: string; status: MachineStatus; category?: MachineCategory },
+  before: { id: string; status: MachineStatus; categories?: MachineCategory[] },
   toStatus: MachineStatus,
   reason: string | null,
   actorId: string,
 ): Promise<void> {
-  // Своё железо переезжает между «на продажу» и «арендный» вслед за состоянием: на площадке
-  // «продали арендный» — одно событие, а не смена категории плюс смена состояния.
-  const nextCategory =
-    before.category === undefined ? null : categoryFollowingStatus(before.category, toStatus);
+  // Своё железо дописывает себе подходящую категорию вслед за состоянием: на площадке «продали
+  // арендный» — одно событие, а не смена категорий плюс смена состояния. Прежняя категория при
+  // этом СОХРАНЯЕТСЯ (20.08.2026): станок вернётся из аренды и снова будет продаваться.
+  const nextCategories =
+    before.categories === undefined
+      ? null
+      : categoriesFollowingStatus(before.categories, toStatus);
+
+  // Вернулся из аренды — диагностику и сверку нужно подтверждать заново: станок был у клиента,
+  // и что с ним там стало, на площадке никто не видел. Ровно этот сброс зажигает баннер
+  // обязательных отметок в карточке (src/domain/machine-flags.ts).
+  const backFromRent = before.status === "RENTED" && !isArchivedStatus(toStatus);
 
   await tx.machine.update({
     where: { id: before.id },
     data: {
       status: toStatus,
-      ...(nextCategory ? { category: nextCategory } : {}),
+      ...(nextCategories ? { categories: nextCategories } : {}),
+      ...(backFromRent ? { diagnosedAt: null, lastVerifiedAt: null } : {}),
       // Причина аннулирования живёт на карточке (её показываем в архиве); при выходе из VOIDED — снимаем.
       voidReason: toStatus === "VOIDED" ? reason : null,
     },
@@ -923,9 +975,9 @@ async function applyStatusChangeTx(
       comment: reason,
     },
   });
-  // Смена категории — отдельная строка журнала: иначе «почему станок стал арендным» пришлось бы
+  // Смена категорий — отдельная строка журнала: иначе «почему станок стал арендным» пришлось бы
   // выводить из состояния, а журнал должен читаться как история.
-  if (nextCategory && before.category) {
+  if (nextCategories && before.categories) {
     await tx.machineEvent.create({
       data: {
         machineId: before.id,
@@ -933,12 +985,22 @@ async function applyStatusChangeTx(
         kind: "edit",
         changes: [
           {
-            field: "category",
-            label: "Категория",
-            from: MACHINE_CATEGORY_LABEL[before.category],
-            to: MACHINE_CATEGORY_LABEL[nextCategory],
+            field: "categories",
+            label: "Категории",
+            from: categoriesLabel(before.categories),
+            to: categoriesLabel(nextCategories),
           },
         ],
+      },
+    });
+  }
+  if (backFromRent) {
+    await tx.machineEvent.create({
+      data: {
+        machineId: before.id,
+        actorId,
+        kind: "comment",
+        comment: "Вернулся из аренды — диагностику и сверку нужно отметить заново",
       },
     });
   }
@@ -957,14 +1019,14 @@ export async function changeStatus(
   assertMachineAccess(actor);
   const before = await prisma.machine.findUnique({
     where: { id },
-    select: { id: true, status: true, category: true, kind: true },
+    select: { id: true, status: true, categories: true, kind: true },
   });
   if (!before) throw Errors.notFound();
   if (isStockKind(before.kind)) throw Errors.validation("У складских остатков состояния нет");
   if (!MACHINE_STATUS_LABEL[input.status]) throw Errors.validation("Неизвестное состояние");
   if (before.status === input.status) return getMachine(id, actor);
 
-  assertStatusAllowed(before.category, input.status);
+  assertStatusAllowed(before.categories, input.status);
   const reason = trimTo(input.reason, MAX_SHORT, "Причина");
   if (reasonRequiredFor(input.status) && !reason) {
     throw Errors.reasonRequired();
@@ -1000,7 +1062,7 @@ export async function changeStatus(
       }
       await applyStatusChangeTx(
         tx,
-        { id: link.partId, status: link.partStatus, category: link.partCategory },
+        { id: link.partId, status: link.partStatus, categories: link.partCategories },
         input.status,
         reason,
         actor.id,
@@ -1018,7 +1080,7 @@ export async function changeStatus(
   return getMachine(id, actor);
 }
 
-type NumberedRef = { category: MachineCategory; ourNumber: number | null; clientNumber: number | null };
+type NumberedRef = { ourNumber: number | null; clientNumber: number | null };
 
 /** Подпись станка в комментариях комплекта: его номер или нейтральное «станка». */
 function headLabel(head: NumberedRef | null): string {
@@ -1036,8 +1098,8 @@ type TransferLink = {
   qty: number;
   stock: boolean;
   partStatus: MachineStatus;
-  /** Категория комплектующей — чтобы она переехала вслед за состоянием так же, как головной. */
-  partCategory?: MachineCategory;
+  /** Категории комплектующей — чтобы она переехала вслед за состоянием так же, как головной. */
+  partCategories?: MachineCategory[];
   head: NumberedRef;
 };
 
@@ -1052,7 +1114,6 @@ async function loadKitForTransfer(headId: string, status: MachineStatus): Promis
     select: {
       ourNumber: true,
       clientNumber: true,
-      category: true,
       kitParts: {
         where: { consumedAt: null },
         select: {
@@ -1065,7 +1126,7 @@ async function loadKitForTransfer(headId: string, status: MachineStatus): Promis
               kind: true,
               model: true,
               status: true,
-              category: true,
+              categories: true,
             },
           },
         },
@@ -1092,12 +1153,12 @@ async function loadKitForTransfer(headId: string, status: MachineStatus): Promis
     // Своя комплектующая переезжает в подходящую категорию вместе с головным (комплект продают
     // целиком). Чужая — нет: клиентский нож нельзя продать вместе с нашим станком.
     if (
-      !isStatusAllowedForCategory(link.part.category, status) &&
-      categoryFollowingStatus(link.part.category, status) === null
+      !isStatusAllowedForCategories(link.part.categories, status) &&
+      categoriesFollowingStatus(link.part.categories, status) === null
     ) {
       const name = formatMachineNumber(link.part) ?? link.part.model;
       throw Errors.machineStatusCategory(
-        `«${MACHINE_STATUS_LABEL[status]}» не подходит комплектующей ${name} (${MACHINE_CATEGORY_LABEL[link.part.category]}) — смените её категорию или снимите галочку`,
+        `«${MACHINE_STATUS_LABEL[status]}» не подходит комплектующей ${name} (${categoriesLabel(link.part.categories)}) — смените её категории или снимите галочку`,
       );
     }
     out.push({
@@ -1105,7 +1166,7 @@ async function loadKitForTransfer(headId: string, status: MachineStatus): Promis
       qty: link.qty,
       stock: false,
       partStatus: link.part.status,
-      partCategory: link.part.category,
+      partCategories: link.part.categories,
       head,
     });
   }
@@ -1137,7 +1198,6 @@ export async function attachKitPart(
         quantity: true,
         ourNumber: true,
         clientNumber: true,
-        category: true,
       },
     }),
     prisma.machine.findUnique({
@@ -1149,7 +1209,6 @@ export async function attachKitPart(
         quantity: true,
         ourNumber: true,
         clientNumber: true,
-        category: true,
         model: true,
       },
     }),
@@ -1206,8 +1265,8 @@ export async function detachKitPart(
     where: { headId_partId: { headId, partId } },
     select: {
       consumedAt: true,
-      head: { select: { ourNumber: true, clientNumber: true, category: true } },
-      part: { select: { ourNumber: true, clientNumber: true, category: true, model: true } },
+      head: { select: { ourNumber: true, clientNumber: true } },
+      part: { select: { ourNumber: true, clientNumber: true, model: true } },
     },
   });
   if (!link) throw Errors.notFound();
@@ -1250,7 +1309,6 @@ export async function listKitCandidates(
     id: string;
     ourNumber: number | null;
     clientNumber: number | null;
-    category: MachineCategory;
     kind: EquipmentKind;
     model: string;
     free: number;
@@ -1274,7 +1332,6 @@ export async function listKitCandidates(
       id: true,
       ourNumber: true,
       clientNumber: true,
-      category: true,
       kind: true,
       model: true,
       quantity: true,
@@ -1295,7 +1352,6 @@ export async function listKitCandidates(
         id: r.id,
         ourNumber: r.ourNumber,
         clientNumber: r.clientNumber,
-        category: r.category,
         kind: r.kind,
         model: r.model,
         free,
@@ -1304,10 +1360,14 @@ export async function listKitCandidates(
     .filter((r) => r.free > 0);
 }
 
-/** Смена категории. Текущее состояние обязано остаться совместимым (нельзя «в аренде» у продажного). */
-export async function changeCategory(
+/**
+ * Смена набора категорий (20.08.2026: галочки вместо одного выбора). Приходит ПОЛНЫЙ набор, а не
+ * «включить/выключить одну»: так проверка комбинации и перенумерация делаются один раз и атомарно,
+ * без промежуточных состояний вроде «ни одной категории» между двумя запросами.
+ */
+export async function changeCategories(
   id: string,
-  input: { category: MachineCategory },
+  input: { categories: MachineCategory[] },
   actor: Actor,
 ): Promise<MachineDetail> {
   assertMachineAccess(actor);
@@ -1316,7 +1376,7 @@ export async function changeCategory(
     select: {
       id: true,
       status: true,
-      category: true,
+      categories: true,
       ourNumber: true,
       clientNumber: true,
       kind: true,
@@ -1324,32 +1384,35 @@ export async function changeCategory(
     },
   });
   if (!before) throw Errors.notFound();
-  if (!MACHINE_CATEGORY_LABEL[input.category]) throw Errors.validation("Неизвестная категория");
-  if (isStockKind(before.kind)) throw Errors.validation("У складских остатков категории нет");
-  if (before.category === input.category) return getMachine(id, actor);
+  if (isStockKind(before.kind)) throw Errors.validation("У складских остатков категорий нет");
 
-  if (!isStatusAllowedForCategory(input.category, before.status)) {
+  const next = normalizeCategories(input.categories ?? []);
+  assertCategorySet(next);
+  const current = normalizeCategories(before.categories);
+  if (next.join("|") === current.join("|")) return getMachine(id, actor);
+
+  if (!isStatusAllowedForCategories(next, before.status)) {
     throw Errors.machineStatusCategory(
-      `Сначала смените состояние: «${MACHINE_STATUS_LABEL[before.status]}» не бывает у категории «${MACHINE_CATEGORY_LABEL[input.category]}»`,
+      `Сначала смените состояние: «${MACHINE_STATUS_LABEL[before.status]}» не бывает у категорий «${categoriesLabel(next)}»`,
     );
   }
 
-  // Номер следует за категорией (решение Артёма 15.08.2026, вечер): станок переехал из своего парка
+  // Номер следует за категориями (решение Артёма 15.08.2026, вечер): станок переехал из своего парка
   // в клиентские — «77-N» с него снимается, и он получает следующий свободный «К-N». Внутри одной
-  // схемы (продажа ↔ аренда) номер остаётся на месте: это то же железо того же парка.
-  const renumber = await planRenumber(before, input.category);
+  // схемы (продажа ↔ аренда, в том числе обе сразу) номер остаётся: это то же железо того же парка.
+  const renumber = await planRenumber(before, next);
 
   const names = new Map<string, string>();
   const changes = buildChanges(
-    { category: before.category, ourNumber: before.ourNumber, clientNumber: before.clientNumber },
-    { category: input.category, ...renumber },
+    { categories: current, ourNumber: before.ourNumber, clientNumber: before.clientNumber },
+    { categories: next, ...renumber },
     names,
   );
 
   await prisma.$transaction(async (tx) => {
     await tx.machine.update({
       where: { id },
-      data: { category: input.category, ...renumber },
+      data: { categories: next, ...renumber },
     });
     await tx.machineEvent.create({
       data: { machineId: id, actorId: actor.id, kind: "edit", changes },
@@ -1368,13 +1431,13 @@ export async function changeCategory(
 async function planRenumber(
   before: {
     family: EquipmentFamily;
-    category: MachineCategory;
+    categories: MachineCategory[];
     ourNumber: number | null;
     clientNumber: number | null;
   },
-  next: MachineCategory,
+  next: readonly MachineCategory[],
 ): Promise<{ ourNumber?: number | null; clientNumber?: number | null }> {
-  const from = numberSchemeFor(before.category);
+  const from = numberSchemeFor(before.categories);
   const to = numberSchemeFor(next);
   if (from === to) return {};
 
@@ -1436,7 +1499,7 @@ export async function sendShopTask(
   }
 
   const toInRepair = input.toInRepair === true && before.status !== "IN_REPAIR";
-  if (toInRepair) assertStatusAllowed(before.category, "IN_REPAIR");
+  if (toInRepair) assertStatusAllowed(before.categories, "IN_REPAIR");
 
   await prisma.$transaction(async (tx) => {
     await tx.machineEvent.create({
@@ -1514,6 +1577,58 @@ export async function listKnownModels(
     orderBy: { model: "asc" },
   });
   return rows.map((r) => r.model).filter((m) => m.trim().length > 0);
+}
+
+/**
+ * Скрытые подсказки моделей раздела (20.08.2026). Возвращаем в нижнем регистре: сравнение имён
+ * везде регистронезависимое, и приводить их к одному виду должен один слой, а не каждый вызов.
+ */
+export async function listSuppressedModels(
+  actor: Actor,
+  family: EquipmentFamily = "BENDER",
+): Promise<string[]> {
+  assertMachineAccess(actor);
+  const rows = await prisma.machineModelSuppression.findMany({
+    where: { family },
+    select: { nameLower: true },
+  });
+  return rows.map((r) => r.nameLower);
+}
+
+/**
+ * Скрыть подсказку модели. Идемпотентно (upsert): повторный крестик по той же строке — не ошибка,
+ * человек мог не заметить, что подсказка уже убрана на другом устройстве.
+ *
+ * Карточки с этим названием НЕ меняются: прячется подсказка, а не данные.
+ */
+export async function suppressModel(
+  actor: Actor,
+  family: EquipmentFamily,
+  name: string,
+): Promise<void> {
+  assertMachineAccess(actor);
+  const value = trimTo(name, MAX_SHORT, "Модель");
+  if (!value) throw Errors.validation("Укажите модель");
+  const nameLower = value.toLowerCase();
+  await prisma.machineModelSuppression.upsert({
+    where: { family_nameLower: { family, nameLower } },
+    create: { family, nameLower, createdById: actor.id },
+    update: {},
+  });
+}
+
+/** Вернуть скрытую подсказку. Тоже идемпотентно: снимать нечего — значит, уже как надо. */
+export async function unsuppressModel(
+  actor: Actor,
+  family: EquipmentFamily,
+  name: string,
+): Promise<void> {
+  assertMachineAccess(actor);
+  const value = trimTo(name, MAX_SHORT, "Модель");
+  if (!value) throw Errors.validation("Укажите модель");
+  await prisma.machineModelSuppression.deleteMany({
+    where: { family, nameLower: value.toLowerCase() },
+  });
 }
 
 export { isArchivedStatus };

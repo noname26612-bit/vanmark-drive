@@ -4,6 +4,9 @@ import { test, expect, type Page } from "@playwright/test";
 // было в картотеке раньше: раздельная нумерация, складские остатки количеством и комплект, который
 // уезжает вместе с головным станком.
 //
+// Правка 20.08.2026: категории приходят списком, «Принят» выведен из оборота, порядок и
+// группировка переключаются строками с галочкой (выпадающих списков в разделе больше нет).
+//
 // Тесты делят общую dev-БД, поэтому каждая карточка помечается уникальной моделью и ищется по ней.
 const PASSWORD = process.env.SEED_PASSWORD ?? "vanmark123";
 
@@ -52,14 +55,14 @@ test("нумерация 77-N своя в каждом разделе: один 
   const bender = await create(page, {
     family: "BENDER",
     kind: "MACHINE",
-    category: "OUR_SALE",
+    categories: ["OUR_SALE"],
     model: unique("Листогиб-нумерация"),
     ourNumber: number,
   });
   const seamer = await create(page, {
     family: "SEAMER",
     kind: "SEAMER",
-    category: "OUR_SALE",
+    categories: ["OUR_SALE"],
     model: unique("Фальц-нумерация"),
     ourNumber: number,
   });
@@ -72,7 +75,7 @@ test("нумерация 77-N своя в каждом разделе: один 
     data: {
       family: "SEAMER",
       kind: "SEAMER",
-      category: "OUR_SALE",
+      categories: ["OUR_SALE"],
       model: unique("Фальц-дубль"),
       ourNumber: number,
     },
@@ -84,7 +87,7 @@ test("нумерация 77-N своя в каждом разделе: один 
 test("разделы не смешиваются: подсказка номера и список — каждый про своё", async ({ page }) => {
   await login(page, "maxim");
   const model = unique("Фальц-раздел");
-  await create(page, { family: "SEAMER", kind: "SEAMER", category: "OUR_SALE", model });
+  await create(page, { family: "SEAMER", kind: "SEAMER", categories: ["OUR_SALE"], model });
 
   const benderList = await (await page.request.get("/api/machines?family=BENDER")).json();
   const seamerList = await (await page.request.get("/api/machines?family=SEAMER")).json();
@@ -99,7 +102,7 @@ test("разделы не смешиваются: подсказка номер�
   await create(page, {
     family: "SEAMER",
     kind: "SEAMER",
-    category: "OUR_SALE",
+    categories: ["OUR_SALE"],
     model: unique("Фальц-подсказка"),
     ourNumber: seamerBefore,
   });
@@ -125,7 +128,7 @@ test("складской остаток: размотчик ведётся ко�
 
   // Категории — тоже нет.
   const category = await page.request.patch(`/api/machines/${stock.id}`, {
-    data: { op: "category", category: "CLIENT" },
+    data: { op: "category", categories: ["CLIENT"] },
   });
   expect(category.status()).toBe(422);
 
@@ -136,6 +139,39 @@ test("складской остаток: размотчик ведётся ко�
   await expect(row).toContainText("4 шт");
 });
 
+test("складской остаток заводится ФОРМОЙ: ни категорий, ни номера у него не спрашивают", async ({
+  page,
+}) => {
+  // Регрессия 20.08.2026: форма прятала у складского вида категории и номер, но продолжала слать
+  // их в теле — сервер ставит складским свою категорию принудительно и отвечал «Номер «77-N» —
+  // для категорий «Наш на продажу»». Размотчик не заводился вообще, а человек видел ошибку про
+  // номер, которого не вводил.
+  await login(page, "maxim");
+  const model = unique("Размотчик-форма");
+
+  await page.goto("/seamers");
+  await page.getByTestId("machine-create").click();
+  await page.getByTestId("machine-kind-UNCOILER").click();
+  await page.getByTestId("machine-model").fill(model);
+  await page.getByTestId("machine-quantity").fill("5");
+  await page.getByTestId("machine-save").click();
+
+  // Модалка закрылась — значит карточка сохранилась, а не упала на валидации номера.
+  await expect(page.getByTestId("machine-save")).toBeHidden();
+
+  const list = await page.request.get("/api/machines?family=SEAMER&scope=active&kind=UNCOILER");
+  const created = (await list.json()).data.machines.find(
+    (m: { model: string }) => m.model === model,
+  );
+  expect(created).toBeTruthy();
+  expect(created.quantity).toBe(5);
+  // Категорию и состояние складским ставит сервер, номер не выдаётся вовсе.
+  expect(created.categories).toEqual(["OUR_SALE"]);
+  expect(created.status).toBe("READY");
+  expect(created.ourNumber).toBeNull();
+  expect(created.clientNumber).toBeNull();
+});
+
 test("комплект: размотчик резервируется под фальцепрокатник, а продажа списывает его со склада", async ({
   page,
 }) => {
@@ -143,7 +179,7 @@ test("комплект: размотчик резервируется под ф�
   const seamer = await create(page, {
     family: "SEAMER",
     kind: "SEAMER",
-    category: "OUR_SALE",
+    categories: ["OUR_SALE"],
     model: unique("Фальц-комплект"),
   });
   const stock = await create(page, {
@@ -186,6 +222,7 @@ test("комплект: размотчик резервируется под ф�
   expect(afterSale.freeQuantity).toBe(3);
 
   // Возврат станка из архива и повторная продажа остаток второй раз не трогают: связь списана.
+  // (READY, а не «Принят»: последний выведен из оборота 20.08.2026.)
   await page.request.patch(`/api/machines/${seamer.id}`, { data: { op: "status", status: "READY" } });
   await page.request.patch(`/api/machines/${seamer.id}`, {
     data: { op: "status", status: "SOLD", withKit: true },
@@ -201,19 +238,19 @@ test("комплект листогиба: нож переходит в ремо
   const bender = await create(page, {
     family: "BENDER",
     kind: "MACHINE",
-    category: "OUR_SALE",
+    categories: ["OUR_SALE"],
     model: unique("Листогиб-комплект"),
   });
   const other = await create(page, {
     family: "BENDER",
     kind: "MACHINE",
-    category: "OUR_SALE",
+    categories: ["OUR_SALE"],
     model: unique("Листогиб-второй"),
   });
   const knife = await create(page, {
     family: "BENDER",
     kind: "ROLLER_KNIFE",
-    category: "OUR_SALE",
+    categories: ["OUR_SALE"],
     model: unique("Нож-комплект"),
   });
 
@@ -249,7 +286,7 @@ test("комплект собирается только внутри своег
   const bender = await create(page, {
     family: "BENDER",
     kind: "MACHINE",
-    category: "OUR_SALE",
+    categories: ["OUR_SALE"],
     model: unique("Листогиб-чужой"),
   });
   const stock = await create(page, {
@@ -279,7 +316,7 @@ test("список не прыгает после правки: порядок �
       await create(page, {
         family: "SEAMER",
         kind: "SEAMER",
-        category: "OUR_SALE",
+        categories: ["OUR_SALE"],
         model: `${tag}-${i}`,
         ourNumber: base + i,
       }),
@@ -295,18 +332,19 @@ test("список не прыгает после правки: порядок �
 
   expect(await orderOf()).toEqual([`${tag}-0`, `${tag}-1`, `${tag}-2`]);
 
-  // Правим среднюю — раньше она улетала наверх (сортировка по updatedAt).
+  // Правим среднюю — раньше она улетала наверх (сортировка по updatedAt). «Место на площадке» из
+  // карточки убрали 20.08.2026, поэтому правим оставшееся поле.
   await page.request.patch(`/api/machines/${made[1].id}`, {
-    data: { op: "edit", location: "Ангар 3" },
+    data: { op: "edit", metalThickness: "0,7 мм" },
   });
   expect(await orderOf()).toEqual([`${tag}-0`, `${tag}-1`, `${tag}-2`]);
 
-  // Переключатель направления переворачивает список — и это единственный способ сменить порядок.
+  // Порядок переключается строкой «Сначала большие» — выпадашки убраны 20.08.2026.
   await page.goto("/seamers");
   await page.getByTestId("machine-search").fill(tag);
   const rows = page.getByTestId("machine-list").locator("li");
   await expect(rows.first()).toContainText(`${tag}-0`);
-  await page.getByTestId("machine-direction").click();
+  await page.getByTestId("machine-direction-desc").click();
   await expect(rows.first()).toContainText(`${tag}-2`);
 });
 
@@ -316,17 +354,52 @@ test("группировка по состоянию раскладывает с
   const ready = await create(page, {
     family: "SEAMER",
     kind: "SEAMER",
-    category: "OUR_SALE",
+    categories: ["OUR_SALE"],
     model: `${tag}-готов`,
   });
-  await create(page, { family: "SEAMER", kind: "SEAMER", category: "OUR_SALE", model: `${tag}-принят` });
+  // Новая карточка заводится в «Требует ремонта»: «Принят» выведен из оборота 20.08.2026.
+  await create(page, {
+    family: "SEAMER",
+    kind: "SEAMER",
+    categories: ["OUR_SALE"],
+    model: `${tag}-ремонт`,
+  });
   await page.request.patch(`/api/machines/${ready.id}`, { data: { op: "status", status: "READY" } });
 
   await page.goto("/seamers");
   await page.getByTestId("machine-search").fill(tag);
-  await page.getByTestId("machine-group-by").selectOption("status");
+  await page.getByTestId("machine-group-status").click();
 
   const list = page.getByTestId("machine-list");
   await expect(list.getByRole("heading", { name: /Готов/ })).toBeVisible();
-  await expect(list.getByRole("heading", { name: /Принят/ })).toBeVisible();
+  await expect(list.getByRole("heading", { name: /Требует ремонта/ })).toBeVisible();
+});
+
+test("комплектация фальцепрокатника набирается галочками своего раздела", async ({ page }) => {
+  await login(page, "maxim");
+  const model = unique("Фальц-комплектация");
+
+  await page.goto("/seamers");
+  await page.getByTestId("machine-create").click();
+  // Пункты — свои у каждого раздела: у фальцепрокатника это размотчик и частотник.
+  const config = page.getByTestId("machine-configuration");
+  await expect(config).toContainText("Размотчик");
+  await expect(config).toContainText("Частотник");
+
+  await page.getByTestId("machine-model").fill(model);
+  await page.getByTestId("machine-config-1").check(); // Частотник
+  await page.getByTestId("machine-config-custom").fill("длинный стол");
+  await page.getByTestId("machine-save").click();
+
+  const row = page.getByTestId("machine-list").locator("li").filter({ hasText: model });
+  await expect(row).toHaveCount(1);
+
+  const list = await (await page.request.get("/api/machines?family=SEAMER")).json();
+  const created = (list.data.machines as { id: string; model: string }[]).find(
+    (m) => m.model === model,
+  );
+  expect(created, "карточка должна быть в разделе").toBeTruthy();
+  await page.goto(`/seamers/${created!.id}`);
+  // В БД это одна строка: пункт в каноническом виде, «своё» — в хвосте.
+  await expect(page.getByText("Частотник, длинный стол")).toBeVisible();
 });

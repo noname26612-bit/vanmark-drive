@@ -4,6 +4,7 @@ import { requireMachineUser, errorResponse, readJson, idempotencyKey, occurredAt
 import { createMachine, listMachines } from "@/domain/machine-service";
 import { withIdempotency } from "@/domain/idempotency";
 import {
+  parseCategories,
   parseCategory,
   parseEquipmentKind,
   parseFamily,
@@ -12,7 +13,6 @@ import {
   parseMachineFields,
   parseMachineStatus,
 } from "@/lib/machine-input";
-import type { MachineCategory } from "@/generated/prisma/enums";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,7 +44,7 @@ export async function GET(req: Request) {
   }
 }
 
-// POST /api/machines — завести станок. Обязательны только категория и модель (PRD §16.4).
+// POST /api/machines — завести станок. Обязательны только категории и модель (PRD §16.4).
 // Idempotency-Key защищает от двойного нажатия и от повтора при плохой связи на площадке:
 // иначе один станок заводился бы дважды.
 export async function POST(req: Request) {
@@ -52,14 +52,15 @@ export async function POST(req: Request) {
     const user = await requireMachineUser();
     const body = await readJson(req);
     const family = parseFamily(body.family);
-    const category = parseCategory(body.category);
+    const categories = parseCategories(body.categories) ?? [];
     const kind = parseEquipmentKind(body.kind);
-    // Категорию требует домен — он же знает, что складским позициям она не нужна.
+    // Непустоту набора и допустимость комбинации требует домен — он же знает, что складским
+    // позициям категории не нужны и ставит их сам.
     const machine = await withIdempotency(
       idempotencyKey(req),
       user,
       "machine-create",
-      () => createMachine({ ...parseMachineFields(body), category: category as MachineCategory, family, kind }, user),
+      () => createMachine({ ...parseMachineFields(body), categories, family, kind }, user),
       occurredAt(req),
     );
     return NextResponse.json(ok(machine), { status: 201 });
