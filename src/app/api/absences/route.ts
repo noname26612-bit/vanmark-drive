@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireDispatcher, requireTaskManager, errorResponse, readJson } from "@/lib/api-route";
+import { requireTeamManager, requireTaskManager, errorResponse, readJson } from "@/lib/api-route";
 import { listAbsencesInRange, createAbsence } from "@/domain/absence-service";
 import { Errors } from "@/domain/errors";
 
@@ -8,7 +8,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // GET /api/absences?from=YYYY-MM-DD&to=YYYY-MM-DD — отпуска/больничные в период. Просмотр — всем,
-// кто ведёт заявки (без этого не спланируешь неделю); заводит и удаляет отсутствия только Д/А.
+// кто ведёт заявки (без этого не спланируешь неделю); заводят и убирают отсутствия те, кто ведёт
+// коллектив (Д/А/С, 21.08.2026 — вкладка «Команда»).
 export async function GET(req: Request) {
   try {
     await requireTaskManager();
@@ -22,12 +23,12 @@ export async function GET(req: Request) {
   }
 }
 
-// POST /api/absences {driverId, dateFrom, dateTo, type, note} — завести отсутствие (№9). Только Д/А.
+// POST /api/absences {driverId, dateFrom, dateTo, type, note} — завести отсутствие (№9). Д/А/С.
 // driverId — за другого; с 18.08.2026 это любой действующий сотрудник компании, не только водитель
 // (вкладка «Команда», PRD §18) — валидация в сервисе. Создавший — из сессии.
 export async function POST(req: Request) {
   try {
-    const user = await requireDispatcher();
+    const user = await requireTeamManager();
     const body = await readJson(req);
     const driverId = typeof body.driverId === "string" ? body.driverId : "";
     const dateFrom = typeof body.dateFrom === "string" ? body.dateFrom : "";

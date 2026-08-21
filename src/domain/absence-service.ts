@@ -1,5 +1,7 @@
 // Доменный сервис отсутствий сотрудника (этап E, №9): отпуск/больничный/прочее на диапазон дат.
-// Заводят админ и диспетчер (гейт requireDispatcher в route). ВАЖНО (исключение из CLAUDE.md §1):
+// Заводят те, кто ведёт коллектив: диспетчер, админ и — с 21.08.2026 — менеджер-сервисник
+// (isTeamManagerRole в team-access.ts; отсутствия — часть вкладки «Команда», а не денежный контур).
+// ВАЖНО (исключение из CLAUDE.md §1):
 // отпуск ставят ЗА ДРУГОГО — driverId приходит в теле и валидируется в сервисе, а не берётся
 // из сессии. Личность создавшего (createdById) — из сессии.
 //
@@ -11,9 +13,10 @@
 // или цехового сотрудника на их расчёты не влияет.
 import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
-import type { AbsenceType } from "@/generated/prisma/enums";
+import { assertTeamManager } from "./team-access";
+import type { AbsenceType, Role } from "@/generated/prisma/enums";
 
-export type Actor = { id: string; role: string };
+export type Actor = { id: string; role: Role };
 
 export type AbsenceView = {
   id: string;
@@ -97,6 +100,7 @@ export async function createAbsence(
   input: { driverId: string; dateFrom: string; dateTo: string; type?: string; note?: string | null },
   actor: Actor,
 ): Promise<AbsenceView> {
+  assertTeamManager(actor);
   const from = parseDate(input.dateFrom);
   const to = parseDate(input.dateTo);
   if (from > to) throw Errors.validation("Дата начала позже даты окончания");
@@ -124,8 +128,9 @@ export async function createAbsence(
   return toView(created);
 }
 
-/** Удалить отсутствие по id (диспетчер/админ). */
-export async function deleteAbsence(id: string): Promise<void> {
+/** Убрать отсутствие по id. Право — то же, что и на заведение (диспетчер, админ, менеджер-сервисник). */
+export async function deleteAbsence(id: string, actor: Actor): Promise<void> {
+  assertTeamManager(actor);
   const existing = await prisma.driverAbsence.findUnique({ where: { id }, select: { id: true } });
   if (!existing) throw Errors.notFound();
   await prisma.driverAbsence.delete({ where: { id } });

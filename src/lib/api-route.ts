@@ -8,6 +8,7 @@ import { isDispatcherRole } from "@/domain/task-status";
 import { assertMachineAccess, isMachineRole } from "@/domain/machine-access";
 import { hasEquipmentAccess } from "@/domain/users";
 import { isTaskManagerRole } from "@/domain/task-access";
+import { isTeamManagerRole } from "@/domain/team-access";
 import type { Role } from "@/domain/roles";
 
 export type ApiUser = {
@@ -40,6 +41,17 @@ export async function requireDispatcher(): Promise<ApiUser> {
 export async function requireTaskManager(): Promise<ApiUser> {
   const user = await requireApiUser();
   if (!isTaskManagerRole(user.role)) throw Errors.forbidden();
+  return user;
+}
+
+/**
+ * Справочник коллектива и отсутствия — вкладка «Команда» (решение Артёма 21.08.2026): диспетчер,
+ * админ и менеджер-сервисник. Белый список — src/domain/team-access.ts. Не путать с
+ * requireDispatcher: смены, KPI и деньги остались закрытыми.
+ */
+export async function requireTeamManager(): Promise<ApiUser> {
+  const user = await requireApiUser();
+  if (!isTeamManagerRole(user.role)) throw Errors.forbidden();
   return user;
 }
 
