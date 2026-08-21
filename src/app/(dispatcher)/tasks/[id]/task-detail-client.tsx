@@ -15,8 +15,10 @@ import { formatMinutes } from "@/domain/capacity";
 import { PRICING_ENABLED } from "@/lib/features";
 import { isStaffTask } from "@/lib/task-dto";
 import { taskNumberLabel } from "@/lib/task-number";
-import type { DriverDTO, TaskDetailDTO, TaskTypeDTO } from "@/lib/task-dto";
+import type { DriverDTO, TaskDetailDTO, TaskMachineDTO, TaskTypeDTO } from "@/lib/task-dto";
 import type { TaskStatus } from "@/generated/prisma/enums";
+import { TASK_MACHINE_DIRECTION_LABEL } from "@/domain/task-machine-flow";
+import { MACHINE_STATUS_LABEL, formatMachineNumber } from "@/lib/machine-ui";
 import {
   STATUS_LABEL,
   STATUS_BAR,
@@ -67,7 +69,25 @@ const KIND_LABEL: Record<string, string> = {
   worksheet_repriced: "Цена исправлена",
   worksheet_signed: "Акт",
   worksheet_unsigned: "Акт",
+  // Станки заявки (21.08.2026)
+  machine_link: "Станок",
+  machine_unlink: "Станок снят",
+  machine_auto: "Автоматика по станку",
 };
+
+/**
+ * Что сделала автоматика с этим станком. Три состояния, и различать их важно: «сработала»,
+ * «не сработала — смотри историю» и нейтральное «—» для связи, добавленной уже после завершения
+ * (её автоматика не запускает осознанно, и рисовать это ошибкой было бы враньём).
+ */
+function machineAutoLabel(m: TaskMachineDTO, isTerminal: boolean): string {
+  if (m.appliedAt) {
+    return m.appliedStatus
+      ? `автоматика: ${MACHINE_STATUS_LABEL[m.appliedStatus]}`
+      : "автоматика: отработала";
+  }
+  return isTerminal ? "автоматика: не сработала (см. историю)" : "автоматика: —";
+}
 
 // Цвет маркера события в ленте истории (дизайн 24.07.2026, вариант B): по целевому статусу перехода,
 // прочие события (создание, назначение, перенос, комментарий) — нейтральный графит.
@@ -343,6 +363,32 @@ export function TaskDetailClient({
           </Row>
         ) : null}
         {task.equipment ? <Row label="Оборудование">{task.equipment}</Row> : null}
+        {/* Станки из картотеки (21.08.2026, PRD §16.1). Чип — ссылка в свой раздел; после
+            завершения рядом видно, что сделала автоматика. */}
+        {(task.machines ?? []).length > 0 ? (
+          <div className="sm:col-span-2">
+            <Row label="Станки">
+              <span className="flex flex-wrap items-center gap-1.5" data-testid="task-machines">
+                {(task.machines ?? []).map((m) => (
+                  <Link
+                    key={m.machineId}
+                    href={`${m.machine.family === "SEAMER" ? "/seamers" : "/machines"}/${m.machineId}`}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 px-2 py-1 text-sm hover:border-neutral-400"
+                  >
+                    <span className="font-medium text-neutral-900">
+                      {formatMachineNumber(m.machine) ?? m.machine.model}
+                    </span>
+                    <span className="text-neutral-600">{m.machine.model}</span>
+                    <span className="text-xs text-neutral-500">
+                      · {TASK_MACHINE_DIRECTION_LABEL[m.direction].toLowerCase()}
+                    </span>
+                    <span className="text-xs text-neutral-500">· {machineAutoLabel(m, isTerminal)}</span>
+                  </Link>
+                ))}
+              </span>
+            </Row>
+          </div>
+        ) : null}
         {task.invoiceNumber ? <Row label="Счёт">{task.invoiceNumber}</Row> : null}
         <Row label="Дата">{formatDate(task.scheduledDate)}</Row>
         {task.timeFrom || task.timeTo || task.timeNote ? (

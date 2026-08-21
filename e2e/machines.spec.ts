@@ -947,6 +947,71 @@ test("категорий может быть несколько: наш стан
   expect(empty.status()).toBe(422);
 });
 
+test("выставочный станок: эксклюзивная категория, номер 77-N, продажа переселяет категорию", async ({
+  page,
+}) => {
+  await login(page, "maxim");
+  const model = unique("Выставочный");
+  const ourNumber = await nextOurNumber(page);
+  // «Выставочный вариант» — наше железо: номер выдаётся по своей схеме «77-N» (решение Артёма 21.08).
+  const machine = await createMachine(page, { categories: ["SHOWROOM"], model, ourNumber });
+  expect(machine).toMatchObject({ ourNumber, clientNumber: null });
+
+  // Эксклюзивность: с любой другой категорией набор не собирается — сервер отвергает.
+  const bad = await page.request.post("/api/machines", {
+    data: { categories: ["SHOWROOM", "OUR_SALE"], model: `${model}-плохой` },
+  });
+  expect(bad.status()).toBe(422);
+  expect((await bad.json()).error.message).toContain("не совмещается");
+
+  await page.goto(`/machines/${machine.id}`);
+  await expect(page.getByTestId("machine-category-SHOWROOM")).toBeChecked();
+  await expect(page.getByTestId("machine-category-OUR_SALE")).not.toBeChecked();
+
+  // Кнопка «Продан» доступна сразу: выставочный станок — наш, продаётся в одно действие…
+  page.once("dialog", (d) => void d.accept()); // переспрос про уход в архив
+  await page.getByTestId("machine-status-btn-SOLD").click();
+  await expect(page.getByTestId("machine-status-btn-SOLD")).toHaveAttribute("aria-pressed", "true");
+
+  // …а эксклюзивная категория при этом ЗАМЕНЯЕТСЯ на «Наш на продажу», а не дополняется.
+  const after = await page.request.get(`/api/machines/${machine.id}`);
+  expect(after.status()).toBe(200);
+  const detail = (await after.json()).data;
+  expect(detail.status).toBe("SOLD");
+  expect(detail.categories).toEqual(["OUR_SALE"]);
+
+  // Переезд объяснён в журнале — «почему станок перестал быть выставочным» не приходится угадывать.
+  await page.reload();
+  await page.getByTestId("machine-history-toggle").click();
+  await expect(page.getByTestId("machine-events")).toContainText(
+    "Выставочный вариант",
+  );
+  await expect(page.getByTestId("machine-events")).toContainText("Наш на продажу");
+});
+
+test("категория «Под настройку ножей» доступна галочкой и живёт под «Ещё» в счётчиках", async ({
+  page,
+}) => {
+  await login(page, "maxim");
+  const model = unique("Настройканожей");
+  const machine = await createMachine(page, { categories: ["KNIFE_SETUP"], model });
+
+  // Галочка на карточке: клик по обычной категории вытесняет эксклюзивную (правило домена).
+  await page.goto(`/machines/${machine.id}`);
+  await expect(page.getByTestId("machine-category-KNIFE_SETUP")).toBeChecked();
+  await page.getByTestId("machine-category-OUR_RENTAL").click();
+  await expect(page.getByTestId("machine-category-OUR_RENTAL")).toBeChecked();
+  await expect(page.getByTestId("machine-category-KNIFE_SETUP")).not.toBeChecked();
+
+  // В постоянном ряду счётчиков новых категорий нет — они под «Ещё» (постоянный ряд Артём собрал
+  // под ежедневный обзор парка).
+  await page.goto("/machines");
+  const counters = page.getByTestId("counters-more");
+  await expect(page.locator("body")).not.toContainText("Под настройку ножей");
+  await counters.click();
+  await expect(page.locator("body")).toContainText("Под настройку ножей");
+});
+
 test("последнюю галочку категории снять нельзя, а перенумерация идёт только между схемами", async ({
   page,
 }) => {

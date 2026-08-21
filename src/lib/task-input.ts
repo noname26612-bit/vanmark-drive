@@ -4,7 +4,8 @@
 import type { CreateTaskInput } from "@/domain/task-service";
 import type { TaskTypeInput } from "@/domain/task-type-service";
 import { PassStatus, PaymentType, TaskStatus } from "@/generated/prisma/enums";
-import type { TaskKind } from "@/generated/prisma/enums";
+import type { MachineFlow, TaskKind, TaskMachineDirection } from "@/generated/prisma/enums";
+import { MACHINE_FLOWS } from "@/domain/task-machine-flow";
 
 /** Разбор полей типа задачи (справочник админа). */
 export function parseTaskTypeFields(body: Record<string, unknown>): Partial<TaskTypeInput> {
@@ -17,6 +18,10 @@ export function parseTaskTypeFields(body: Record<string, unknown>): Partial<Task
   if (typeof body.sortOrder === "number") out.sortOrder = Math.trunc(body.sortOrder);
   if (typeof body.isActive === "boolean") out.isActive = body.isActive;
   if (typeof body.onSiteMinutes === "number") out.onSiteMinutes = Math.trunc(body.onSiteMinutes);
+  // Автоматика по станку (21.08.2026) — белый список значений enum: из тела приходит что угодно.
+  if (typeof body.machineFlow === "string" && MACHINE_FLOWS.includes(body.machineFlow as MachineFlow)) {
+    out.machineFlow = body.machineFlow as MachineFlow;
+  }
   return out;
 }
 
@@ -48,6 +53,29 @@ const REQUIRED_STRINGS = ["typeId", "title", "address"] as const;
 /** Контур задачи из запроса (белый список — из query и тела приходит что угодно). */
 export function parseTaskKind(v: unknown): TaskKind | undefined {
   return v === "DELIVERY" || v === "STAFF" ? v : undefined;
+}
+
+/**
+ * Станки заявки (21.08.2026, PRD §16.1). Семантика ключа важна: ОТСУТСТВИЕ `machines` в теле
+ * значит «связи не трогать» (иначе любая правка поля из другой формы стирала бы привязки), а
+ * пустой массив — осознанное «снять все».
+ *
+ * Здесь проверяется только форма значения: мусор в массиве отбрасывается, дубли схлопываются,
+ * направление — белым списком. Существование станков, их вид и потолок количества проверяет домен.
+ */
+function parseTaskMachines(
+  v: unknown,
+): { machineId: string; direction: TaskMachineDirection }[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: { machineId: string; direction: TaskMachineDirection }[] = [];
+  for (const item of v) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const machineId = typeof row.machineId === "string" ? row.machineId.trim() : "";
+    if (!machineId || out.some((x) => x.machineId === machineId)) continue;
+    out.push({ machineId, direction: row.direction === "IN" ? "IN" : "OUT" });
+  }
+  return out;
 }
 
 function isPaymentType(v: unknown): v is PaymentType {
@@ -102,6 +130,9 @@ export function parseTaskFields(body: Record<string, unknown>): Partial<CreateTa
     const v = body.estimatedMinutes;
     out.estimatedMinutes = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
   }
+  // Станки заявки (21.08.2026): полный набор целиком, как changeCategories у станка.
+  const machines = parseTaskMachines(body.machines);
+  if (machines) out.machines = machines;
 
   return out as Partial<CreateTaskInput>;
 }

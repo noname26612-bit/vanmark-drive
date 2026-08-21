@@ -34,6 +34,8 @@ import { TypeIcon } from "@/components/type-icon";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import { BackLink } from "@/components/back-link";
 import { PRICING_ENABLED } from "@/lib/features";
+import { TASK_MACHINE_DIRECTION_LABEL } from "@/domain/task-machine-flow";
+import { EQUIPMENT_KIND_SHORT, formatMachineNumber } from "@/lib/machine-ui";
 
 // Подсказка для UI: следующий статус по водительской цепочке. Сервер всё равно проверяет матрицу.
 // Переработка (этап A): цепочка схлопнута — «В работу» (взять) → «Завершить». Из паузы — «Вернуть в работу».
@@ -61,6 +63,10 @@ const KIND_LABEL: Record<string, string> = {
   worksheet_repriced: "Цена исправлена",
   worksheet_signed: "Акт",
   worksheet_unsigned: "Акт",
+  // Станки заявки (21.08.2026)
+  machine_link: "Станок",
+  machine_unlink: "Станок снят",
+  machine_auto: "Автоматика по станку",
 };
 
 type StatusExtra = {
@@ -270,6 +276,9 @@ export function DriverTaskClient({
   // мешать фото диспетчера со своим отчётом водителю незачем.
   const myPhotoUrls = myPhotos.map((a) => `/api/attachments/${a.id}`);
   const refPhotoUrls = refPhotos.map((a) => `/api/attachments/${a.id}`);
+  // Станки заявки (21.08.2026). Читаем с дефолтом: в офлайн-кэше и у клиентов, открытых до
+  // деплоя, поля нет вовсе — как с kind контура (см. taskKindOf).
+  const taskMachines = t.machines ?? [];
   const docs = t.attachments.filter((a) => a.kind === "DOCUMENT");
   const requiresSignedDoc = t.requiresSignedDoc; // требование акта на уровне задачи (этап 11; не блокирует DONE)
   // Ведомость работ + расценка (этап 12) скрыты под флагом PRICING_ENABLED (06.07): процессом пока
@@ -656,6 +665,61 @@ export function DriverTaskClient({
                 <Row label="Описание">{t.description}</Row>
               </div>
             ) : null}
+          </section>
+        ) : null}
+
+        {/* Станок из картотеки (21.08.2026, PRD §16.1): номер, что везём, состав комплекта и фото.
+            Ровно то, что нужно на погрузке — «то ли железо взяли и всё ли к нему». Цены здесь нет
+            и быть не может: деньги водителям не показываются (PRD §13), сервер их не отдаёт вовсе. */}
+        {taskMachines.length > 0 ? (
+          <section className="rounded-xl border border-neutral-200 p-3" data-testid="driver-machines">
+            <p className="text-xs uppercase tracking-wide text-neutral-400">
+              {taskMachines.length > 1 ? "Станки" : "Станок"}
+            </p>
+            <div className="mt-2 flex flex-col gap-3">
+              {taskMachines.map((m) => {
+                const photoUrls = m.machine.attachments.map((a) => `/api/machines/photos/${a.id}`);
+                return (
+                  <div key={m.machineId} className="flex flex-col gap-1.5">
+                    <p className="text-base font-medium text-neutral-900">
+                      {formatMachineNumber(m.machine) ?? "Без номера"} · {m.machine.model}
+                    </p>
+                    <p className="text-sm text-neutral-600">
+                      {TASK_MACHINE_DIRECTION_LABEL[m.direction]}
+                    </p>
+                    {m.machine.kitParts.length > 0 ? (
+                      <ul className="text-sm text-neutral-700">
+                        {m.machine.kitParts.map((p, i) => (
+                          <li key={`${p.part.model}-${i}`}>
+                            + {formatMachineNumber(p.part) ?? EQUIPMENT_KIND_SHORT[p.part.kind]}{" "}
+                            {p.part.model}
+                            {p.qty > 1 ? ` — ${p.qty} шт` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {photoUrls.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {photoUrls.map((url, idx) => (
+                          <button
+                            key={url}
+                            type="button"
+                            onClick={() => setLightbox({ urls: photoUrls, index: idx })}
+                            className="block"
+                          >
+                            <img
+                              src={url}
+                              alt="фото станка"
+                              className="h-20 w-20 rounded-lg object-cover"
+                            />
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
           </section>
         ) : null}
 

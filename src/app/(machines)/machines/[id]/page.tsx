@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { requireEquipmentUser } from "@/lib/session";
 import { getMachine } from "@/domain/machine-service";
 import { DomainError } from "@/domain/errors";
+import { isTaskManagerRole } from "@/domain/task-access";
 import { MachineCardClient } from "./machine-card-client";
 
 export const dynamic = "force-dynamic";
@@ -21,5 +22,9 @@ export default async function MachinePage({ params }: { params: Promise<{ id: st
   });
   if (!machine) notFound();
 
-  return <MachineCardClient id={id} initial={machine} />;
+  // Ссылки на заявки — только тем, кто их ведёт (21.08.2026): раздел заявок закрыт своим белым
+  // списком ролей, и водителю с допуском к оборудованию ссылка вела бы в отказ.
+  return (
+    <MachineCardClient id={id} initial={machine} canOpenTasks={isTaskManagerRole(user.role)} />
+  );
 }

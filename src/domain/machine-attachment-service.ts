@@ -6,10 +6,12 @@
 // раскрываем, как и существование чужой задачи.
 import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
-import { assertMachineAccess } from "./machine-access";
+import { assertMachineAccess, isMachineRole } from "./machine-access";
+import { hasEquipmentAccess } from "./users";
 import { validateUpload, matchesMagic } from "./attachments";
 import { saveUpload, readUpload, deleteUpload } from "@/lib/uploads";
 import type { Actor } from "./machine-service";
+import type { Role } from "@/generated/prisma/enums";
 import type { MachineAttachmentView } from "@/lib/machine-dto";
 
 export type NewMachinePhoto = {
@@ -73,16 +75,54 @@ export async function addMachinePhoto(
   };
 }
 
-/** Файл для раздачи. Доступ — только роли модуля; иначе 404. */
-export async function getMachinePhotoForDownload(attachmentId: string, actor: Actor) {
-  assertMachineAccess(actor);
+/**
+ * Файл для раздачи, с проверкой прав СМОТРЯЩЕГО (21.08.2026).
+ *
+ * До появления связи заявок со станками доступ был чисто ролевым. Теперь водитель видит в телефоне
+ * фото станка, который везёт, — значит и файл ему надо отдать. Путей доступа ровно два, и оба
+ * узкие:
+ *   1) картотека — роль из белого списка ИЛИ персональный флаг equipmentAccess (как везде в модуле);
+ *   2) заявка — станок привязан к АКТИВНОЙ (не архивной) заявке, где смотрящий назначен
+ *      ответственным или напарником. Ничего сверх этого: чужой станок по прямой ссылке не
+ *      открывается, архивная заявка доступа больше не даёт.
+ *
+ * Любой отказ — 404, а не 403 (§6): существование снимка и самого модуля не раскрываем. Порядок
+ * важен — сначала находим вложение, потом проверяем права: разные коды на «нет такого» и «не
+ * твоё» сами по себе отвечали бы на вопрос, существует ли снимок (как в rescheduleTask).
+ */
+export async function getMachinePhotoForViewer(
+  attachmentId: string,
+  viewer: { id: string; role: Role },
+) {
   const att = await prisma.machineAttachment.findUnique({
     where: { id: attachmentId },
-    select: { filePath: true, mimeType: true },
+    select: { filePath: true, mimeType: true, machineId: true },
   });
   if (!att) throw Errors.notFound();
+  if (!(await canViewMachinePhoto(att.machineId, viewer))) throw Errors.notFound();
   const bytes = await readUpload(att.filePath);
   return { bytes, mimeType: att.mimeType };
+}
+
+async function canViewMachinePhoto(
+  machineId: string,
+  viewer: { id: string; role: Role },
+): Promise<boolean> {
+  // Белый список ролей — первым: у штаба лишнего похода в базу нет.
+  if (isMachineRole(viewer.role)) return true;
+  // Флаг читаем ИЗ БД, а не из сессии: отзыв доступа должен действовать сразу (см. api-route.ts).
+  if (await hasEquipmentAccess(viewer.id)) return true;
+  const link = await prisma.taskMachine.findFirst({
+    where: {
+      machineId,
+      task: {
+        archivedAt: null,
+        OR: [{ assigneeId: viewer.id }, { coDriverId: viewer.id }],
+      },
+    },
+    select: { id: true },
+  });
+  return link !== null;
 }
 
 /**

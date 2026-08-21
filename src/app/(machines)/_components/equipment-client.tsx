@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { machineMatches, parseQuery } from "@/lib/machine-search";
 import {
   KINDS_BY_FAMILY,
+  MACHINE_CATEGORIES,
   SELECTABLE_MACHINE_STATUSES,
   headKindOf,
   isArchivedStatus,
@@ -55,6 +56,13 @@ const FLAG_TILES: { key: FlagKey; label: string; hint: string }[] = [
 // потом чужое — так парк и обсуждают. Поэтому это не MACHINE_CATEGORIES, а отдельный список.
 const PRIMARY_CATEGORIES: readonly MachineCategory[] = ["OUR_SALE", "OUR_RENTAL", "CLIENT"];
 const PRIMARY_STATUSES: readonly MachineStatus[] = ["RENTED"];
+
+// Остальные категории («Выставочный вариант», «Под настройку ножей» — 21.08.2026) живут под «Ещё»:
+// постоянный ряд Артём собрал под ежедневный обзор парка, и разбавлять его редкими не надо.
+// Список считается из MACHINE_CATEGORIES — новая категория появится здесь сама.
+const SECONDARY_CATEGORIES: readonly MachineCategory[] = MACHINE_CATEGORIES.filter(
+  (c) => !PRIMARY_CATEGORIES.includes(c),
+);
 
 // Фоновая догрузка фото после создания карточки: статус показываем плашкой, чтобы человек видел,
 // что снимки уезжают, и не думал, что они потерялись.
@@ -265,8 +273,23 @@ export function EquipmentClient({
               }}
             />
           ))}
-          {/* Под «Ещё» — остальные состояния и индикаторы. Выбранный чип показываем всегда, иначе
-              свёрнутая строка молча теряла бы активный фильтр, а список оставался отфильтрованным. */}
+          {/* Под «Ещё» — редкие категории, остальные состояния и индикаторы. Выбранный чип
+              показываем всегда, иначе свёрнутая строка молча теряла бы активный фильтр, а список
+              оставался отфильтрованным. */}
+          {SECONDARY_CATEGORIES.filter((c) => moreCounters || category === c).map((c) => (
+            <SummaryChip
+              key={c}
+              label={MACHINE_CATEGORY_LABEL[c]}
+              value={summary.byCategory[c]}
+              active={category === c && scope === "active"}
+              onClick={() => {
+                switchScope("active");
+                setStatus("");
+                setFlag("");
+                setCategory(category === c ? "" : c);
+              }}
+            />
+          ))}
           {SELECTABLE_MACHINE_STATUSES.filter(
             (s) => !isArchivedStatus(s) && !PRIMARY_STATUSES.includes(s),
           )

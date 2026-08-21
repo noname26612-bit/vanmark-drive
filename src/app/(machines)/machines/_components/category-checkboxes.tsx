@@ -3,11 +3,11 @@
 // Категорий у станка может быть несколько (решение Артёма 20.08.2026: «наш на продажу может быть и
 // арендным»). Выпадашка такое не выражает — здесь строки с галочками, по одной на категорию.
 //
-// Правила совместимости живут в домене (isValidCategorySet): набор не бывает пустым, а «Клиентский»
-// ни с чем не совмещается. Компонент их не проверяет ПОСЛЕ выбора, а не даёт собрать недопустимый
-// набор: клик по клиентской снимает наши, клик по нашей снимает клиентскую, последнюю галочку снять
-// нельзя. Иначе человек упирается в отказ сервера там, где ошибка видна заранее.
-import { MACHINE_CATEGORIES, normalizeCategories } from "@/domain/machine-status";
+// Правила совместимости живут в домене — здесь их НЕТ ни одной копии (21.08.2026): клик считает
+// доменная `toggleCategory` (эксклюзивная категория вытесняет остальные, последнюю галочку снять
+// нельзя). Компонент не проверяет набор ПОСЛЕ выбора, а не даёт собрать недопустимый — иначе
+// человек упирается в отказ сервера там, где ошибка видна заранее.
+import { MACHINE_CATEGORIES, toggleCategory } from "@/domain/machine-status";
 import { MACHINE_CATEGORY_LABEL } from "@/lib/machine-ui";
 import type { MachineCategory } from "@/generated/prisma/enums";
 
@@ -21,16 +21,10 @@ export function CategoryCheckboxes({
   disabled?: boolean;
 }) {
   function toggle(category: MachineCategory) {
-    if (value.includes(category)) {
-      // Пустой набор сервер отвергнет — единственную галочку просто не снимаем.
-      if (value.length === 1) return;
-      onChange(normalizeCategories(value.filter((c) => c !== category)));
-      return;
-    }
-    // «Клиентский» эксклюзивен в обе стороны: включили его — наши уходят, включили нашу — уходит он.
-    const next: MachineCategory[] =
-      category === "CLIENT" ? [category] : [...value.filter((c) => c !== "CLIENT"), category];
-    onChange(normalizeCategories(next));
+    const next = toggleCategory(value, category);
+    // Клик по единственной галочке ничего не меняет — лишний запрос на сервер не шлём.
+    if (next.length === value.length && next.every((c) => value.includes(c))) return;
+    onChange(next);
   }
 
   return (

@@ -189,7 +189,13 @@ describe("machine-flags: счётчики сводки", () => {
     );
     expect(s.total).toBe(4);
     expect(s.archived).toBe(2);
-    expect(s.byCategory).toEqual({ CLIENT: 2, OUR_SALE: 1, OUR_RENTAL: 1 });
+    expect(s.byCategory).toEqual({
+      CLIENT: 2,
+      OUR_SALE: 1,
+      OUR_RENTAL: 1,
+      SHOWROOM: 0,
+      KNIFE_SETUP: 0,
+    });
     expect(s.byStatus.NEEDS_REPAIR).toBe(1);
     expect(s.byStatus.RENTED).toBe(1);
     expect(s.byStatus.RELEASED).toBe(1);
@@ -200,7 +206,13 @@ describe("machine-flags: счётчики сводки", () => {
     // «Наш на продажу» — всё, что можно продать. Один станок правда стоит и там, и там.
     const s = summarize([machine({ categories: BOTH, status: "READY" })], now);
     expect(s.total).toBe(1);
-    expect(s.byCategory).toEqual({ CLIENT: 0, OUR_SALE: 1, OUR_RENTAL: 1 });
+    expect(s.byCategory).toEqual({
+      CLIENT: 0,
+      OUR_SALE: 1,
+      OUR_RENTAL: 1,
+      SHOWROOM: 0,
+      KNIFE_SETUP: 0,
+    });
     const sumByCategory = s.byCategory.CLIENT + s.byCategory.OUR_SALE + s.byCategory.OUR_RENTAL;
     expect(sumByCategory).toBeGreaterThan(s.total);
   });

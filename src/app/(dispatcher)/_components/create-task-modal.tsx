@@ -1,10 +1,19 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { Plus, X } from "lucide-react";
 import { apiSend } from "@/lib/fetcher";
 import type { DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
-import type { PassStatus, PaymentType } from "@/generated/prisma/enums";
+import type { PassStatus, PaymentType, TaskMachineDirection } from "@/generated/prisma/enums";
 import { emptyForm, isDirtyForm, type FormState } from "@/lib/task-draft";
+import {
+  TASK_MACHINE_DIRECTION_LABEL,
+  isBidirectionalFlow,
+  normalizeDirection,
+  presetDirection,
+} from "@/domain/task-machine-flow";
+import { MachineLinkPicker, pickerLabel, type PickedMachine } from "./machine-link-picker";
+import { cn } from "@/lib/cn";
 import { PASS_LABEL, PAYMENT_LABEL } from "@/lib/task-ui";
 import { parsePhones } from "@/lib/phone";
 import { Modal } from "@/components/ui/modal";
@@ -42,6 +51,12 @@ function formFromTask(t: TaskDTO): FormState {
     requiresAct: t.requiresSignedDoc,
     actWaivedNote: t.actWaivedNote ?? "",
     carrierCost: t.carrierCost == null ? "" : String(t.carrierCost),
+    // Старые клиенты и офлайн-кэш поля не знают — читаем с дефолтом (прецедент taskKindOf).
+    machines: (t.machines ?? []).map((m) => ({
+      machineId: m.machineId,
+      direction: m.direction,
+      label: pickerLabel(m.machine),
+    })),
   };
 }
 
@@ -80,14 +95,16 @@ export function CreateTaskModal({
     editTask
       ? formFromTask(editTask)
       : initialForm
-        ? // Старый черновик localStorage (до 20.07) может не иметь coDriverId — читаем с дефолтом.
-          { ...initialForm, coDriverId: initialForm.coDriverId ?? "" }
+        ? // Старый черновик localStorage (до 20.07 — без coDriverId, до 21.08 — без machines):
+          // читаем с дефолтами, версию ключа не поднимаем, чтобы не выбросить живые черновики.
+          { ...initialForm, coDriverId: initialForm.coDriverId ?? "", machines: initialForm.machines ?? [] }
         : emptyForm(firstType, defaultDate, types[0]?.requiresSignedDoc ?? false),
   );
   const [showAll, setShowAll] = useState(isEdit);
   const [noDate, setNoDate] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -100,9 +117,53 @@ export function CreateTaskModal({
   // Сколько номеров распознано в поле «Телефон» — подсказка Милене (03.08).
   const phoneCount = parsePhones(form.contactPhone).length;
   const typeNeedsAct = selectedType?.requiresSignedDoc ?? false;
+  // Автоматика по станку (21.08.2026). Старые клиенты поля не знают — читаем с дефолтом «ничего».
+  const machineFlow = selectedType?.machineFlow ?? "NONE";
+  // Сегмент направления показываем только там, где тип действительно двунаправленный: у «Доставки
+  // проданного» он был бы выбором из одного варианта, а у «Прочего» — вопросом ни о чём.
+  const showDirection = isBidirectionalFlow(machineFlow);
+
   function onTypeChange(id: string) {
     const tt = types.find((x) => x.id === id);
-    setForm((f) => ({ ...f, typeId: id, requiresAct: tt?.requiresSignedDoc ?? false, actWaivedNote: "" }));
+    setForm((f) => ({
+      ...f,
+      typeId: id,
+      requiresAct: tt?.requiresSignedDoc ?? false,
+      actWaivedNote: "",
+      // Смена типа может сделать направление жёстким (продажа — всегда «везём»). Выбранные станки
+      // остаются, направления нормализуются по новому типу — тем же правилом, что и на сервере.
+      machines: f.machines.map((m) => ({
+        ...m,
+        direction: normalizeDirection(tt?.machineFlow ?? "NONE", m.direction),
+      })),
+    }));
+  }
+
+  function toggleMachine(picked: PickedMachine) {
+    setForm((f) => {
+      const existing = f.machines.find((m) => m.machineId === picked.machineId);
+      if (existing) {
+        return { ...f, machines: f.machines.filter((m) => m.machineId !== picked.machineId) };
+      }
+      // Направление предлагаем по состоянию станка (стоит у клиента — значит забираем), а жёсткое
+      // правило типа его перекрывает. Человек всегда может перещёлкнуть сегмент.
+      const direction = normalizeDirection(machineFlow, presetDirection(picked.status));
+      return {
+        ...f,
+        machines: [...f.machines, { machineId: picked.machineId, label: picked.label, direction }],
+      };
+    });
+  }
+
+  function removeMachine(machineId: string) {
+    setForm((f) => ({ ...f, machines: f.machines.filter((m) => m.machineId !== machineId) }));
+  }
+
+  function setMachineDirection(machineId: string, direction: TaskMachineDirection) {
+    setForm((f) => ({
+      ...f,
+      machines: f.machines.map((m) => (m.machineId === machineId ? { ...m, direction } : m)),
+    }));
   }
 
   // Тумблер «Взять деньги на точке» ↔ paymentType=ON_SITE (решение Артёма 17.07: поле оплаты должно
@@ -176,6 +237,10 @@ export function CreateTaskModal({
           ? null
           : undefined;
     }
+    // Станки — ВСЕГДА полным набором (семантика «полный набор атомарно», как категории станка):
+    // при правке пустой массив осознанно снимает все привязки. При создании пустой набор слать не
+    // за чем, но и вреда нет — сервер получит «связей нет» и ничего не создаст.
+    body.machines = form.machines.map((m) => ({ machineId: m.machineId, direction: m.direction }));
     return body;
   }
 
@@ -270,6 +335,64 @@ export function CreateTaskModal({
               required
             />
           </Field>
+        </FormSection>
+
+        {/* Станки из картотеки (21.08.2026, PRD §16.1): «везём станок на продажу → подцепляем к
+            заявке». Поле необязательное на любом типе — свободный текст «Оборудование» остаётся
+            для мелочёвки. У типов с автоматикой при завершении система сама переведёт карточку. */}
+        <FormSection title="Станки · по желанию">
+          {form.machines.length > 0 ? (
+            <ul className="flex flex-col gap-2" data-testid="task-machines">
+              {form.machines.map((m) => (
+                <li
+                  key={m.machineId}
+                  className="flex flex-wrap items-center gap-2 rounded-lg border border-neutral-200 px-2.5 py-2"
+                >
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-neutral-900">
+                    {m.label}
+                  </span>
+                  {showDirection ? (
+                    <span className="flex gap-1" role="group" aria-label="Направление">
+                      {(["OUT", "IN"] as TaskMachineDirection[]).map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          aria-pressed={m.direction === d}
+                          onClick={() => setMachineDirection(m.machineId, d)}
+                          data-testid={`machine-direction-${d}`}
+                          className={cn(
+                            "min-h-9 rounded-lg border px-2.5 text-xs font-medium transition-colors",
+                            m.direction === d
+                              ? "border-neutral-900 bg-neutral-900 text-white"
+                              : "border-neutral-200 bg-white text-neutral-600 hover:border-neutral-400",
+                          )}
+                        >
+                          {TASK_MACHINE_DIRECTION_LABEL[d]}
+                        </button>
+                      ))}
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => removeMachine(m.machineId)}
+                    aria-label={`Убрать ${m.label}`}
+                    className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => setPickerOpen(true)}
+            className="self-start"
+            data-testid="task-pick-machine"
+          >
+            <Plus className="h-4 w-4" /> Выбрать станок из картотеки
+          </Button>
         </FormSection>
 
         {/* Организация, контактное лицо, телефон — НЕобязательны (решение Артёма 24.07.2026: быстрая
@@ -572,6 +695,14 @@ export function CreateTaskModal({
           </Button>
         </div>
       </form>
+
+      {/* Пикер — второй этаж цепочки модалок: форма заявки остаётся заполненной под ним. */}
+      <MachineLinkPicker
+        open={pickerOpen}
+        selectedIds={form.machines.map((m) => m.machineId)}
+        onClose={() => setPickerOpen(false)}
+        onToggle={toggleMachine}
+      />
     </Modal>
   );
 }

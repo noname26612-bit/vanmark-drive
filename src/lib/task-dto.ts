@@ -2,9 +2,14 @@
 // Держим отдельно от Prisma-типов, чтобы не тащить серверный клиент в браузерный бандл.
 import type {
   AttachmentKind,
+  EquipmentFamily,
+  EquipmentKind,
+  MachineFlow,
+  MachineStatus,
   PassStatus,
   PaymentType,
   TaskKind,
+  TaskMachineDirection,
   TaskStatus,
   WorksheetStatus,
 } from "@/generated/prisma/enums";
@@ -31,6 +36,58 @@ export type TaskTypeDTO = {
   requiresSignedDoc: boolean; // тип с актом: дефолт требования акта для новых задач (PRD §3)
   requiresPricing: boolean; // нужна ли ведомость работ + расценка (этап 12, PRD §13)
   onSiteMinutes: number; // норма работы на объекте, мин (Фаза 2, PRD §14.2)
+  /**
+   * Автоматика по станку при завершении (21.08.2026, PRD §16.1). Форме заявки нужна, чтобы знать,
+   * показывать ли сегмент направления. Опционально — в офлайн-кэше и у старых открытых клиентов
+   * поля нет; читать с дефолтом "NONE".
+   */
+  machineFlow?: MachineFlow;
+};
+
+/**
+ * Станок, привязанный к заявке — короткая форма для списков и формы редактирования.
+ *
+ * ЦЕНЫ ЗДЕСЬ НЕТ И НЕ БУДЕТ (решение Артёма 21.08.2026): деньги водителям не показываются
+ * (PRD §13), а этот DTO уходит в том числе в телефон исполнителя. Вложенная форма повторяет
+ * include сервера — по всему проекту задачи отдаются сырыми строками Prisma, без маппинга.
+ */
+export type TaskMachineLiteDTO = {
+  machineId: string;
+  direction: TaskMachineDirection;
+  machine: {
+    ourNumber: number | null;
+    clientNumber: number | null;
+    model: string;
+    family: EquipmentFamily;
+    kind: EquipmentKind;
+  };
+};
+
+/** Часть комплекта, которая едет вместе с головным станком (карточка заявки и экран водителя). */
+export type TaskMachineKitDTO = {
+  qty: number;
+  part: {
+    ourNumber: number | null;
+    clientNumber: number | null;
+    kind: EquipmentKind;
+    model: string;
+  };
+};
+
+/** Станок в карточке заявки: то же плюс состояние, комплект, фото и результат автоматики. */
+export type TaskMachineDTO = {
+  machineId: string;
+  direction: TaskMachineDirection;
+  /** Состояние, применённое автоматикой при завершении, и когда; null — не срабатывала. */
+  appliedStatus: MachineStatus | null;
+  appliedAt: string | null; // ISO
+  machine: TaskMachineLiteDTO["machine"] & {
+    status: MachineStatus;
+    /** Что поедет вместе (уже списанные части не показываем — они уехали раньше). */
+    kitParts: TaskMachineKitDTO[];
+    /** Только id: файл отдаётся через GET /api/machines/photos/:id с проверкой прав. */
+    attachments: { id: string }[];
+  };
 };
 
 export type TaskTypeFullDTO = TaskTypeDTO & { sortOrder: number; isActive: boolean };
@@ -111,6 +168,11 @@ export type TaskDTO = {
   updatedAt: string;
   completedAt: string | null;
   type: TaskTypeDTO;
+  /**
+   * Станки, которые везут по заявке (21.08.2026, PRD §16.1). Опционально: в офлайн-кэше и у старых
+   * открытых клиентов поля нет вовсе — читать через `?? []`, как `taskKindOf` читает контур.
+   */
+  machines?: TaskMachineLiteDTO[];
 };
 
 // Блок «Требуют внимания» доски (Этап 6): просрочки + незаказанные пропуска на завтра.
@@ -170,8 +232,10 @@ export type WorkItemDTO = {
   createdAt: string;
 };
 
-export type TaskDetailDTO = Omit<TaskDTO, "createdBy"> & {
+export type TaskDetailDTO = Omit<TaskDTO, "createdBy" | "machines"> & {
   createdBy: { id: string; name: string };
+  /** Станки заявки в развёрнутом виде: состояние, комплект, фото, результат автоматики. */
+  machines?: TaskMachineDTO[];
   // Кто убрал заявку в архив (11.08.2026) — показывается в плашке «Заявка в архиве».
   archivedByName?: string | null;
   events: TaskEventDTO[];

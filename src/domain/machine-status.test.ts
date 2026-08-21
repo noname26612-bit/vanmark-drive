@@ -5,11 +5,14 @@ import {
   EQUIPMENT_KIND_PLURAL,
   EQUIPMENT_KIND_SHORT,
   KINDS_BY_FAMILY,
+  EXCLUSIVE_CATEGORIES,
   MACHINE_CATEGORIES,
   MACHINE_STATUSES,
   SELECTABLE_MACHINE_STATUSES,
   STOCK_CATEGORIES,
   categoriesFollowingStatus,
+  isExclusiveCategory,
+  toggleCategory,
   categoriesForStatus,
   categoriesLabel,
   selectableStatuses,
@@ -49,7 +52,7 @@ describe("machine-status: набор категорий", () => {
     expect(normalizeCategories([])).toEqual([]);
   });
 
-  it("одиночные категории допустимы все три", () => {
+  it("одиночная категория допустима любая", () => {
     for (const c of MACHINE_CATEGORIES) expect(isValidCategorySet([c])).toBe(true);
   });
 
@@ -72,6 +75,8 @@ describe("machine-status: набор категорий", () => {
     expect(isOurCategories(["OUR_SALE"])).toBe(true);
     expect(isOurCategories(["OUR_RENTAL"])).toBe(true);
     expect(isOurCategories(BOTH)).toBe(true);
+    expect(isOurCategories(["SHOWROOM"])).toBe(true); // выставочный — наше железо, «77-N»
+    expect(isOurCategories(["KNIFE_SETUP"])).toBe(true);
     expect(isOurCategories(["CLIENT"])).toBe(false);
   });
 
@@ -84,6 +89,81 @@ describe("machine-status: набор категорий", () => {
 
   it("пустой набор подписывается прочерком, а не пустой строкой", () => {
     expect(categoriesLabel([])).toBe("—");
+  });
+});
+
+// Эксклюзивные категории (решение Артёма 21.08.2026). «Выставочный вариант» и «Под настройку ножей»
+// устроены как «Клиентский»: стоят в наборе одни. Правило живёт в ОДНОМ месте — множестве
+// EXCLUSIVE_CATEGORIES, и его же читают галочки формы (toggleCategory).
+describe("machine-status: эксклюзивные категории (21.08.2026)", () => {
+  it("эксклюзивны ровно три: клиентский, выставочный, под настройку ножей", () => {
+    expect([...EXCLUSIVE_CATEGORIES].sort()).toEqual(
+      ["CLIENT", "KNIFE_SETUP", "SHOWROOM"].sort(),
+    );
+    expect(isExclusiveCategory("OUR_SALE")).toBe(false);
+    expect(isExclusiveCategory("OUR_RENTAL")).toBe(false);
+  });
+
+  it("набор с эксклюзивной длиннее одной — недопустим", () => {
+    for (const ex of [...EXCLUSIVE_CATEGORIES]) {
+      for (const other of MACHINE_CATEGORIES.filter((c) => c !== ex)) {
+        expect(isValidCategorySet([ex, other])).toBe(false);
+      }
+    }
+  });
+
+  it("две эксклюзивные вместе тоже недопустимы", () => {
+    expect(isValidCategorySet(["SHOWROOM", "KNIFE_SETUP"])).toBe(false);
+    expect(isValidCategorySet(["CLIENT", "SHOWROOM"])).toBe(false);
+  });
+
+  it("у новых категорий есть подписи — и полная, и в списке", () => {
+    expect(MACHINE_CATEGORY_LABEL.SHOWROOM).toBe("Выставочный вариант");
+    expect(MACHINE_CATEGORY_LABEL.KNIFE_SETUP).toBe("Под настройку ножей");
+    expect(categoriesLabel(["SHOWROOM"])).toBe("Выставочный вариант");
+  });
+});
+
+// Клик по галочке категории. Чистая функция — тот же результат и на сервере, и в форме.
+describe("machine-status: toggleCategory — галочки категорий", () => {
+  it("клик по эксклюзивной сбрасывает всё остальное", () => {
+    expect(toggleCategory(BOTH, "SHOWROOM")).toEqual(["SHOWROOM"]);
+    expect(toggleCategory(BOTH, "CLIENT")).toEqual(["CLIENT"]);
+    expect(toggleCategory(["KNIFE_SETUP"], "SHOWROOM")).toEqual(["SHOWROOM"]);
+  });
+
+  it("клик по обычной снимает эксклюзивную", () => {
+    expect(toggleCategory(["SHOWROOM"], "OUR_SALE")).toEqual(["OUR_SALE"]);
+    expect(toggleCategory(["CLIENT"], "OUR_RENTAL")).toEqual(["OUR_RENTAL"]);
+  });
+
+  it("обычные складываются друг с другом", () => {
+    expect(toggleCategory(["OUR_SALE"], "OUR_RENTAL")).toEqual(BOTH);
+    expect(toggleCategory(["OUR_RENTAL"], "OUR_SALE")).toEqual(BOTH); // порядок нормализован
+  });
+
+  it("повторный клик снимает галочку", () => {
+    expect(toggleCategory(BOTH, "OUR_RENTAL")).toEqual(["OUR_SALE"]);
+  });
+
+  it("последнюю галочку снять нельзя — пустой набор сервер отвергнет", () => {
+    for (const c of MACHINE_CATEGORIES) expect(toggleCategory([c], c)).toEqual([c]);
+  });
+
+  it("любой клик из любого допустимого набора оставляет набор допустимым", () => {
+    const sets: MachineCategory[][] = [
+      ["CLIENT"],
+      ["OUR_SALE"],
+      ["OUR_RENTAL"],
+      BOTH,
+      ["SHOWROOM"],
+      ["KNIFE_SETUP"],
+    ];
+    for (const set of sets) {
+      for (const c of MACHINE_CATEGORIES) {
+        expect(isValidCategorySet(toggleCategory(set, c))).toBe(true);
+      }
+    }
   });
 });
 
@@ -120,17 +200,25 @@ describe("machine-status: совместимость состояния и ка�
   });
 
   it("каждая пара «набор × состояние» имеет однозначный вердикт", () => {
-    const sets: MachineCategory[][] = [["CLIENT"], ["OUR_SALE"], ["OUR_RENTAL"], BOTH];
+    const sets: MachineCategory[][] = [
+      ["CLIENT"],
+      ["OUR_SALE"],
+      ["OUR_RENTAL"],
+      BOTH,
+      ["SHOWROOM"],
+      ["KNIFE_SETUP"],
+    ];
     const pairs: [string, MachineStatus, boolean][] = [];
     for (const set of sets) {
       for (const s of MACHINE_STATUSES) {
         pairs.push([set.join("+"), s, isStatusAllowedForCategories(set, s)]);
       }
     }
-    // 4 набора × 8 состояний. Запрещены 7 пар: у клиентского SOLD+RENTED, у «на продажу»
-    // RENTED+RELEASED, у «арендного» SOLD+RELEASED, у двойного — только RELEASED.
-    expect(pairs).toHaveLength(32);
-    expect(pairs.filter(([, , ok]) => !ok)).toHaveLength(7);
+    // 6 наборов × 8 состояний. Запрещены 13 пар: у клиентского SOLD+RENTED, у «на продажу»
+    // RENTED+RELEASED, у «арендного» SOLD+RELEASED, у двойного — только RELEASED, у выставочного
+    // и «под настройку ножей» — все три «чужих» состояния (SOLD, RENTED, RELEASED).
+    expect(pairs).toHaveLength(48);
+    expect(pairs.filter(([, , ok]) => !ok)).toHaveLength(13);
   });
 
   it("statusesForCategories не предлагает заведомо неверное", () => {
@@ -148,7 +236,14 @@ describe("machine-status: совместимость состояния и ка�
   it("categoriesForStatus — обратная подсказка при смене категорий", () => {
     expect(categoriesForStatus("RENTED")).toEqual(["OUR_RENTAL"]);
     expect(categoriesForStatus("SOLD")).toEqual(["OUR_SALE"]);
-    expect(categoriesForStatus("READY")).toEqual(["CLIENT", "OUR_SALE", "OUR_RENTAL"]);
+    // «Готов» допустим при любой категории — значит в подсказку попадают все пять.
+    expect(categoriesForStatus("READY")).toEqual([
+      "CLIENT",
+      "OUR_SALE",
+      "OUR_RENTAL",
+      "SHOWROOM",
+      "KNIFE_SETUP",
+    ]);
   });
 });
 
@@ -193,6 +288,14 @@ describe("machine-status: кнопки состояний в карточке (1
     expect(selectableStatuses(["CLIENT"])).toContain("RELEASED");
     expect(selectableStatuses(["CLIENT"])).not.toContain("SOLD");
     expect(selectableStatuses(["CLIENT"])).not.toContain("RENTED");
+  });
+
+  it("выставочный и «под настройку ножей» продаются и сдаются кнопкой — это наше железо", () => {
+    for (const our of [["SHOWROOM"], ["KNIFE_SETUP"]] as MachineCategory[][]) {
+      expect(selectableStatuses(our)).toContain("SOLD");
+      expect(selectableStatuses(our)).toContain("RENTED");
+      expect(selectableStatuses(our)).not.toContain("RELEASED"); // выдают только чужое
+    }
   });
 
   it("порядок кнопок — порядок жизненного цикла, без дублей", () => {
@@ -240,10 +343,33 @@ describe("machine-status: категория едет за состоянием 
     expect(categoriesFollowingStatus(BOTH, "RELEASED")).toBeNull();
   });
 
+  it("эксклюзивная наша категория ЗАМЕНЯЕТСЯ, а не дополняется (21.08.2026)", () => {
+    // Продали выставочный станок — он больше не выставочный: добавить рядом «Наш на продажу»
+    // нельзя по определению эксклюзивности, поэтому переезд возможен только полной заменой.
+    expect(categoriesFollowingStatus(["SHOWROOM"], "SOLD")).toEqual(["OUR_SALE"]);
+    expect(categoriesFollowingStatus(["SHOWROOM"], "RENTED")).toEqual(["OUR_RENTAL"]);
+    expect(categoriesFollowingStatus(["KNIFE_SETUP"], "SOLD")).toEqual(["OUR_SALE"]);
+    expect(categoriesFollowingStatus(["KNIFE_SETUP"], "RENTED")).toEqual(["OUR_RENTAL"]);
+  });
+
+  it("замена не задевает обычные наши категории — там по-прежнему ДОБАВЛЕНИЕ", () => {
+    expect(categoriesFollowingStatus(["OUR_SALE"], "RENTED")).toEqual(["OUR_SALE", "OUR_RENTAL"]);
+    expect(categoriesFollowingStatus(["OUR_RENTAL"], "SOLD")).toEqual(["OUR_SALE", "OUR_RENTAL"]);
+  });
+
+  it("«Выдан клиенту» не выводит выставочный станок из наших категорий", () => {
+    expect(categoriesFollowingStatus(["SHOWROOM"], "RELEASED")).toBeNull();
+    expect(categoriesFollowingStatus(["KNIFE_SETUP"], "RELEASED")).toBeNull();
+  });
+
   it("после переезда состояние становится допустимым — кнопка не оставляет карточку сломанной", () => {
     for (const [from, status] of [
       [["OUR_SALE"], "RENTED"],
       [["OUR_RENTAL"], "SOLD"],
+      [["SHOWROOM"], "SOLD"],
+      [["SHOWROOM"], "RENTED"],
+      [["KNIFE_SETUP"], "SOLD"],
+      [["KNIFE_SETUP"], "RENTED"],
     ] as [MachineCategory[], MachineStatus][]) {
       const next = categoriesFollowingStatus(from, status);
       expect(next).not.toBeNull();

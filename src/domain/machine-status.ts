@@ -14,10 +14,14 @@ import type {
   MachineStatus,
 } from "@/generated/prisma/enums";
 
+// Порядок = порядок галочек в форме и групп в списке: сначала чужое, потом наше «в обороте»
+// (продажа/аренда), потом наше «стоит для дела» (выставка, настройка ножей).
 export const MACHINE_CATEGORIES: readonly MachineCategory[] = [
   "CLIENT",
   "OUR_SALE",
   "OUR_RENTAL",
+  "SHOWROOM",
+  "KNIFE_SETUP",
 ] as const;
 
 // Порядок = порядок жизненного цикла: так они идут в фильтрах, плитках сводки и на кнопках.
@@ -89,16 +93,55 @@ export function normalizeCategories(
 }
 
 /**
+ * ЭКСКЛЮЗИВНЫЕ категории — те, что не совмещаются ни с чем (Артём 21.08.2026).
+ *
+ * «Клиентский» был таким с самого появления списка: чужое железо остаётся чужим, продавать и
+ * сдавать его мы не вправе. «Выставочный вариант» и «Под настройку ножей» устроены так же, но по
+ * другой причине: станок стоит для одного конкретного дела и в это время не продаётся и не
+ * сдаётся. Как только его продали или сдали, категория ЗАМЕНЯЕТСЯ (см. categoriesFollowingStatus).
+ *
+ * Это множество — единственная правда об эксклюзивности: и сервер (isValidCategorySet), и галочки
+ * формы (toggleCategory) читают его, второй копии правил в UI больше нет.
+ */
+export const EXCLUSIVE_CATEGORIES: ReadonlySet<MachineCategory> = new Set<MachineCategory>([
+  "CLIENT",
+  "SHOWROOM",
+  "KNIFE_SETUP",
+]);
+
+export function isExclusiveCategory(category: MachineCategory): boolean {
+  return EXCLUSIVE_CATEGORIES.has(category);
+}
+
+/**
  * Допустим ли набор категорий.
  *
- * Правил ровно два (Артём 20.08.2026): набор не бывает пустым, а «Клиентский» ни с чем не
- * совмещается — чужое железо остаётся чужим, продавать и сдавать его мы не вправе. Совмещаются
- * только наши: «на продажу» + «арендный».
+ * Правил ровно два: набор не бывает пустым, а эксклюзивная категория стоит в наборе одна.
+ * Совмещаются только неэксклюзивные наши: «на продажу» + «арендный».
  */
 export function isValidCategorySet(categories: readonly MachineCategory[]): boolean {
   if (categories.length === 0) return false;
-  if (categories.includes("CLIENT") && categories.length > 1) return false;
+  if (categories.length > 1 && categories.some(isExclusiveCategory)) return false;
   return true;
+}
+
+/**
+ * Клик по галочке категории → новый набор. Чистая функция: недопустимый набор просто нельзя
+ * собрать, поэтому человек не упирается в отказ сервера там, где ошибка видна заранее.
+ *
+ * Правила: клик по эксклюзивной оставляет только её; клик по обычной снимает эксклюзивную;
+ * последнюю галочку снять нельзя (пустой набор сервер отвергнет).
+ */
+export function toggleCategory(
+  current: readonly MachineCategory[],
+  clicked: MachineCategory,
+): MachineCategory[] {
+  if (current.includes(clicked)) {
+    if (current.length === 1) return normalizeCategories(current);
+    return normalizeCategories(current.filter((c) => c !== clicked));
+  }
+  if (isExclusiveCategory(clicked)) return [clicked];
+  return normalizeCategories([...current.filter((c) => !isExclusiveCategory(c)), clicked]);
 }
 
 /** Наш ли это станок (нет клиентской категории). «77-N» против «К-N» решается этим же признаком. */
@@ -144,10 +187,16 @@ export function selectableStatuses(categories: readonly MachineCategory[]): Mach
 /**
  * Набор категорий, в который переезжает станок вместе с состоянием, или null — если менять нечего.
  *
- * Важное отличие от прежней одиночной категории: недостающая категория ДОБАВЛЯЕТСЯ, а не заменяет
- * прежнюю. Сдали в аренду станок, стоявший на продажу, — он и арендный, и по-прежнему продаётся:
- * вернётся из аренды и снова будет ждать покупателя. Затирать вторую категорию значило бы терять
- * то, что Артём как раз и просил сохранять.
+ * Две разные механики, и разница осмысленная:
+ *
+ * • Неэксклюзивные наши категории — недостающая ДОБАВЛЯЕТСЯ. Сдали в аренду станок, стоявший на
+ *   продажу, — он и арендный, и по-прежнему продаётся: вернётся из аренды и снова будет ждать
+ *   покупателя. Затирать вторую категорию значило бы терять то, что Артём просил сохранять.
+ *
+ * • Эксклюзивная наша («Выставочный вариант», «Под настройку ножей») — ЗАМЕНЯЕТСЯ (21.08.2026).
+ *   Добавить рядом нельзя по определению эксклюзивности, а запретить продажу выставочного станка
+ *   означало бы заставлять переключать категорию вручную перед каждой сделкой. Продали — он больше
+ *   не выставочный; смена уезжает в журнал строкой «Категории: было → стало» (applyStatusChangeTx).
  *
  * Для клиентского железа всегда null: там несовместимость — настоящая ошибка, а не смена планов.
  */
@@ -159,6 +208,9 @@ export function categoriesFollowingStatus(
   if (!isOurCategories(current)) return null;
   const add = next === "SOLD" ? "OUR_SALE" : next === "RENTED" ? "OUR_RENTAL" : null;
   if (add === null) return null;
+  // Набор с эксклюзивной нашей категорией по правилам может состоять только из неё одной —
+  // значит «добавить» физически некуда, и переезд возможен лишь полной заменой.
+  if (current.some(isExclusiveCategory)) return [add];
   return normalizeCategories([...current, add]);
 }
 
@@ -180,6 +232,8 @@ export const MACHINE_CATEGORY_LABEL: Record<MachineCategory, string> = {
   CLIENT: "Клиентский",
   OUR_SALE: "Наш на продажу",
   OUR_RENTAL: "Наш арендный",
+  SHOWROOM: "Выставочный вариант",
+  KNIFE_SETUP: "Под настройку ножей",
 };
 
 export const MACHINE_STATUS_LABEL: Record<MachineStatus, string> = {

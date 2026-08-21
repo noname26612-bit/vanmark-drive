@@ -69,6 +69,8 @@ export const MACHINE_CATEGORY_SHORT: Record<MachineCategory, string> = {
   CLIENT: "Клиентский",
   OUR_SALE: "Продажа",
   OUR_RENTAL: "Аренда",
+  SHOWROOM: "Выставочный",
+  KNIFE_SETUP: "Настройка ножей",
 };
 
 /**
@@ -135,4 +137,7 @@ export const EVENT_LABEL: Record<string, string> = {
   shop_task: "Задание в цех",
   photo_added: "Добавлено фото",
   photo_removed: "Удалено фото",
+  // Связь с заявкой (21.08.2026, PRD §16.1)
+  task_link: "Привязка к заявке",
+  task_unlink: "Отвязка от заявки",
 };

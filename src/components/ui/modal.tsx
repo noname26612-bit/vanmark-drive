@@ -1,7 +1,19 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { cn } from "@/lib/cn";
+
+/**
+ * Стек открытых модалок (21.08.2026). Раньше модалка была всегда одна, и Escape можно было вешать
+ * на document без оглядки. Теперь их цепочка — форма заявки → пикер станков → форма нового станка,
+ * — и один Escape закрывал бы всю цепочку разом (а заодно уносил заполненную форму в черновик).
+ *
+ * Держим id открытых модалок: клавишу обрабатывает только ВЕРХНЯЯ, а прокрутку страницы возвращает
+ * последняя закрывшаяся. Модуль-скоуп, а не контекст: модалки живут в разных поддеревьях и
+ * рендерятся друг у друга внутри — общего провайдера над ними нет.
+ */
+let openModals: number[] = [];
+let nextModalId = 1;
 
 export function Modal({
   open,
@@ -16,18 +28,30 @@ export function Modal({
   children: ReactNode;
   wide?: boolean;
 }) {
+  // onClose держим в ref: родители передают инлайновые стрелки, и с ним в зависимостях эффект
+  // перезапускался бы на каждый рендер — модалка всплывала бы в стеке выше своих же детей.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!open) return;
+    const id = nextModalId++;
+    openModals.push(id);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      if (openModals[openModals.length - 1] !== id) return; // не верхняя — Escape не наш
+      onCloseRef.current();
     };
     document.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
     return () => {
       document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
+      openModals = openModals.filter((x) => x !== id);
+      if (openModals.length === 0) document.body.style.overflow = "";
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 

@@ -2,7 +2,7 @@
 // Пароль берём из SEED_PASSWORD (см. .env.example) — в коде паролей нет (CLAUDE.md правило 5).
 // Запуск: `pnpm db:seed` (нужен поднятый Postgres и применённые миграции).
 import "dotenv/config";
-import { PrismaClient, type Role } from "@/generated/prisma/client";
+import { PrismaClient, type MachineFlow, type Role } from "@/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { hashPassword } from "@/lib/password";
 import { seedKpi } from "./seed-kpi";
@@ -64,18 +64,26 @@ const USERS: SeedUser[] = [
 // требование на конкретной заявке (Task.requiresSignedDoc + actWaivedNote). Фото — везде по желанию
 // (поле TaskType.requiresPhoto больше не используется как гейт). Иконки — имена lucide (TypeIcon).
 // requiresPricing — нужна ли ведомость работ + расценка (этап 12, PRD §13): выездной ремонт, гарантия.
-const TASK_TYPES: { name: string; icon: string; requiresSignedDoc: boolean; requiresPricing: boolean }[] = [
+// machineFlow — что происходит с привязанным станком при завершении заявки (21.08.2026, PRD §16.1).
+// Значение живёт в колонке, а не выводится из названия: переименование типа автоматику не ломает.
+const TASK_TYPES: {
+  name: string;
+  icon: string;
+  requiresSignedDoc: boolean;
+  requiresPricing: boolean;
+  machineFlow: MachineFlow;
+}[] = [
   // С актом: акт выполненных работ / приёма-передачи / возврата (PRD §13). Справочник синхронизирован
   // с продом (решения Артёма 24.06): «Доставка / забор...» — объединённые направления (туда и обратно).
-  { name: "Выездной ремонт / диагностика", icon: "wrench", requiresSignedDoc: true, requiresPricing: true },
-  { name: "Гарантийный ремонт", icon: "shield-check", requiresSignedDoc: true, requiresPricing: true },
-  { name: "Доставка / забор из аренды", icon: "truck", requiresSignedDoc: true, requiresPricing: false },
-  { name: "Доставка / забор из ремонта", icon: "package-check", requiresSignedDoc: true, requiresPricing: false },
+  { name: "Выездной ремонт / диагностика", icon: "wrench", requiresSignedDoc: true, requiresPricing: true, machineFlow: "NONE" },
+  { name: "Гарантийный ремонт", icon: "shield-check", requiresSignedDoc: true, requiresPricing: true, machineFlow: "NONE" },
+  { name: "Доставка / забор из аренды", icon: "truck", requiresSignedDoc: true, requiresPricing: false, machineFlow: "RENTAL" },
+  { name: "Доставка / забор из ремонта", icon: "package-check", requiresSignedDoc: true, requiresPricing: false, machineFlow: "REPAIR_RETURN" },
   // Без акта.
-  { name: "Доставка проданного об.", icon: "package-plus", requiresSignedDoc: false, requiresPricing: false },
-  { name: "Закупка/выкуп станка", icon: "shopping-cart", requiresSignedDoc: false, requiresPricing: false },
-  { name: "Сдача / забор из ТК", icon: "package", requiresSignedDoc: false, requiresPricing: false },
-  { name: "Прочее", icon: "ellipsis", requiresSignedDoc: false, requiresPricing: false },
+  { name: "Доставка проданного об.", icon: "package-plus", requiresSignedDoc: false, requiresPricing: false, machineFlow: "SOLD_DELIVERY" },
+  { name: "Закупка/выкуп станка", icon: "shopping-cart", requiresSignedDoc: false, requiresPricing: false, machineFlow: "PURCHASE" },
+  { name: "Сдача / забор из ТК", icon: "package", requiresSignedDoc: false, requiresPricing: false, machineFlow: "CARRIER" },
+  { name: "Прочее", icon: "ellipsis", requiresSignedDoc: false, requiresPricing: false, machineFlow: "NONE" },
 ];
 
 /**
@@ -132,6 +140,7 @@ async function main(defaultPassword: string): Promise<void> {
         icon: t.icon,
         requiresSignedDoc: t.requiresSignedDoc,
         requiresPricing: t.requiresPricing,
+        machineFlow: t.machineFlow,
         kind: "DELIVERY",
         sortOrder: i + 1,
         isActive: true,
@@ -141,6 +150,7 @@ async function main(defaultPassword: string): Promise<void> {
         icon: t.icon,
         requiresSignedDoc: t.requiresSignedDoc,
         requiresPricing: t.requiresPricing,
+        machineFlow: t.machineFlow,
         kind: "DELIVERY",
         sortOrder: i + 1,
       },
@@ -154,6 +164,8 @@ async function main(defaultPassword: string): Promise<void> {
       kind: "STAFF",
       requiresSignedDoc: false,
       requiresPricing: false,
+      // Станки к задачам цеха не привязываются вовсе (stripDeliveryOnlyFields) — автоматике неоткуда взяться.
+      machineFlow: "NONE",
       sortOrder: STAFF_TASK_TYPE.sortOrder,
       isActive: true,
     },
@@ -161,6 +173,7 @@ async function main(defaultPassword: string): Promise<void> {
       name: STAFF_TASK_TYPE.name,
       icon: STAFF_TASK_TYPE.icon,
       kind: "STAFF",
+      machineFlow: "NONE",
       sortOrder: STAFF_TASK_TYPE.sortOrder,
     },
   });

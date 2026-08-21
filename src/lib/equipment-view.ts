@@ -90,8 +90,17 @@ const STATUS_ORDER = ["NEEDS_REPAIR", "IN_REPAIR", "READY", "RENTED"] as const;
 
 // Группировка по категориям идёт по КОМБИНАЦИИ (20.08.2026): станок, который и продаётся, и
 // сдаётся, — это своя группа «Наш на продажу + Наш арендный», а не строка, задвоенная в двух
-// списках. Порядок: чужое, наше на продажу, наше арендное, наше двойного назначения.
-const CATEGORY_ORDER = ["CLIENT", "OUR_SALE", "OUR_RENTAL", "OUR_SALE+OUR_RENTAL"] as const;
+// списках. Порядок: чужое, наше на продажу, наше арендное, наше двойного назначения, выставочное,
+// под настройку ножей. Список СТРОКОВЫЙ — типизация новую категорию здесь не подскажет: добавляя
+// категорию в MACHINE_CATEGORIES, добавь её и сюда, иначе группа молча уедет в конец.
+const CATEGORY_ORDER = [
+  "CLIENT",
+  "OUR_SALE",
+  "OUR_RENTAL",
+  "OUR_SALE+OUR_RENTAL",
+  "SHOWROOM",
+  "KNIFE_SETUP",
+] as const;
 
 function groupKeyOf(item: MachineListItem, groupBy: GroupBy): string {
   if (groupBy === "status") return item.status;

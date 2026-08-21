@@ -130,7 +130,7 @@ export type MachineSummary = {
 };
 
 function emptyByCategory(): Record<MachineCategory, number> {
-  return { CLIENT: 0, OUR_SALE: 0, OUR_RENTAL: 0 };
+  return { CLIENT: 0, OUR_SALE: 0, OUR_RENTAL: 0, SHOWROOM: 0, KNIFE_SETUP: 0 };
 }
 
 function emptyByKind(): Record<EquipmentKind, number> {

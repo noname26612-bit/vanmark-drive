@@ -26,6 +26,13 @@ import { geocodeAddress } from "@/lib/geocode";
 import { computeEstimate } from "./capacity-service";
 import { syncUnsignedDocMark } from "./kpi-service";
 import { requireStaffTaskType } from "./task-type-service";
+import {
+  applyMachineAutomationAfterDone,
+  resolveTaskMachines,
+  setTaskMachinesTx,
+  type ResolvedMachineLink,
+  type WantedMachine,
+} from "./task-machine-service";
 import { parseStaffNumberQuery } from "@/lib/task-number";
 import { periodOf } from "./kpi";
 import type { LatLng } from "./capacity";
@@ -62,6 +69,11 @@ export type CreateTaskInput = {
   // Ёмкость (Фаза 2, PRD §14): ручная оценка времени диспетчером. number → manual (не пересчитывать);
   // null → сброс к авто-расчёту. undefined (поле не передано) → оценку не трогаем (пересчёт по правкам).
   estimatedMinutes?: number | null;
+  /**
+   * Станки, которые везут по заявке (21.08.2026, PRD §16.1). ПОЛНЫЙ набор, как changeCategories
+   * у станка: пустой массив снимает все связи, undefined — «не трогать». Только контур DELIVERY.
+   */
+  machines?: WantedMachine[];
 };
 
 export type ListFilters = {
@@ -97,6 +109,20 @@ const taskInclude = {
   assignee: { select: { id: true, name: true, login: true } },
   coDriver: { select: { id: true, name: true, login: true } },
   createdBy: { select: { name: true } },
+  // Станки заявки (21.08.2026, PRD §16.1) — мини-select без длинных текстов и БЕЗ ЦЕНЫ.
+  // Именно в СПИСОЧНОМ include, а не только в карточке: форма редактирования получает задачу из
+  // списка (create-task-modal), а шлёт полный набор связей — без них правка с доски молча стёрла
+  // бы привязки. Вес приемлем: 10–30 заявок в день, поля короткие.
+  machines: {
+    orderBy: { createdAt: "asc" },
+    select: {
+      machineId: true,
+      direction: true,
+      machine: {
+        select: { ourNumber: true, clientNumber: true, model: true, family: true, kind: true },
+      },
+    },
+  },
 } satisfies Prisma.TaskInclude;
 
 // Списки-чтения дополнительно тянут число приложенных актов (DOCUMENT-вложений) — лёгкий
@@ -141,6 +167,41 @@ const taskDetailInclude = {
       sortOrder: true,
       createdById: true,
       createdAt: true,
+    },
+  },
+  // Станки заявки в развёрнутом виде (21.08.2026): состояние, состав комплекта и id фото —
+  // ровно то, что нужно водителю в поле («что грузим и как оно выглядит»). Цены, дефектовки и
+  // заметок карточки здесь нет: этот ответ уходит в телефон исполнителя.
+  machines: {
+    orderBy: { createdAt: "asc" },
+    select: {
+      machineId: true,
+      direction: true,
+      appliedStatus: true,
+      appliedAt: true,
+      machine: {
+        select: {
+          ourNumber: true,
+          clientNumber: true,
+          model: true,
+          family: true,
+          kind: true,
+          status: true,
+          // Только то, что поедет: уже списанные части комплекта уехали с прошлой продажей.
+          kitParts: {
+            where: { consumedAt: null },
+            orderBy: { createdAt: "asc" },
+            select: {
+              qty: true,
+              part: {
+                select: { ourNumber: true, clientNumber: true, kind: true, model: true },
+              },
+            },
+          },
+          // filePath НЕ отдаём: файл берётся только через GET /api/machines/photos/:id.
+          attachments: { select: { id: true }, orderBy: { createdAt: "asc" } },
+        },
+      },
     },
   },
 } satisfies Prisma.TaskInclude;
@@ -218,6 +279,9 @@ const DELIVERY_ONLY_FIELDS = [
   "requiresAct",
   "actWaivedNote",
   "estimatedMinutes",
+  // Станки возит водитель по адресу — у задачи цеха адреса нет, и привязка там бессмысленна
+  // (21.08.2026). Режем так же, как деньги и пропуск: контур нельзя «размыть» прямым PATCH.
+  "machines",
 ] as const satisfies readonly (keyof CreateTaskInput)[];
 
 function stripDeliveryOnlyFields(fields: Partial<CreateTaskInput>): Partial<CreateTaskInput> {
@@ -487,7 +551,14 @@ export async function createTask(
   // Тип задаёт дефолт требования акта; диспетчер может снять его галочкой «акт не нужен» (PRD §4).
   const type = await prisma.taskType.findUnique({
     where: { id: typeId },
-    select: { requiresSignedDoc: true, requiresPricing: true, onSiteMinutes: true, kind: true },
+    select: {
+      name: true,
+      requiresSignedDoc: true,
+      requiresPricing: true,
+      onSiteMinutes: true,
+      kind: true,
+      machineFlow: true,
+    },
   });
   if (!type) throw Errors.validation("Неизвестный тип задачи");
   // Тип и контур обязаны сойтись: заявка водителю со служебным типом (и наоборот) означала бы, что
@@ -522,6 +593,11 @@ export async function createTask(
 
   // Стоимость поездки перевозчика (этап 3, 02.07): целое ≥ 0, вводит диспетчер.
   const carrierCost = staff ? null : validateCarrierCost(input.carrierCost);
+
+  // Станки заявки (21.08.2026): проверяем ДО транзакции — походы за карточками не должны держать
+  // блокировки, а отказ («станок аннулирован») обязан прийти раньше, чем заявка получит номер.
+  // У задач сотрудникам привязки нет by design — молча игнорируем, как прочие поля доставок.
+  const machines = staff ? [] : await resolveTaskMachines(actor, input.machines ?? [], type.machineFlow);
 
   // Оценка времени (Фаза 2, PRD §14): геокодируем адрес и считаем «норма типа + дорога».
   // Геокод и расчёт — ДО транзакции (внешний вызов не держит БД). Сбой геокодера → дорога не учтена.
@@ -594,6 +670,17 @@ export async function createTask(
       await tx.taskEvent.create({
         data: { taskId: task.id, actorId: actor.id, kind: "assist", comment: `Напарник: ${coDriverName}` },
       });
+    }
+    // Станки — внутри той же транзакции: заявка со связями появляется целиком либо не появляется.
+    if (machines.length > 0) {
+      await setTaskMachinesTx(
+        tx,
+        { id: task.id, number: task.number, typeName: type.name },
+        machines,
+        actor.id,
+      );
+      // Связи создавались уже после include — перечитываем, чтобы ответ не соврал форме.
+      return tx.task.findUniqueOrThrow({ where: { id: task.id }, include: taskInclude });
     }
     return task;
   });
@@ -752,11 +839,37 @@ export async function updateTaskFields(
     data.estimateIsManual = false;
   }
 
+  // Станки заявки (21.08.2026). Правка связей разрешена и на закрытых заявках — консистентно с
+  // остальными полями (решение Артёма 02.07): диспетчер дописывает, что на самом деле возили.
+  // Автоматику это НЕ запускает: она срабатывает по факту завершения, а не задним числом.
+  let machines: ResolvedMachineLink[] | null = null;
+  let typeName = "";
+  if (fields.machines !== undefined) {
+    // Направление нормализуется правилом типа — берём ЭФФЕКТИВНЫЙ тип: если его меняют этой же
+    // правкой, связи обязаны считаться по новому, иначе форма и сервер разойдутся.
+    const effectiveTypeId = fields.typeId ?? task.typeId;
+    const t = await prisma.taskType.findUnique({
+      where: { id: effectiveTypeId },
+      select: { name: true, machineFlow: true },
+    });
+    if (!t) throw Errors.validation("Неизвестный тип задачи");
+    typeName = t.name;
+    machines = await resolveTaskMachines(actor, fields.machines, t.machineFlow);
+  }
+
   const result = await prisma.$transaction(async (tx) => {
     const updated = await tx.task.update({ where: { id: taskId }, data, include: taskInclude });
     await tx.taskEvent.create({
       data: { taskId, actorId: actor.id, kind: "edit", comment: "Изменены поля задачи" },
     });
+    if (machines) {
+      await setTaskMachinesTx(
+        tx,
+        { id: taskId, number: task.number, typeName },
+        machines,
+        actor.id,
+      );
+    }
     if (coDriverChanged) {
       await tx.taskEvent.create({
         data: {
@@ -766,6 +879,11 @@ export async function updateTaskFields(
           comment: newCoDriverId ? `Напарник: ${newCoDriverName}` : "Напарник снят",
         },
       });
+    }
+    // Связи менялись уже после update — перечитываем, иначе форма получит прежний набор станков
+    // и следующая правка отправила бы его обратно, отменив только что сделанное.
+    if (machines) {
+      return tx.task.findUniqueOrThrow({ where: { id: taskId }, include: taskInclude });
     }
     return updated;
   });
@@ -1300,6 +1418,18 @@ export async function transitionTask(
     }
     return updated;
   });
+  // Автоматика по станкам (21.08.2026, PRD §16.1) — СТРОГО ПОСЛЕ коммита DONE и вне транзакции
+  // задачи: она не имеет права заблокировать водителя, а внутри транзакции проглоченная ошибка
+  // оставила бы половину записей. Все три пути DONE (водитель, диспетчер, офлайн-досылка) идут
+  // сюда, а повтор по Idempotency-Key возвращает кэшированный ответ и досюда не доходит.
+  // Функция сама завёрнута в try/catch — здесь второй барьер на случай сбоя ещё до него.
+  if (toStatus === "DONE" && task.kind === "DELIVERY") {
+    try {
+      await applyMachineAutomationAfterDone(taskId, actor);
+    } catch (e) {
+      console.error("machine automation: не запустилась", { taskId, error: e });
+    }
+  }
   // Отмена диспетчером → пуш водителю (PRD §7). Движение статуса вперёд самим водителем не шлём.
   if (toStatus === "CANCELLED") notifyTaskAssignee(result, "cancelled", actor.id);
   // Деньги компании (carrierCost) отдаём только тем, кто ведёт заявки (11.08.2026). Форма важна:
