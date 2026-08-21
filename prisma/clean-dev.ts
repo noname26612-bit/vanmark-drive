@@ -39,10 +39,11 @@ async function main(): Promise<void> {
     events: await prisma.taskEvent.count(),
     shifts: await prisma.shift.count(),
     machines: await prisma.machine.count(),
+    files: (await prisma.attachment.count()) + (await prisma.machineAttachment.count()),
   };
   console.log(
     `До очистки: задач ${before.tasks}, событий ${before.events}, смен ${before.shifts}, ` +
-      `станков ${before.machines}`,
+      `станков ${before.machines}, вложений ${before.files}`,
   );
 
   // Порядок важен: сначала то, что ссылается на задачи и смены, потом сами задачи и смены.
@@ -50,6 +51,10 @@ async function main(): Promise<void> {
   await prisma.workItem.deleteMany({});
   await prisma.attachment.deleteMany({});
   await prisma.taskEvent.deleteMany({});
+  // Связи заявок со станками (21.08.2026): внешние ключи БЕЗ каскадов — станки не удаляются, а
+  // заявки уходят в мягкий архив. Значит связи надо снять руками, и обязательно ДО задач и станков,
+  // иначе удаление упирается в ON DELETE RESTRICT и вся очистка падает.
+  await prisma.taskMachine.deleteMany({});
   await prisma.task.deleteMany({});
   await prisma.shift.deleteMany({});
   await prisma.driverIdleNote.deleteMany({});
@@ -74,6 +79,15 @@ async function main(): Promise<void> {
       `смен ${await prisma.shift.count()}, станков ${await prisma.machine.count()}. ` +
       `Пользователи, справочники и настройки сохранены.`,
   );
+  // Файлы вложений остались на диске сиротами: строки, которые на них ссылались, только что удалены.
+  // Скрипт до файловой системы не дотягивается намеренно (UPLOADS_DIR у каждого стенда свой) —
+  // напоминаем очистить руками, см. скилл `dev-cleanup`.
+  if (before.files > 0) {
+    console.log(
+      `Осталось ${before.files} осиротевших файлов в UPLOADS_DIR (по умолчанию ./data/uploads) — ` +
+        `их можно удалить: rm -rf data/uploads/*`,
+    );
+  }
 }
 
 main()
