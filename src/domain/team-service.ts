@@ -9,6 +9,10 @@
 //    надо помнить. Их заводят прямо здесь, и здесь же правят целиком: кроме этого экрана, они
 //    в системе нигде не участвуют.
 //
+// Кто правит справочник (21.08.2026): диспетчер, админ и менеджер-сервисник — белый список
+// isTeamManagerRole в team-access.ts. Гейт стоит и в доменных функциях, а не только в route:
+// экран общий, изоляции «по владельцу» у него нет, и проверка права — единственная защита записи.
+//
 // Внешний перевозчик (isExternal) в справочник не входит — он не коллега, а подрядчик.
 // Удаления нет: сотрудника «убирают» деактивацией (isActive=false), потому что на нём могут висеть
 // отпуска и (в будущем) задачи, а история в этом проекте не переписывается.
@@ -18,6 +22,7 @@ import { Errors } from "./errors";
 import { dateKeyInTz } from "./kpi";
 import { upcomingBirthdays, type UpcomingBirthday } from "./birthdays";
 import { listAbsencesFrom, type AbsenceView } from "./absence-service";
+import { assertTeamManager } from "./team-access";
 import type { Role } from "@/generated/prisma/enums";
 
 export type Actor = { id: string; role: Role };
@@ -154,7 +159,7 @@ export async function createEmployee(
   input: { name: string; position?: string | null; phone?: string | null; birthday?: string | null },
   actor: Actor,
 ): Promise<TeamMemberView> {
-  void actor; // личность создавшего для этой сущности не журналируется (справочник, не документ)
+  assertTeamManager(actor); // личность создавшего не журналируется (справочник, не документ) — но право проверяем
   const today = dateKeyInTz(new Date());
   const name = parseName(input.name);
   const position = parseOptionalText(input.position, POSITION_MAX, "должность");
@@ -195,7 +200,7 @@ export async function updateTeamMember(
   patch: TeamMemberPatch,
   actor: Actor,
 ): Promise<TeamMemberView> {
-  void actor;
+  assertTeamManager(actor);
   const today = dateKeyInTz(new Date());
   const target = await prisma.user.findUnique({
     where: { id },
@@ -229,7 +234,7 @@ export async function updateTeamMember(
  * учётку с доступом отключают в «Управлении», где это осознанное действие с правами.
  */
 export async function deactivateEmployee(id: string, actor: Actor): Promise<void> {
-  void actor;
+  assertTeamManager(actor);
   const target = await prisma.user.findUnique({
     where: { id },
     select: { id: true, role: true, isActive: true },

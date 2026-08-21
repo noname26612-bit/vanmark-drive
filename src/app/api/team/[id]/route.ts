@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireDispatcher, errorResponse, readJson } from "@/lib/api-route";
+import { requireTeamManager, errorResponse, readJson } from "@/lib/api-route";
 import { deactivateEmployee, updateTeamMember, type TeamMemberPatch } from "@/domain/team-service";
 
 export const runtime = "nodejs";
@@ -8,13 +8,13 @@ export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
 
-// PATCH /api/team/:id — правка карточки сотрудника (PRD §18). Только диспетчер/админ.
+// PATCH /api/team/:id — правка карточки сотрудника (PRD §18). Диспетчер, админ, менеджер-сервисник.
 // Патч собираем по БЕЛОМУ списку ключей: «прислали поле» и «не прислали» — разные вещи, и лишнее
 // поле у учётки с доступом должно дать понятный отказ, а не молча потеряться.
 // Роль, логин, вход и флаги доступа не принимаются вовсе — это «Управление», а не справочник коллег.
 export async function PATCH(req: Request, { params }: Ctx) {
   try {
-    const user = await requireDispatcher();
+    const user = await requireTeamManager();
     const { id } = await params;
     const body = await readJson(req);
     const patch: TeamMemberPatch = {};
@@ -35,7 +35,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
 // учётки с доступом отключают в «Управлении».
 export async function DELETE(_req: Request, { params }: Ctx) {
   try {
-    const user = await requireDispatcher();
+    const user = await requireTeamManager();
     const { id } = await params;
     await deactivateEmployee(id, { id: user.id, role: user.role });
     return NextResponse.json(ok({ id }));

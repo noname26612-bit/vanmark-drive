@@ -161,24 +161,39 @@ test("Команда: отпуск действующему сотруднику
   await ctx.close();
 });
 
-test("Команда: права ролей — сервисник смотрит, водитель не видит вовсе", async ({ browser }) => {
-  const mctx = await browser.newContext();
-  const milena = await mctx.newPage();
-  await login(milena, "milena");
-  const someone = (await snapshot(milena)).members[0];
-
-  // Менеджер-сервисник: раздел открыт на просмотр, кнопок правки нет.
+test("Команда: права ролей — сервисник ведёт справочник, водитель не видит вовсе", async ({ browser }) => {
+  // Менеджер-сервисник: с 21.08.2026 не только смотрит, но и ведёт записи наравне с Миленой.
   const sctx = await browser.newContext();
   const maxim = await sctx.newPage();
   await login(maxim, "maxim");
   await maxim.goto("/team");
   await expect(maxim.getByRole("heading", { name: "Команда" })).toBeVisible();
-  await expect(maxim.locator('[data-testid="add-member"]')).toHaveCount(0);
-  await expect(maxim.locator('[data-testid="add-absence"]')).toHaveCount(0);
+  await expect(maxim.locator('[data-testid="add-member"]')).toBeVisible();
+  await expect(maxim.locator('[data-testid="add-absence"]')).toBeVisible();
   expect((await maxim.request.get("/api/team")).status()).toBe(200);
-  expect((await maxim.request.post("/api/team", { data: { name: "Нельзя" } })).status()).toBe(403);
-  expect((await maxim.request.patch(`/api/team/${someone.id}`, { data: { birthday: "1990-01-01" } })).status()).toBe(403);
-  expect((await maxim.request.delete(`/api/team/${someone.id}`)).status()).toBe(403);
+
+  // Полный круг его правок: завёл сотрудника → поставил ДР → поставил отпуск → всё убрал за собой.
+  const own = `e2e максим ${Date.now()}`;
+  const created = await maxim.request.post("/api/team", { data: { name: own, position: "цех" } });
+  expect(created.status()).toBe(201);
+  const createdId = ((await created.json()).data as Member).id;
+
+  expect((await maxim.request.patch(`/api/team/${createdId}`, { data: { birthday: "1990-03-14" } })).status()).toBe(200);
+  expect((await memberByName(maxim, own))?.birthday).toBe("1990-03-14");
+
+  const abs = await maxim.request.post("/api/absences", {
+    data: { driverId: createdId, dateFrom: plus7, dateTo: plus14, type: "VACATION" },
+  });
+  expect(abs.status()).toBe(200);
+  const absId = ((await abs.json()).data as { id: string }).id;
+  expect((await maxim.request.delete(`/api/absences/${absId}`)).status()).toBe(200);
+  expect((await maxim.request.delete(`/api/team/${createdId}`)).status()).toBe(200);
+  expect(await memberByName(maxim, own)).toBeUndefined();
+
+  // А смены, KPI и деньги ему по-прежнему закрыты: расширение прав в кадры туда не протекло
+  // (полный список закрытых ручек — machines-access.spec.ts, здесь два адресных спот-чека).
+  expect((await maxim.request.get(`/api/shifts?date=${today}`)).status()).toBe(403);
+  expect((await maxim.request.get(`/api/summary/overview?granularity=day&date=${today}`)).status()).toBe(403);
 
   // Водитель: ни экрана, ни данных.
   const dctx = await browser.newContext();
@@ -189,7 +204,6 @@ test("Команда: права ролей — сервисник смотри�
   await driver.goto("/team");
   await expect(driver).toHaveURL(/\/m(\/|$)/);
 
-  await mctx.close();
   await sctx.close();
   await dctx.close();
 });
