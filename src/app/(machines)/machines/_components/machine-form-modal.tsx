@@ -28,7 +28,7 @@ import {
 import { cn } from "@/lib/cn";
 import { CategoryCheckboxes } from "./category-checkboxes";
 import { ConfigurationField } from "./configuration-field";
-import { ChoiceRows } from "./choice-rows";
+import { ChoiceRows } from "@/components/ui/choice-rows";
 import { ModelCombobox } from "./model-combobox";
 import type { MachineDetail } from "@/lib/machine-dto";
 import type { EquipmentFamily, EquipmentKind, MachineCategory } from "@/generated/prisma/enums";

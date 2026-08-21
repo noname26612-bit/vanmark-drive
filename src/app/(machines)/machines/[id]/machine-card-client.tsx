@@ -3,6 +3,7 @@
    куке; next/image ходит через свой прокси без куки и получил бы 404. */
 
 import { useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import useSWR from "swr";
 import { Camera, Copy, Factory, Pencil, Trash2 } from "lucide-react";
 import { fetcher, apiSend, ApiError } from "@/lib/fetcher";
@@ -38,6 +39,8 @@ import {
   machineTitle,
 } from "@/lib/machine-ui";
 import { copyText } from "@/lib/clipboard";
+import { StatusBadge } from "@/components/status-badge";
+import { TASK_MACHINE_DIRECTION_LABEL } from "@/domain/task-machine-flow";
 import type { MachineDetail, MachineEventView } from "@/lib/machine-dto";
 import type { EquipmentKind, MachineCategory, MachineStatus } from "@/generated/prisma/enums";
 import { MachineCategoryBadge, MachineKindBadge, MachineStatusBadge } from "../_components/machine-badges";
@@ -45,7 +48,7 @@ import { CategoryCheckboxes } from "../_components/category-checkboxes";
 import { ModelCombobox } from "../_components/model-combobox";
 import { ShopTaskModal } from "./shop-task-modal";
 import { ChecksBanner } from "./checks-banner";
-import { ChoiceRows } from "../_components/choice-rows";
+import { ChoiceRows } from "@/components/ui/choice-rows";
 import { ConfigurationField } from "../_components/configuration-field";
 import { KitPanel } from "./kit-panel";
 import { StatusKitModal } from "./status-kit-modal";
@@ -55,10 +58,18 @@ export function MachineCardClient({
   id,
   initial,
   basePath = "/machines",
+  canOpenTasks = false,
 }: {
   id: string;
   initial: MachineDetail;
   basePath?: string;
+  /**
+   * Можно ли открыть заявку из блока «Заявки» (21.08.2026). Ссылку даём только тем, кто ведёт
+   * заявки (isTaskManagerRole) — водителю с персональным допуском к оборудованию раздел заявок
+   * диспетчера закрыт, и ссылка вела бы его в отказ. Номер заявки при этом видит каждый: это
+   * история станка, а не чужие данные.
+   */
+  canOpenTasks?: boolean;
 }) {
   const { data: machine = initial, mutate } = useSWR<MachineDetail>(
     `/api/machines/${id}`,
@@ -409,6 +420,40 @@ export function MachineCardClient({
       </section>
       )}
 
+      {/* ── Заявки, по которым станок везли (21.08.2026, PRD §16.1) ──
+          Отвечает на вопрос «куда он делся»: раньше перемещения жили только в заявке, и связать
+          их с карточкой можно было лишь по памяти. У складских остатков заявок не бывает. */}
+      {!stock && machine.tasks.length > 0 ? (
+        <section
+          className="flex flex-col gap-2 rounded-lg border border-neutral-200 bg-white p-4"
+          data-testid="machine-tasks"
+        >
+          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+            Заявки
+          </h2>
+          <ul className="flex flex-col">
+            {machine.tasks.map((t) => (
+              <li
+                key={t.taskId}
+                className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-neutral-100 py-2 last:border-0"
+              >
+                <MachineTaskRef taskId={t.taskId} number={t.taskNumber} canOpen={canOpenTasks} />
+                <span className="min-w-0 flex-1 truncate text-sm text-neutral-800">{t.title}</span>
+                <span className="text-xs text-neutral-500">
+                  {t.typeName} · {TASK_MACHINE_DIRECTION_LABEL[t.direction].toLowerCase()}
+                </span>
+                {t.archived ? (
+                  <span className="rounded border border-slate-300 px-1.5 text-xs text-slate-500">
+                    в архиве
+                  </span>
+                ) : null}
+                <StatusBadge status={t.status} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       {/* ── Комплект: что уезжает вместе со станком (15.08.2026) ── */}
       <KitPanel
         machine={machine}
@@ -704,6 +749,33 @@ export function MachineCardClient({
         />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Номер заявки в блоке «Заявки». Ссылкой — только тем, кто ведёт заявки: у водителя с персональным
+ * допуском к оборудованию раздел заявок диспетчера закрыт, и ссылка вела бы его в отказ. Сам номер
+ * показываем всем — это история станка.
+ */
+function MachineTaskRef({
+  taskId,
+  number,
+  canOpen,
+}: {
+  taskId: string;
+  number: number;
+  canOpen: boolean;
+}) {
+  const label = `№${number}`;
+  if (!canOpen) return <span className="text-sm font-medium text-neutral-900">{label}</span>;
+  return (
+    <Link
+      href={`/tasks/${taskId}`}
+      className="text-sm font-medium text-blue-700 hover:underline"
+      data-testid={`machine-task-link-${number}`}
+    >
+      {label}
+    </Link>
   );
 }
 

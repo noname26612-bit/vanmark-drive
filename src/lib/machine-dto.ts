@@ -5,6 +5,8 @@ import type {
   EquipmentKind,
   MachineCategory,
   MachineStatus,
+  TaskMachineDirection,
+  TaskStatus,
 } from "@/generated/prisma/enums";
 import type { MachineSummary } from "@/domain/machine-flags";
 
@@ -99,12 +101,48 @@ export type MachineListItem = {
   updatedAt: string; // ISO
 };
 
+/** Заявка, по которой везли станок — блок «Заявки» в карточке (21.08.2026, PRD §16.1). */
+export type MachineTaskLinkView = {
+  taskId: string;
+  taskNumber: number;
+  title: string;
+  typeName: string;
+  status: TaskStatus;
+  scheduledDate: string | null; // YYYY-MM-DD
+  archived: boolean; // заявка убрана в архив — показываем пометкой, ссылку не прячем
+  direction: TaskMachineDirection;
+  appliedAt: string | null; // ISO — автоматика по этой связи уже отработала
+  createdAt: string; // ISO — когда привязали
+};
+
 export type MachineDetail = MachineListItem & {
   voidReason: string | null;
   createdAt: string; // ISO
   createdByName: string | null;
   attachments: MachineAttachmentView[];
   events: MachineEventView[];
+  /** Заявки, по которым станок везли; свежие сверху. Пусто — станок к заявкам не привязывали. */
+  tasks: MachineTaskLinkView[];
+};
+
+/**
+ * Строка пикера станков в форме заявки (21.08.2026). Нарочно компактная: пикер грузится целиком
+ * и фильтруется на клиенте, а длинные тексты карточки там не нужны. Цены здесь нет — пикером
+ * пользуется тот же экран, что уходит в телефон, а деньги водителям не показываются.
+ */
+export type MachinePickerItem = {
+  id: string;
+  ourNumber: number | null;
+  clientNumber: number | null;
+  family: EquipmentFamily;
+  kind: EquipmentKind;
+  model: string;
+  configuration: string | null;
+  status: MachineStatus;
+  categories: MachineCategory[];
+  invoice1C: string | null;
+  /** Обязательные отметки (диагностика/сверка) не проставлены — янтарная точка. Ничего не блокирует. */
+  marksUnset: boolean;
 };
 
 export type MachineListResult = {

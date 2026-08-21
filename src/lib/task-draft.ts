@@ -3,7 +3,18 @@
 // закрытии СВОРАЧИВАЕТСЯ в черновик — плашка-чип внизу экрана, по клику форма открывается заново.
 // Черновик живёт ТОЛЬКО на клиенте (localStorage): на сервер ничего не уходит до кнопки «Создать»,
 // поэтому ни фантомных задач, ни номеров, ни записей в журнал — изоляция и правила проекта не задеты.
-import type { PassStatus, PaymentType } from "@/generated/prisma/enums";
+import type { PassStatus, PaymentType, TaskMachineDirection } from "@/generated/prisma/enums";
+
+/**
+ * Станок, выбранный в форме заявки (21.08.2026). `label` хранится вместе с id намеренно: черновик
+ * лежит в localStorage и переживает перезагрузку, а показать чип «77-5 · ЛБМ 200» нужно сразу, не
+ * дожидаясь ответа картотеки.
+ */
+export type DraftMachine = {
+  machineId: string;
+  direction: TaskMachineDirection;
+  label: string;
+};
 
 // Состояние формы создания/редактирования задачи. Полностью сериализуемо (строки/булевы/enum) —
 // кладётся в localStorage целиком без потерь.
@@ -32,6 +43,9 @@ export type FormState = {
   requiresAct: boolean; // требование акта (дефолт из типа, диспетчер может снять)
   actWaivedNote: string; // причина снятия требования акта
   carrierCost: string; // стоимость поездки внешнего перевозчика, ₽ (этап 3; видна при внешнем исполнителе)
+  // Станки заявки (21.08.2026, PRD §16.1). Поле аддитивное: версию DRAFTS_STORAGE_KEY НЕ поднимаем,
+  // чтобы не выбросить живые черновики Милены — старые читаются с дефолтом [] (прецедент coDriverId).
+  machines: DraftMachine[];
 };
 
 export function emptyForm(typeId: string, date: string, requiresAct: boolean): FormState {
@@ -60,6 +74,7 @@ export function emptyForm(typeId: string, date: string, requiresAct: boolean): F
     requiresAct,
     actWaivedNote: "",
     carrierCost: "",
+    machines: [],
   };
 }
 
@@ -89,6 +104,9 @@ export function isDirtyForm(form: FormState): boolean {
     filledText ||
     form.assigneeId !== "" ||
     form.coDriverId !== "" ||
+    // Выбранный станок — самый дорогой ввод в форме: его искали в картотеке, а то и заводили
+    // карточку прямо отсюда. Терять такое при случайном закрытии нельзя.
+    (form.machines ?? []).length > 0 ||
     form.priority ||
     form.paymentType !== "NONE" ||
     form.passStatus !== "NOT_NEEDED"

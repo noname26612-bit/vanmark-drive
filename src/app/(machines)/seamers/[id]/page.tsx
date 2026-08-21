@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { requireEquipmentUser } from "@/lib/session";
 import { getMachine } from "@/domain/machine-service";
 import { DomainError } from "@/domain/errors";
+import { isTaskManagerRole } from "@/domain/task-access";
 import { MachineCardClient } from "../../machines/[id]/machine-card-client";
 
 export const dynamic = "force-dynamic";
@@ -19,5 +20,12 @@ export default async function SeamerPage({ params }: { params: Promise<{ id: str
   });
   if (!machine) notFound();
 
-  return <MachineCardClient id={id} initial={machine} basePath="/seamers" />;
+  return (
+    <MachineCardClient
+      id={id}
+      initial={machine}
+      basePath="/seamers"
+      canOpenTasks={isTaskManagerRole(user.role)}
+    />
+  );
 }

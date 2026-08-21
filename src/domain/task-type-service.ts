@@ -1,7 +1,7 @@
 // Справочник типов задач. Чтение активных — диспетчеру (для формы создания);
 // управление — только админ (ARCHITECTURE §7: /api/admin/task-types — А).
 import { prisma } from "@/lib/prisma";
-import type { Role, TaskKind } from "@/generated/prisma/enums";
+import type { MachineFlow, Role, TaskKind } from "@/generated/prisma/enums";
 import { Errors } from "./errors";
 
 /**
@@ -45,6 +45,9 @@ export type TaskTypeInput = {
   sortOrder?: number;
   isActive?: boolean;
   onSiteMinutes?: number; // норма работы на объекте, мин (Фаза 2, PRD §14.2)
+  // Что делать с привязанным станком при завершении заявки (21.08.2026, PRD §16.1).
+  // Дефолт NONE безопасен: связь и журналы есть, состояние карточки система не трогает.
+  machineFlow?: MachineFlow;
 };
 
 export async function createTaskType(input: Partial<TaskTypeInput>, actor: { role: Role }) {
@@ -59,6 +62,7 @@ export async function createTaskType(input: Partial<TaskTypeInput>, actor: { rol
       icon: input.icon?.trim() || null,
       sortOrder: input.sortOrder ?? 0,
       isActive: input.isActive ?? true,
+      machineFlow: input.machineFlow ?? "NONE",
     },
   });
 }
@@ -78,6 +82,7 @@ export async function updateTaskType(
     sortOrder?: number;
     isActive?: boolean;
     onSiteMinutes?: number;
+    machineFlow?: MachineFlow;
   } = {};
 
   if (input.name !== undefined) {
@@ -105,6 +110,14 @@ export async function updateTaskType(
     const m = Math.trunc(input.onSiteMinutes);
     if (!Number.isFinite(m) || m < 0) throw Errors.validation("Норма времени должна быть числом ≥ 0");
     data.onSiteMinutes = m;
+  }
+  if (input.machineFlow !== undefined) {
+    // Задачам сотрудникам станки не привязываются вовсе (stripDeliveryOnlyFields) — правило
+    // на служебном типе было бы обещанием, которого система не выполнит.
+    if (existing.kind === "STAFF" && input.machineFlow !== "NONE") {
+      throw Errors.validation("К задачам сотрудникам станки не привязываются");
+    }
+    data.machineFlow = input.machineFlow;
   }
 
   return prisma.taskType.update({ where: { id }, data });

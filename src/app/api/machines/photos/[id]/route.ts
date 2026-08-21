@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { ok } from "@/lib/api";
-import { requireMachineUser, errorResponse } from "@/lib/api-route";
-import { getMachinePhotoForDownload, deleteMachinePhoto } from "@/domain/machine-attachment-service";
+import { requireApiUser, requireMachineUser, errorResponse } from "@/lib/api-route";
+import { getMachinePhotoForViewer, deleteMachinePhoto } from "@/domain/machine-attachment-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,11 +11,16 @@ type Ctx = { params: Promise<{ id: string }> };
 // GET /api/machines/photos/:id — отдать файл С проверкой прав (НЕ из public/, ARCHITECTURE §6).
 // nosniff + inline: браузер не угадывает тип, отдаём ровно сохранённый mime.
 // Путь намеренно НЕ /api/machines/attachments/:id — иначе он пересекался бы с /api/machines/:id/...
+//
+// ЕДИНСТВЕННЫЙ handler модуля БЕЗ requireMachineUser (21.08.2026): фото станка видит ещё и
+// водитель, которому назначена заявка с этим станком. Гейт не ослаблен, а перенесён в домен —
+// getMachinePhotoForViewer проверяет обе двери и на любой отказ отдаёт 404. Здесь только личность
+// из сессии; тела запроса эта ручка не читает вовсе.
 export async function GET(_req: Request, { params }: Ctx) {
   try {
-    const user = await requireMachineUser();
+    const user = await requireApiUser();
     const { id } = await params;
-    const { bytes, mimeType } = await getMachinePhotoForDownload(id, user);
+    const { bytes, mimeType } = await getMachinePhotoForViewer(id, user);
     const body = new Uint8Array(bytes); // Buffer → Uint8Array<ArrayBuffer> для BodyInit
     return new NextResponse(body, {
       status: 200,

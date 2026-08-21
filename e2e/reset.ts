@@ -51,6 +51,32 @@ export async function insertStaleShift(driverLogin: string, daysAgo: number): Pr
   return id;
 }
 
+/** Одно значение из БД (первая колонка первой строки). Пусто — вернём "". */
+function psqlValue(sql: string): string {
+  const out = execSync(`docker exec ${CONTAINER} psql -U vanmark -d vanmark -t -A -c "${sql}"`, {
+    encoding: "utf8",
+  });
+  return out.trim().split("\n")[0].trim();
+}
+
+/**
+ * id типа заявки по названию. Своего API у справочника типов нет (диспетчер получает его серверным
+ * рендером страницы), а тестам, которые создают заявки запросом, id нужен — берём из БД тем же
+ * способом, что и остальные подготовительные операции e2e.
+ */
+export async function taskTypeIdByName(name: string): Promise<string> {
+  const id = psqlValue(`SELECT id FROM \\"TaskType\\" WHERE name='${name}'`);
+  if (!id) throw new Error(`taskTypeIdByName: тип «${name}» не найден — выполните pnpm db:seed`);
+  return id;
+}
+
+/** id пользователя по логину — для назначения исполнителя запросом. */
+export async function userIdByLogin(login: string): Promise<string> {
+  const id = psqlValue(`SELECT id FROM \\"User\\" WHERE login='${login}'`);
+  if (!id) throw new Error(`userIdByLogin: пользователь ${login} не найден`);
+  return id;
+}
+
 // Сброс смен (этап C): @@unique(driverId, date) — повторный прогон в тот же день иначе натыкается на
 // смену прошлого теста. Удаляем все смены (в dev-БД они только тестовые).
 export async function resetShifts(): Promise<void> {

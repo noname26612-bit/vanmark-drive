@@ -22,6 +22,7 @@ import {
   categoriesLabel,
   isArchivedStatus,
   isRetiredStatus,
+  isExclusiveCategory,
   isStatusAllowedForCategories,
   isValidCategorySet,
   isKindInFamily,
@@ -649,7 +650,14 @@ function assertCategorySet(categories: readonly MachineCategory[]): void {
     throw Errors.validation("Неизвестная категория");
   }
   if (!isValidCategorySet(categories)) {
-    throw Errors.validation("«Клиентский» не совмещается с нашими категориями");
+    // Эксклюзивных в наборе может оказаться несколько — называем первую, этого достаточно,
+    // чтобы человек понял, какая галочка мешает.
+    const exclusive = categories.find(isExclusiveCategory);
+    throw Errors.validation(
+      exclusive
+        ? `Категория «${MACHINE_CATEGORY_LABEL[exclusive]}» не совмещается с другими`
+        : "Недопустимый набор категорий",
+    );
   }
 }
 
@@ -816,6 +824,27 @@ export async function getMachine(id: string, actor: Actor): Promise<MachineDetai
         },
         orderBy: { at: "desc" },
       },
+      // Заявки, по которым станок везли (21.08.2026, PRD §16.1): свежие сверху. Полей ровно
+      // столько, сколько нужно строке блока «Заявки» — ни адреса, ни денег заявки здесь нет.
+      taskLinks: {
+        select: {
+          direction: true,
+          appliedAt: true,
+          createdAt: true,
+          task: {
+            select: {
+              id: true,
+              number: true,
+              title: true,
+              status: true,
+              scheduledDate: true,
+              archivedAt: true,
+              type: { select: { name: true } },
+            },
+          },
+        },
+        orderBy: { createdAt: "desc" },
+      },
     },
   });
   if (!m) throw Errors.notFound();
@@ -844,6 +873,18 @@ export async function getMachine(id: string, actor: Actor): Promise<MachineDetai
       comment: e.comment,
       changes: Array.isArray(e.changes) ? (e.changes as unknown as MachineChange[]) : [],
       at: e.at.toISOString(),
+    })),
+    tasks: m.taskLinks.map((l) => ({
+      taskId: l.task.id,
+      taskNumber: l.task.number,
+      title: l.task.title,
+      typeName: l.task.type.name,
+      status: l.task.status,
+      scheduledDate: l.task.scheduledDate ? utcDateKey(l.task.scheduledDate) : null,
+      archived: l.task.archivedAt !== null,
+      direction: l.direction,
+      appliedAt: l.appliedAt?.toISOString() ?? null,
+      createdAt: l.createdAt.toISOString(),
     })),
   };
 }
@@ -1037,47 +1078,66 @@ export async function changeStatus(
   const kit = input.withKit === true ? await loadKitForTransfer(id, input.status) : [];
 
   await prisma.$transaction(async (tx) => {
-    await applyStatusChangeTx(tx, before, input.status, reason, actor.id);
-    for (const link of kit) {
-      if (link.stock) {
-        // Продажа/выдача списывает штуки со склада один раз: consumedAt закрывает связь, поэтому
-        // повторный перевод того же комплекта остаток больше не трогает.
-        await tx.machine.update({
-          where: { id: link.partId },
-          data: { quantity: { decrement: link.qty } },
-        });
-        await tx.machineKitPart.update({
-          where: { headId_partId: { headId: id, partId: link.partId } },
-          data: { consumedAt: new Date() },
-        });
-        await tx.machineEvent.create({
-          data: {
-            machineId: link.partId,
-            actorId: actor.id,
-            kind: "comment",
-            comment: `Списано ${link.qty} шт в составе комплекта ${headLabel(link.head)} (${MACHINE_STATUS_LABEL[input.status]})`,
-          },
-        });
-        continue;
-      }
-      await applyStatusChangeTx(
-        tx,
-        { id: link.partId, status: link.partStatus, categories: link.partCategories },
-        input.status,
-        reason,
-        actor.id,
-      );
+    await applyStatusWithKitTx(tx, before, input.status, reason, actor.id, kit);
+  });
+  return getMachine(id, actor);
+}
+
+/**
+ * Перевод головного станка вместе с комплектом внутри транзакции. Вынесено из `changeStatus`
+ * (21.08.2026) без единого изменения поведения: тем же кодом теперь пользуется автоматика при
+ * завершении заявки (task-machine-service). Две копии этой логики неизбежно разъехались бы —
+ * а списание склада ошибок не прощает.
+ *
+ * `kit` заранее готовит `loadKitForTransfer` (чтение вне транзакции + проверка совместимости).
+ */
+export async function applyStatusWithKitTx(
+  tx: Prisma.TransactionClient,
+  before: { id: string; status: MachineStatus; categories?: MachineCategory[] },
+  toStatus: MachineStatus,
+  reason: string | null,
+  actorId: string,
+  kit: readonly TransferLink[],
+): Promise<void> {
+  await applyStatusChangeTx(tx, before, toStatus, reason, actorId);
+  for (const link of kit) {
+    if (link.stock) {
+      // Продажа/выдача списывает штуки со склада один раз: consumedAt закрывает связь, поэтому
+      // повторный перевод того же комплекта остаток больше не трогает.
+      await tx.machine.update({
+        where: { id: link.partId },
+        data: { quantity: { decrement: link.qty } },
+      });
+      await tx.machineKitPart.update({
+        where: { headId_partId: { headId: before.id, partId: link.partId } },
+        data: { consumedAt: new Date() },
+      });
       await tx.machineEvent.create({
         data: {
           machineId: link.partId,
-          actorId: actor.id,
+          actorId,
           kind: "comment",
-          comment: `Состояние изменено вместе с комплектом ${headLabel(link.head)}`,
+          comment: `Списано ${link.qty} шт в составе комплекта ${headLabel(link.head)} (${MACHINE_STATUS_LABEL[toStatus]})`,
         },
       });
+      continue;
     }
-  });
-  return getMachine(id, actor);
+    await applyStatusChangeTx(
+      tx,
+      { id: link.partId, status: link.partStatus, categories: link.partCategories },
+      toStatus,
+      reason,
+      actorId,
+    );
+    await tx.machineEvent.create({
+      data: {
+        machineId: link.partId,
+        actorId,
+        kind: "comment",
+        comment: `Состояние изменено вместе с комплектом ${headLabel(link.head)}`,
+      },
+    });
+  }
 }
 
 type NumberedRef = { ourNumber: number | null; clientNumber: number | null };
@@ -1093,7 +1153,7 @@ function partLabel(part: NumberedRef & { model: string }): string {
   return number ? `${number} (${part.model})` : part.model;
 }
 
-type TransferLink = {
+export type TransferLink = {
   partId: string;
   qty: number;
   stock: boolean;
@@ -1108,7 +1168,7 @@ type TransferLink = {
  * говорим человеческим текстом: «продать вместе» арендный нож нельзя, и узнать об этом надо до
  * перевода, а не обнаружить потом половину переведённого комплекта.
  */
-async function loadKitForTransfer(headId: string, status: MachineStatus): Promise<TransferLink[]> {
+export async function loadKitForTransfer(headId: string, status: MachineStatus): Promise<TransferLink[]> {
   const head = await prisma.machine.findUnique({
     where: { id: headId },
     select: {
