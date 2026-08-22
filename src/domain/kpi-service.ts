@@ -192,7 +192,8 @@ async function listMarks(
   return marks.map((m) => toMarkView(m, weights));
 }
 
-async function isPeriodClosed(period: string): Promise<boolean> {
+/** Месяц закрыт — расчёт зафиксирован снимком PayrollStatement (экспортируется ради «Управления»). */
+export async function isPeriodClosed(period: string): Promise<boolean> {
   return (await prisma.payrollStatement.count({ where: { period } })) > 0;
 }
 

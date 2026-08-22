@@ -1,9 +1,10 @@
 // Запросы по пользователям для экранов диспетчера.
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/password";
-import { Errors } from "./errors";
+import { DomainError, Errors } from "./errors";
 import { assertPasswordStrength } from "./password-policy";
 import type { DriverDTO } from "@/lib/task-dto";
+import type { Role } from "./roles";
 
 /** Активные водители для колонок доски и выбора исполнителя (включая внешних без входа).
  *  onPayroll = есть активный денежный профиль (штатный на окладе) — признак «работает каждый день»
@@ -71,11 +72,21 @@ export async function hasEquipmentAccess(userId: string): Promise<boolean> {
   return (u?.isActive && u.equipmentAccess) === true;
 }
 
-// Доступ водителей для админ-экрана «Водители — доступ» (02.07): включить/выключить вход.
-export type DriverAccessView = {
+/**
+ * Роли, которыми управляет экран «Пользователи и доступ» (22.08.2026): все, у кого вход в систему
+ * вообще возможен. EMPLOYEE сюда НЕ входит и не войдёт: сотрудник цеха заводится в «Команде» без
+ * входа by design (PRD §18) — открыть ему доступ можно только осознанной сменой роли, а не кнопкой
+ * в списке. Белый список, а не «все кроме EMPLOYEE»: следующая роль не должна пролезать сама.
+ */
+export const MANAGED_ROLES: readonly Role[] = ["ADMIN", "DISPATCHER", "SERVICE_MANAGER", "DRIVER"];
+
+// Доступ пользователей для админ-экрана «Пользователи и доступ» (02.07 — водители, 22.08 — офис).
+export type UserAccessView = {
   id: string;
   name: string;
   login: string;
+  role: Role;
+  position: string | null; // должность (Михаил-директор) — показывается бейджем рядом с ролью
   canLogin: boolean;
   isExternal: boolean;
   onPayroll: boolean;
@@ -85,39 +96,26 @@ export type DriverAccessView = {
   staffTasksAccess: boolean;
 };
 
-/** Список водителей с признаками доступа — только для админа (guard в route). */
-export async function listDriverAccess(): Promise<DriverAccessView[]> {
+/**
+ * Учётки, которыми управляет админ: офис (админ, диспетчер, менеджер-сервисник) и водители.
+ * Только для админа (guard в route). Сотрудников без входа (EMPLOYEE) здесь нет.
+ */
+export async function listUserAccess(): Promise<UserAccessView[]> {
   const rows = await prisma.user.findMany({
-    where: { role: "DRIVER", isActive: true },
-    select: {
-      id: true,
-      name: true,
-      login: true,
-      canLogin: true,
-      isExternal: true,
-      equipmentAccess: true,
-      staffTasksAccess: true,
-      payProfile: { select: { isActive: true } },
-    },
-    orderBy: { name: "asc" },
+    where: { role: { in: [...MANAGED_ROLES] }, isActive: true },
+    select: ACCESS_SELECT,
+    orderBy: [{ role: "asc" }, { name: "asc" }],
   });
-  return rows.map((u) => ({
-    id: u.id,
-    name: u.name,
-    login: u.login,
-    canLogin: u.canLogin,
-    isExternal: u.isExternal,
-    onPayroll: u.payProfile?.isActive ?? false,
-    equipmentAccess: u.equipmentAccess,
-    staffTasksAccess: u.staffTasksAccess,
-  }));
+  return rows.map(toAccessView);
 }
 
-// Поля ответа админ-экрана — один select на все три ручки.
+// Поля ответа админ-экрана — один select на все ручки доступа.
 const ACCESS_SELECT = {
   id: true,
   name: true,
   login: true,
+  role: true,
+  position: true,
   canLogin: true,
   isExternal: true,
   equipmentAccess: true,
@@ -129,6 +127,8 @@ type AccessRow = {
   id: string;
   name: string;
   login: string;
+  role: Role;
+  position: string | null;
   canLogin: boolean;
   isExternal: boolean;
   equipmentAccess: boolean;
@@ -136,11 +136,13 @@ type AccessRow = {
   payProfile: { isActive: boolean } | null;
 };
 
-function toAccessView(u: AccessRow): DriverAccessView {
+function toAccessView(u: AccessRow): UserAccessView {
   return {
     id: u.id,
     name: u.name,
     login: u.login,
+    role: u.role,
+    position: u.position,
     canLogin: u.canLogin,
     isExternal: u.isExternal,
     onPayroll: u.payProfile?.isActive ?? false,
@@ -150,9 +152,9 @@ function toAccessView(u: AccessRow): DriverAccessView {
 }
 
 /**
- * Найти водителя для админ-действий. Роль строго DRIVER: иначе через эти ручки можно было бы
- * сбросить пароль диспетчеру или админу — это захват учётки. Чужая роль → 404 (не 403: не
- * подсказываем, что такой пользователь существует).
+ * Найти водителя для действий, которые ТОЛЬКО про водителя: внешний перевозчик, доступ к
+ * оборудованию, задачи сотрудникам. Чужая роль → 404 (не 403: не подсказываем, что пользователь
+ * существует). Пароль и вход управляются шире — см. requireManagedUser.
  */
 async function requireDriverUser(driverId: string): Promise<{ id: string; login: string }> {
   const user = await prisma.user.findUnique({
@@ -164,13 +166,55 @@ async function requireDriverUser(driverId: string): Promise<{ id: string; login:
 }
 
 /**
- * Включить/выключить вход водителю (админ, осознанно — PRD §2: внешнему перевозчику вход включается
- * этой ручкой, пароль остаётся прежним из сида). Только роль DRIVER — диспетчера/админа не трогаем.
+ * Найти учётку, которой админ вправе управлять (пароль и вход): офис и водители (MANAGED_ROLES).
+ * Сотрудник без входа (EMPLOYEE) и несуществующий id — одинаково 404: у первого доступа нет
+ * by design, и различать их в ответе незачем.
  */
-export async function setDriverLoginAccess(driverId: string, canLogin: boolean): Promise<DriverAccessView> {
-  await requireDriverUser(driverId);
+async function requireManagedUser(userId: string): Promise<{ id: string; login: string; role: Role }> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, role: true, login: true, isActive: true },
+  });
+  if (!user || !user.isActive || !MANAGED_ROLES.includes(user.role)) throw Errors.notFound();
+  return { id: user.id, login: user.login, role: user.role };
+}
+
+/**
+ * Включить/выключить вход учётке (админ, осознанно — PRD §2: внешнему перевозчику вход включается
+ * этой ручкой, пароль остаётся прежним из сида). С 22.08.2026 — не только водителю, но и офису.
+ *
+ * Два предохранителя, без которых системой можно закрыть самого себя:
+ *   • СЕБЕ вход не выключают — иначе один клик выкидывает администратора из системы, и вернуть
+ *     доступ будет некому (кнопка «Разрешить» живёт за админским входом);
+ *   • ПОСЛЕДНЕГО активного админа со входом не выключают — тот же тупик, только в обход первого
+ *     правила (два админа выключают друг друга по очереди).
+ * Личность действующего берётся из сессии вызывающим (route), а не из тела запроса.
+ */
+export async function setUserLoginAccess(
+  actorId: string,
+  userId: string,
+  canLogin: boolean,
+): Promise<UserAccessView> {
+  const target = await requireManagedUser(userId);
+  if (!canLogin) {
+    if (target.id === actorId) {
+      throw Errors.validation("Нельзя закрыть вход самому себе — попросите другого администратора");
+    }
+    if (target.role === "ADMIN") {
+      const admins = await prisma.user.count({
+        where: { role: "ADMIN", isActive: true, canLogin: true, id: { not: target.id } },
+      });
+      if (admins === 0) {
+        throw new DomainError(
+          "LAST_ADMIN",
+          "Это последний администратор со входом — сначала дайте вход другому",
+          409,
+        );
+      }
+    }
+  }
   const updated = await prisma.user.update({
-    where: { id: driverId },
+    where: { id: userId },
     data: { canLogin },
     select: ACCESS_SELECT,
   });
@@ -183,7 +227,7 @@ export async function setDriverLoginAccess(driverId: string, canLogin: boolean):
  * разработчика было нельзя. Признак меняет поведение: без смен (SHIFT_REQUIRED снят), вне KPI и
  * зарплаты, в заявке доступна стоимость поездки.
  */
-export async function setDriverExternal(driverId: string, isExternal: boolean): Promise<DriverAccessView> {
+export async function setDriverExternal(driverId: string, isExternal: boolean): Promise<UserAccessView> {
   await requireDriverUser(driverId);
   const updated = await prisma.user.update({
     where: { id: driverId },
@@ -201,7 +245,7 @@ export async function setDriverExternal(driverId: string, isExternal: boolean): 
 export async function setDriverEquipmentAccess(
   driverId: string,
   equipmentAccess: boolean,
-): Promise<DriverAccessView> {
+): Promise<UserAccessView> {
   await requireDriverUser(driverId);
   const updated = await prisma.user.update({
     where: { id: driverId },
@@ -220,7 +264,7 @@ export async function setDriverEquipmentAccess(
 export async function setDriverStaffTasksAccess(
   driverId: string,
   staffTasksAccess: boolean,
-): Promise<DriverAccessView> {
+): Promise<UserAccessView> {
   await requireDriverUser(driverId);
   const updated = await prisma.user.update({
     where: { id: driverId },
@@ -231,20 +275,21 @@ export async function setDriverStaffTasksAccess(
 }
 
 /**
- * Задать водителю новый пароль (админ-сброс, 03.08): текущий пароль не спрашиваем — это действие
- * администратора, а не смена пароля пользователем. Пароль приходит только в теле запроса, нигде
- * не логируется и не возвращается в ответе; хранится argon2id-хэшем.
+ * Задать пользователю новый пароль (админ-сброс, 03.08 — водителям, 22.08 — и офису): текущий
+ * пароль не спрашиваем, это действие администратора, а не смена пароля пользователем. Пароль
+ * приходит только в теле запроса, нигде не логируется и не возвращается в ответе; хранится
+ * argon2id-хэшем.
  *
- * Известное ограничение: уже выданная сессия водителя (JWT в куке) продолжает работать до истечения
- * срока — смена пароля её не выбивает. Для трёх сотрудников риск невелик; выбивание сессий
- * потребовало бы отдельного поля и миграции.
+ * Известное ограничение: уже выданная сессия (JWT в куке) продолжает работать до истечения срока —
+ * смена пароля её не выбивает. Для трёх сотрудников риск невелик; выбивание сессий потребовало бы
+ * отдельного поля и миграции.
  */
-export async function setDriverPassword(driverId: string, newPassword: string): Promise<DriverAccessView> {
-  const user = await requireDriverUser(driverId);
+export async function setUserPassword(userId: string, newPassword: string): Promise<UserAccessView> {
+  const user = await requireManagedUser(userId);
   assertPasswordStrength(newPassword, user.login);
   const passwordHash = await hashPassword(newPassword);
   const updated = await prisma.user.update({
-    where: { id: driverId },
+    where: { id: userId },
     data: { passwordHash },
     select: ACCESS_SELECT,
   });

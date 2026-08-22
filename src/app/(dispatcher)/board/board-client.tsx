@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import {
@@ -199,6 +199,19 @@ export function BoardClient({
     : null;
   const attentionVisibleCount =
     (attentionVisible?.overdue.length ?? 0) + (attentionVisible?.tomorrowPasses.length ?? 0);
+
+  // Переход по ссылке «/board#attention» (22.08.2026, плашки «Требует внимания» на «Управлении»):
+  // блок рисуется после ответа сервера, поэтому к моменту загрузки якоря браузер его ещё не видит и
+  // никуда не прокручивает. Доводим сами — один раз, когда блоку есть что показать.
+  // Флаг «уже прокрутили» держим в ref, а не в состоянии: перерисовывать доску из-за него незачем
+  // (и setState в эффекте здесь был бы лишним).
+  const attentionScrolled = useRef(false);
+  useEffect(() => {
+    if (attentionScrolled.current || attentionVisibleCount === 0) return;
+    if (typeof window === "undefined" || window.location.hash !== "#attention") return;
+    attentionScrolled.current = true;
+    scrollToAttention();
+  }, [attentionVisibleCount]);
 
   const total = todays.length;
   const inWork = todays.filter((t) => t.status === "IN_PROGRESS").length;
