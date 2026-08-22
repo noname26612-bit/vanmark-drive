@@ -141,3 +141,17 @@ export const EVENT_LABEL: Record<string, string> = {
   task_link: "Привязка к заявке",
   task_unlink: "Отвязка от заявки",
 };
+
+/**
+ * «77-5 · ЛБМ 200» — короткая подпись станка для чипа формы заявки и строки пикера.
+ * Живёт здесь, а не в пикере: чипы собирает и чистый `lib/task-draft` (копия заявки), а тянуть
+ * туда клиентский модуль со SWR нельзя.
+ */
+export function pickerLabel(m: {
+  ourNumber: number | null;
+  clientNumber: number | null;
+  model: string;
+}): string {
+  const number = formatMachineNumber(m);
+  return number ? `${number} · ${m.model}` : m.model;
+}

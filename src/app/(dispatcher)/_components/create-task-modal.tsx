@@ -5,14 +5,14 @@ import { Plus, X } from "lucide-react";
 import { apiSend } from "@/lib/fetcher";
 import type { DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
 import type { PassStatus, PaymentType, TaskMachineDirection } from "@/generated/prisma/enums";
-import { emptyForm, isDirtyForm, type FormState } from "@/lib/task-draft";
+import { emptyForm, formFromTask, isDirtyForm, type FormState } from "@/lib/task-draft";
 import {
   TASK_MACHINE_DIRECTION_LABEL,
   isBidirectionalFlow,
   normalizeDirection,
   presetDirection,
 } from "@/domain/task-machine-flow";
-import { MachineLinkPicker, pickerLabel, type PickedMachine } from "./machine-link-picker";
+import { MachineLinkPicker, type PickedMachine } from "./machine-link-picker";
 import { cn } from "@/lib/cn";
 import { PASS_LABEL, PAYMENT_LABEL } from "@/lib/task-ui";
 import { parsePhones } from "@/lib/phone";
@@ -25,41 +25,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select } from "@/components/ui/select";
 import { Field } from "@/components/ui/field";
 
-function formFromTask(t: TaskDTO): FormState {
-  return {
-    typeId: t.type.id,
-    title: t.title,
-    address: t.address,
-    description: t.description ?? "",
-    equipment: t.equipment ?? "",
-    orgName: t.orgName ?? "",
-    contactName: t.contactName ?? "",
-    contactPhone: t.contactPhone ?? "",
-    addressLink: t.addressLink ?? "",
-    invoiceNumber: t.invoiceNumber ?? "",
-    paymentType: t.paymentType,
-    paymentAmount: t.paymentAmount === null ? "" : String(t.paymentAmount),
-    paymentNote: t.paymentNote ?? "",
-    scheduledDate: t.scheduledDate ? t.scheduledDate.slice(0, 10) : "",
-    timeFrom: t.timeFrom ?? "",
-    timeTo: t.timeTo ?? "",
-    timeNote: t.timeNote ?? "",
-    passStatus: t.passStatus,
-    priority: t.priority,
-    assigneeId: t.assigneeId ?? "",
-    coDriverId: t.coDriverId ?? "",
-    requiresAct: t.requiresSignedDoc,
-    actWaivedNote: t.actWaivedNote ?? "",
-    carrierCost: t.carrierCost == null ? "" : String(t.carrierCost),
-    // Старые клиенты и офлайн-кэш поля не знают — читаем с дефолтом (прецедент taskKindOf).
-    machines: (t.machines ?? []).map((m) => ({
-      machineId: m.machineId,
-      direction: m.direction,
-      label: pickerLabel(m.machine),
-    })),
-  };
-}
-
 export function CreateTaskModal({
   open,
   onClose,
@@ -69,6 +34,7 @@ export function CreateTaskModal({
   defaultDate = "",
   editTask = null,
   initialForm = null,
+  copyOf = null,
   onMinimize,
   onDiscard,
 }: {
@@ -76,9 +42,15 @@ export function CreateTaskModal({
   onClose: () => void;
   types: TaskTypeDTO[];
   drivers: DriverDTO[];
-  onCreated: () => void;
+  /** Заявка создана/сохранена. В режиме создания приходит созданная задача — карточка уходит на неё. */
+  onCreated: (created?: TaskDTO) => void;
   defaultDate?: string;
   editTask?: TaskDTO | null;
+  /**
+   * Копия заявки (22.08.2026): форма приходит готовой в initialForm, а здесь — только подписи.
+   * Копия — обычное создание: тот же POST, тот же черновик при случайном закрытии.
+   */
+  copyOf?: { label: string; hint: string } | null;
   // Черновик (доработка №1, только режим создания): восстановленное состояние формы и колбэки —
   // onMinimize (свернуть непустую форму в черновик при случайном закрытии) и onDiscard (снять черновик
   // при осознанном отказе/успешной отправке). В режиме редактирования не используются.
@@ -100,7 +72,9 @@ export function CreateTaskModal({
           { ...initialForm, coDriverId: initialForm.coDriverId ?? "", machines: initialForm.machines ?? [] }
         : emptyForm(firstType, defaultDate, types[0]?.requiresSignedDoc ?? false),
   );
-  const [showAll, setShowAll] = useState(isEdit);
+  // У копии раскрываем все поля сразу: смысл копии — проверить унаследованное, а не догадываться,
+  // что спряталось под «Показать все поля».
+  const [showAll, setShowAll] = useState(isEdit || copyOf !== null);
   const [noDate, setNoDate] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -251,10 +225,13 @@ export function CreateTaskModal({
       const body = buildBody();
       if (isEdit && editTask) {
         await apiSend(`/api/tasks/${editTask.id}`, "PATCH", { op: "edit", ...body });
+        onCreated();
       } else {
-        await apiSend("/api/tasks", "POST", body);
+        const created = await apiSend<TaskDTO>("/api/tasks", "POST", body);
+        // «Создать и ещё одну» оставляет диспетчера в форме — созданную задачу наверх не отдаём,
+        // иначе карточка увела бы его на новую заявку прямо посреди ввода следующей.
+        onCreated(again ? undefined : created);
       }
-      onCreated();
       onDiscard?.(); // заявка создана — связанный черновик больше не нужен
       if (again && !isEdit) {
         setForm(emptyForm(form.typeId, form.scheduledDate, selectedType?.requiresSignedDoc ?? false));
@@ -291,7 +268,12 @@ export function CreateTaskModal({
   }
 
   return (
-    <Modal open={open} onClose={handleMinimize} title={isEdit ? "Редактировать задачу" : "Новая задача"} wide>
+    <Modal
+      open={open}
+      onClose={handleMinimize}
+      title={copyOf ? copyOf.label : isEdit ? "Редактировать задачу" : "Новая задача"}
+      wide
+    >
       <form
         className="flex flex-col gap-4"
         onSubmit={(e) => {
@@ -299,6 +281,16 @@ export function CreateTaskModal({
           void submit(false);
         }}
       >
+        {/* Подсказка копии — янтарём: «требует действия сейчас» (ui-guidelines). Дату и исполнителя
+            копия не наследует, а оплату наследует — и то, и другое надо проверить глазами. */}
+        {copyOf ? (
+          <p
+            data-testid="copy-hint"
+            className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+          >
+            {copyOf.hint}
+          </p>
+        ) : null}
         {/* Секции формы (дизайн 24.07.2026, вариант B): поля сгруппированы по смыслу —
             суть → клиент → когда и кто → оплата и документы → дополнительно. */}
         <FormSection title="Суть заявки">
