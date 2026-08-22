@@ -109,8 +109,9 @@ test("сводка v2: метрики, деньги по ролям, drill-down 
   await milena.goto("/summary");
   await milena.getByRole("button", { name: "День" }).click();
   await expect(milena.getByText("— для администратора")).toBeVisible();
-  const kashCard = milena.locator("div.rounded-xl", { hasText: "Алексей Каширский" }).first();
-  await kashCard.getByRole("button", { name: /выполнено/ }).click();
+  // Сводка v3 (22.08.2026): карточки водителей заменены строками таблицы-сравнения.
+  const kashRow = milena.getByRole("row").filter({ hasText: "Алексей Каширский" }).first();
+  await kashRow.getByTestId("summary-done").click();
   await expect(milena.getByRole("link", { name: new RegExp(title) })).toBeVisible({ timeout: 10_000 });
 
   // Изоляция: details под водителем закрыт.

@@ -9,6 +9,7 @@ import { Pencil, Lock } from "lucide-react";
 import { ShiftClosePanel } from "./shift-close-panel";
 import { TimeField } from "@/components/ui/time-field";
 import { fetcher, apiSend } from "@/lib/fetcher";
+import { formatDuration } from "@/lib/format-duration";
 import { Button } from "@/components/ui/button";
 import type { ShiftHistoryRow } from "@/lib/summary-dto";
 import type { Granularity } from "@/domain/summary";
@@ -17,14 +18,6 @@ import type { Granularity } from "@/domain/summary";
 export type ShiftHistoryDriver = { driverId: string; driverName: string };
 
 /** Минуты → «1 ч 12 мин» / «34 мин» / «—». */
-function formatDuration(min: number | null): string {
-  if (min === null) return "—";
-  if (min < 60) return `${min} мин`;
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return m ? `${h} ч ${m} мин` : `${h} ч`;
-}
-
 // «HH:MM» из ISO в МСК (учётное время смены).
 function shiftTimeHHMM(iso: string): string {
   return new Date(iso).toLocaleTimeString("ru-RU", {

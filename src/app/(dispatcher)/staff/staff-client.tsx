@@ -183,7 +183,7 @@ export function StaffBoardClient({
 
       {performers.length === 0 ? (
         <p className="rounded-lg border border-amber-500 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          Никому не открыт доступ к задачам сотрудникам. Выдайте его в «Управление» → «Водители —
+          Никому не открыт доступ к задачам сотрудникам. Выдайте его в «Управление» → «Пользователи и
           доступ».
         </p>
       ) : (

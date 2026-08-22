@@ -4,11 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { Plus } from "lucide-react";
+import { Copy, Plus } from "lucide-react";
 import { fetcher, apiSend } from "@/lib/fetcher";
 import type { DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
 import { actState } from "@/domain/act";
-import { STATUS_LABEL, STATUS_ORDER, actBadge, formatDate, paymentBadge } from "@/lib/task-ui";
+import { STATUS_LABEL, STATUS_ORDER, actBadge, formatDate, paymentBadge, todayISO } from "@/lib/task-ui";
 import { parseQuery } from "@/lib/task-search";
 import { taskNumberLabel } from "@/lib/task-number";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
@@ -21,10 +21,11 @@ import { Button } from "@/components/ui/button";
 import { DateField } from "@/components/ui/date-field";
 import { Select } from "@/components/ui/select";
 import { CreateTaskModal } from "../_components/create-task-modal";
+import { StaffTaskModal } from "../_components/staff-task-modal";
 import { TaskSearchInput } from "../_components/task-search-input";
 import { Highlighted } from "@/components/highlight";
 import { useTaskDrafts } from "../_components/task-drafts";
-import type { FormState } from "@/lib/task-draft";
+import { copyHint, copyTitle, formForCopy, type FormState } from "@/lib/task-draft";
 
 export function AllTasksClient({
   drivers,
@@ -48,11 +49,27 @@ export function AllTasksClient({
   const delivery = kind === "DELIVERY";
   // Колонок в контуре сотрудников на пять меньше (счёт, тип, адрес, оплата, акт) — держим colSpan
   // рядом с их условиями, иначе «Задач не найдено» разъезжается по таблице.
-  const colSpan = (delivery ? 10 : 5) + (scope === "archive" ? 1 : 0);
+  // +1 — колонка-иконка «Копировать» (22.08.2026), она есть в обеих областях и в обоих контурах.
+  const colSpan = (delivery ? 10 : 5) + (scope === "archive" ? 1 : 0) + 1;
 
   // Черновики свёрнутых заявок (доработка №1) — общий стек с доской, живёт в лейауте диспетчера.
   const drafts = useTaskDrafts();
   const [editingDraft, setEditingDraft] = useState<{ id: string; form: FormState } | null>(null);
+  /**
+   * Копия заявки (22.08.2026): форма создания, предзаполненная из строки списка. Сама заявка
+   * дочитывается по `/api/tasks/:id` — в списочном DTO у станка нет состояния, а от него зависит,
+   * что предложить копии: «везём клиенту» или «забираем к нам».
+   */
+  const [copySource, setCopySource] = useState<{ id: string; form: FormState; label: string; hint: string } | null>(null);
+  const [copyingId, setCopyingId] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  // Форма цеха: постановка новой задачи в сегменте «Цех» и копия задачи цеха.
+  const [staffForm, setStaffForm] = useState<{ mode: "new" | "copy"; task: TaskDTO | null } | null>(null);
+  // Исполнители задач цеха — только когда открыт этот сегмент (в доставках запрос не нужен).
+  const { data: staffPerformers = [] } = useSWR<{ id: string; name: string }[]>(
+    kind === "STAFF" ? "/api/staff-performers" : null,
+    fetcher,
+  );
   const registerOpenHandler = drafts.registerOpenHandler;
   useEffect(
     () =>
@@ -87,6 +104,37 @@ export function AllTasksClient({
   const { data: tasks = [], isLoading, error, mutate } = useSWR<TaskDTO[]>(key, fetcher, {
     keepPreviousData: true,
   });
+
+  /**
+   * «Копировать» из строки списка. У доставки сначала дочитываем карточку: в списочном DTO нет
+   * состояния станка, а копия должна предложить актуальное направление (станок мог уехать к
+   * клиенту). У задачи цеха дочитывать нечего — открываем её форму сразу.
+   */
+  async function openCopy(t: TaskDTO) {
+    setCopyError(null);
+    if (!delivery) {
+      setStaffForm({ mode: "copy", task: t });
+      return;
+    }
+    setCopyingId(t.id);
+    try {
+      const full = await fetcher<TaskDTO>(`/api/tasks/${t.id}`);
+      const { form, replacedTypeName } = formForCopy(full, { types, today: todayISO() });
+      setEditingDraft(null);
+      setCopySource({ id: t.id, form, label: copyTitle(full), hint: copyHint(full, replacedTypeName) });
+      setCreateOpen(true);
+    } catch (e) {
+      setCopyError((e as Error).message);
+    } finally {
+      setCopyingId(null);
+    }
+  }
+
+  function closeCreate() {
+    setCreateOpen(false);
+    setEditingDraft(null);
+    setCopySource(null);
+  }
 
   const [restoring, setRestoring] = useState<string | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
@@ -150,9 +198,16 @@ export function AllTasksClient({
             ))}
           </div>
         </div>
+        {/* В сегменте «Цех» кнопка ставит задачу цеха, а не заявку водителю (фикс 22.08.2026):
+            раньше здесь открывалась форма доставки — с адресом, оплатой и актом, которых у цеха нет. */}
         <Button
           onClick={() => {
+            if (!delivery) {
+              setStaffForm({ mode: "new", task: null });
+              return;
+            }
             setEditingDraft(null);
+            setCopySource(null);
             setCreateOpen(true);
           }}
         >
@@ -209,6 +264,7 @@ export function AllTasksClient({
       ) : null}
 
       {restoreError ? <p className="mb-2 text-sm text-red-600">{restoreError}</p> : null}
+      {copyError ? <p className="mb-2 text-sm text-red-600">Не удалось открыть копию: {copyError}</p> : null}
 
       <div className="overflow-x-auto rounded-xl border border-neutral-200 bg-white">
         <table className="w-full text-left text-sm">
@@ -228,6 +284,9 @@ export function AllTasksClient({
               {delivery ? <th className="px-3 py-2">Оплата</th> : null}
               {delivery ? <th className="px-3 py-2">Акт</th> : null}
               {scope === "archive" ? <th className="px-3 py-2" /> : null}
+              {/* Копирование — узкая колонка-иконка без подписи: заголовок «Копировать» шире самой
+                  кнопки, а таблица и без него на 1280 идёт впритык. */}
+              <th className="w-9 px-1 py-2" />
             </tr>
           </thead>
           <tbody>
@@ -353,6 +412,22 @@ export function AllTasksClient({
                       </button>
                     </td>
                   ) : null}
+                  <td className="w-9 px-1 py-2">
+                    <button
+                      type="button"
+                      data-testid="task-copy"
+                      title="Копировать задачу"
+                      aria-label={`Копировать ${taskNumberLabel(t)}`}
+                      disabled={copyingId === t.id}
+                      onClick={(e) => {
+                        e.stopPropagation(); // клик по строке открывает карточку — копии это ни к чему
+                        void openCopy(t);
+                      }}
+                      className="rounded-md p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 disabled:opacity-50"
+                    >
+                      <Copy className="h-4 w-4" />
+                    </button>
+                  </td>
                 </tr>
               ))
             )}
@@ -361,21 +436,36 @@ export function AllTasksClient({
       </div>
 
       <CreateTaskModal
-        key={createOpen ? (editingDraft?.id ?? "new") : "closed"}
+        key={
+          createOpen
+            ? (copySource ? `copy-${copySource.id}` : (editingDraft?.id ?? "new"))
+            : "closed"
+        }
         open={createOpen}
-        onClose={() => {
-          setCreateOpen(false);
-          setEditingDraft(null);
-        }}
+        onClose={closeCreate}
         types={types}
         drivers={drivers}
         onCreated={() => void mutate()}
-        initialForm={editingDraft?.form ?? null}
+        initialForm={copySource?.form ?? editingDraft?.form ?? null}
+        copyOf={copySource ? { label: copySource.label, hint: copySource.hint } : null}
         onMinimize={(form) => drafts.upsertDraft(form, editingDraft?.id ?? null)}
         onDiscard={() => {
           if (editingDraft?.id) drafts.removeDraft(editingDraft.id);
         }}
       />
+
+      {/* Форма цеха: постановка и копия задачи Ц-N. Своя форма, а не форма доставки, — у задачи
+          цеха нет ни типа, ни адреса, ни денег (16.08.2026). */}
+      {staffForm ? (
+        <StaffTaskModal
+          key={staffForm.mode === "copy" ? `staff-copy-${staffForm.task?.id}` : "staff-new"}
+          performers={staffPerformers}
+          today={todayISO()}
+          copyFrom={staffForm.mode === "copy" ? staffForm.task : null}
+          onClose={() => setStaffForm(null)}
+          onSaved={() => void mutate()}
+        />
+      ) : null}
     </div>
   );
 }

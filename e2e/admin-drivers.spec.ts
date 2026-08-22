@@ -1,5 +1,5 @@
-// Админка «Водители — доступ» (03.08): признак «внешний перевозчик» и смена пароля.
-// Раньше и то, и другое менялось только сидом или запросом к базе.
+// Админка «Пользователи и доступ» (03.08 — водители, 22.08.2026 — учётки офиса): вход, признак
+// «внешний перевозчик», смена пароля. Раньше пароль офиса менялся только запросом к базе.
 // ВАЖНО: e2e делят одну dev-БД — все изменения флагов и паролей тест обязан вернуть назад.
 import { test, expect, type Page } from "@playwright/test";
 
@@ -13,11 +13,23 @@ async function login(page: Page, login: string, password = PASSWORD): Promise<vo
   await page.waitForURL((url) => !url.pathname.startsWith("/login"));
 }
 
-async function driverByLogin(page: Page, driverLogin: string): Promise<{ id: string; isExternal: boolean }> {
+type AccessRow = {
+  id: string;
+  login: string;
+  name: string;
+  role: string;
+  isExternal: boolean;
+  canLogin: boolean;
+};
+
+async function accessList(page: Page): Promise<AccessRow[]> {
   const res = await page.request.get("/api/admin/drivers");
   expect(res.status()).toBe(200);
-  const body = (await res.json()) as { data: { id: string; login: string; isExternal: boolean }[] };
-  const found = body.data.find((d) => d.login === driverLogin);
+  return ((await res.json()) as { data: AccessRow[] }).data;
+}
+
+async function driverByLogin(page: Page, driverLogin: string): Promise<{ id: string; isExternal: boolean }> {
+  const found = (await accessList(page)).find((d) => d.login === driverLogin);
   if (!found) throw new Error(`водитель ${driverLogin} не найден`);
   return { id: found.id, isExternal: found.isExternal };
 }
@@ -60,14 +72,12 @@ test("админ переключает признак «внешний» и в�
   expect((await driverByLogin(page, "nikolay")).isExternal).toBe(before.isExternal);
 });
 
-test("нельзя менять не водителя и нельзя два действия сразу", async ({ page }) => {
+test("несуществующий пользователь, два действия сразу и слабый пароль — отказ", async ({ page }) => {
   await login(page, "artem");
   const driver = await driverByLogin(page, "nikolay");
 
-  // Пароль диспетчера/админа через эту ручку не меняется — иначе это захват учётки.
-  // id чужой роли узнать неоткуда, поэтому проверяем на заведомо несуществующем и на двойном действии.
   const foreign = await page.request.post("/api/admin/drivers/password", {
-    data: { driverId: "00000000-0000-0000-0000-000000000000", newPassword: "vanmark2026" },
+    data: { userId: "00000000-0000-0000-0000-000000000000", newPassword: "vanmark2026" },
   });
   expect(foreign.status()).toBe(404);
 
@@ -132,4 +142,147 @@ test("UI админки: бейджи и модалка смены пароля"
   await page.getByTestId("driver-password-repeat").fill("другой-пароль");
   await page.getByTestId("driver-password-save").click();
   await expect(page.getByRole("dialog")).toContainText("не совпадают");
+});
+
+// ─── Учётки офиса (22.08.2026, решение Артёма) ───
+
+test("список доступа: офис виден, сотрудник без входа (EMPLOYEE) — нет", async ({ page }) => {
+  await login(page, "artem");
+  const rows = await accessList(page);
+  // Милена, Максим и админы — в списке; у каждого есть роль.
+  expect(rows.some((r) => r.login === "milena" && r.role === "DISPATCHER")).toBe(true);
+  expect(rows.some((r) => r.login === "maxim" && r.role === "SERVICE_MANAGER")).toBe(true);
+  expect(rows.some((r) => r.login === "artem" && r.role === "ADMIN")).toBe(true);
+  // Сотрудник без входа заводится в «Команде» и в списке доступа не появляется.
+  expect(rows.some((r) => r.role === "EMPLOYEE")).toBe(false);
+});
+
+test("пароль учётки офиса меняется и возвращается", async ({ browser }) => {
+  test.slow();
+  const actx = await browser.newContext();
+  const admin = await actx.newPage();
+  await login(admin, "artem");
+  const maxim = (await accessList(admin)).find((r) => r.login === "maxim");
+  expect(maxim).toBeTruthy();
+  const temporary = `e2e-office-${Date.now()}`;
+
+  const set = await admin.request.post("/api/admin/drivers/password", {
+    data: { userId: maxim!.id, newPassword: temporary },
+  });
+  expect(set.status()).toBe(200);
+  expect(JSON.stringify(await set.json())).not.toContain(temporary);
+
+  try {
+    const mctx = await browser.newContext();
+    const maximPage = await mctx.newPage();
+    await login(maximPage, "maxim", temporary);
+    await expect(maximPage).toHaveURL(/\/machines/);
+    await mctx.close();
+  } finally {
+    // Общая dev-БД: пароль обязан вернуться, даже если проверка выше упала.
+    const restore = await admin.request.post("/api/admin/drivers/password", {
+      data: { userId: maxim!.id, newPassword: PASSWORD },
+    });
+    expect(restore.status()).toBe(200);
+  }
+  await actx.close();
+});
+
+test("себе вход закрыть нельзя — система не запирается изнутри", async ({ page }) => {
+  await login(page, "artem");
+  const me = (await accessList(page)).find((r) => r.login === "artem");
+  const res = await page.request.patch("/api/admin/drivers", {
+    data: { userId: me!.id, canLogin: false },
+  });
+  expect([400, 409, 422]).toContain(res.status());
+  // Вход остался.
+  expect((await accessList(page)).find((r) => r.login === "artem")!.canLogin).toBe(true);
+});
+
+test("вход учётки офиса выключается и возвращается; EMPLOYEE — 404", async ({ page }) => {
+  await login(page, "artem");
+  const maxim = (await accessList(page)).find((r) => r.login === "maxim")!;
+
+  const off = await page.request.patch("/api/admin/drivers", {
+    data: { userId: maxim.id, canLogin: false },
+  });
+  try {
+    expect(off.status()).toBe(200);
+    expect(((await off.json()) as { data: { canLogin: boolean } }).data.canLogin).toBe(false);
+  } finally {
+    const back = await page.request.patch("/api/admin/drivers", {
+      data: { userId: maxim.id, canLogin: true },
+    });
+    expect(back.status()).toBe(200);
+  }
+
+  // Сотрудник без входа: заводим через «Команду» и убеждаемся, что ручки доступа его не видят.
+  const name = `e2e доступ ${Date.now()}`;
+  const created = await page.request.post("/api/team", { data: { name } });
+  expect(created.status()).toBe(201);
+  const employeeId = ((await created.json()) as { data: { id: string } }).data.id;
+  try {
+    expect(
+      (
+        await page.request.post("/api/admin/drivers/password", {
+          data: { userId: employeeId, newPassword: "vanmark2026" },
+        })
+      ).status(),
+    ).toBe(404);
+    expect(
+      (await page.request.patch("/api/admin/drivers", { data: { userId: employeeId, canLogin: true } })).status(),
+    ).toBe(404);
+    // И водительские признаки ему тоже недоступны.
+    expect(
+      (await page.request.patch("/api/admin/drivers", { data: { userId: employeeId, isExternal: true } })).status(),
+    ).toBe(404);
+  } finally {
+    expect((await page.request.delete(`/api/team/${employeeId}`)).status()).toBe(200);
+  }
+});
+
+test("последнего администратора со входом не отключить", async ({ page }) => {
+  await login(page, "artem");
+  const admins = (await accessList(page)).filter((r) => r.role === "ADMIN" && r.canLogin);
+  const other = admins.find((a) => a.login !== "artem");
+  if (!other) {
+    test.skip(true, "в этой базе один админ — сценарий проверяется юнит-тестом last-admin");
+    return;
+  }
+  // Пока админов двое, второму вход выключить можно — и тогда третьего выключить уже нельзя.
+  const off = await page.request.patch("/api/admin/drivers", {
+    data: { userId: other.id, canLogin: false },
+  });
+  try {
+    expect(off.status()).toBe(200);
+    // Теперь «artem» — последний админ со входом; выключить его не даст ни себе, ни через LAST_ADMIN.
+    const me = (await accessList(page)).find((r) => r.login === "artem")!;
+    const self = await page.request.patch("/api/admin/drivers", {
+      data: { userId: me.id, canLogin: false },
+    });
+    expect([400, 409, 422]).toContain(self.status());
+  } finally {
+    const back = await page.request.patch("/api/admin/drivers", {
+      data: { userId: other.id, canLogin: true },
+    });
+    expect(back.status()).toBe(200);
+  }
+});
+
+test("UI: две группы — «Офис» и «Водители», свой вход не переключается", async ({ page }) => {
+  await login(page, "artem");
+  await page.goto("/admin/drivers");
+  await expect(page.getByRole("heading", { name: "Пользователи и доступ" })).toBeVisible();
+
+  const office = page.getByTestId("access-office");
+  await expect(office).toContainText("Милена");
+  await expect(office).toContainText("Максим");
+
+  const drivers = page.getByTestId("access-drivers");
+  await expect(drivers).toContainText("Николай");
+
+  // Своя строка: кнопки «Запретить» нет — сервер такой запрос всё равно отклонит.
+  const self = page.locator("li").filter({ hasText: "это вы" }).first();
+  await expect(self).toContainText("свой вход не меняют");
+  await expect(self.getByTestId("user-login-toggle")).toHaveCount(0);
 });

@@ -11,6 +11,7 @@ import { Modal } from "@/components/ui/modal";
 import { DateField } from "@/components/ui/date-field";
 import { TimeField } from "@/components/ui/time-field";
 import type { TaskDTO } from "@/lib/task-dto";
+import { taskNumberLabel } from "@/lib/task-number";
 
 export type Performer = { id: string; name: string };
 
@@ -27,28 +28,37 @@ export function StaffTaskModal({
   performers,
   today,
   editTask = null,
+  copyFrom = null,
   onClose,
   onSaved,
 }: {
   performers: Performer[];
   today: string;
   editTask?: TaskDTO | null; // null — постановка новой задачи
+  /**
+   * Копия задачи цеха (22.08.2026): работа повторяется («собрать те же ролики»), меняются день и
+   * исполнитель. Копируются суть, подробности, «ко скольки» и срочность; дата = сегодня,
+   * исполнитель и напарник — пустые. Это постановка НОВОЙ задачи, а не правка исходной.
+   */
+  copyFrom?: TaskDTO | null;
   onClose: () => void;
-  onSaved: () => void;
+  /** Сохранено. При постановке новой задачи приходит созданная — карточка уходит на неё. */
+  onSaved: (created?: TaskDTO) => void;
 }) {
   const isEdit = editTask !== null;
   // Завершённую/отменённую правим без даты и без пары — ровно как заявку (сервер это и не примет).
   const isTerminal = editTask?.status === "DONE" || editTask?.status === "CANCELLED";
+  const source = editTask ?? copyFrom;
 
-  const [title, setTitle] = useState(editTask?.title ?? "");
-  const [description, setDescription] = useState(editTask?.description ?? "");
+  const [title, setTitle] = useState(source?.title ?? "");
+  const [description, setDescription] = useState(source?.description ?? "");
   const [assigneeId, setAssigneeId] = useState(editTask?.assignee?.id ?? "");
   const [coDriverId, setCoDriverId] = useState(editTask?.coDriverId ?? "");
   const [scheduledDate, setScheduledDate] = useState(
     editTask ? (editTask.scheduledDate?.slice(0, 10) ?? "") : today,
   );
-  const [timeFrom, setTimeFrom] = useState(editTask?.timeFrom ?? "");
-  const [priority, setPriority] = useState(editTask?.priority ?? false);
+  const [timeFrom, setTimeFrom] = useState(source?.timeFrom ?? "");
+  const [priority, setPriority] = useState(source?.priority ?? false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -66,6 +76,7 @@ export function StaffTaskModal({
       priority,
     };
     try {
+      let created: TaskDTO | undefined;
       if (isEdit && editTask) {
         await apiSend(`/api/tasks/${editTask.id}`, "PATCH", {
           op: "edit",
@@ -77,7 +88,7 @@ export function StaffTaskModal({
             : { coDriverId: assigneeId && coDriverId ? coDriverId : null }),
         });
       } else {
-        await apiSend("/api/tasks", "POST", {
+        created = await apiSend<TaskDTO>("/api/tasks", "POST", {
           kind: "STAFF",
           ...common,
           assigneeId: assigneeId || null,
@@ -86,7 +97,9 @@ export function StaffTaskModal({
           scheduledDate: scheduledDate || null,
         });
       }
-      onSaved();
+      // «Создать и ещё» оставляет в форме — созданную задачу наверх не отдаём, чтобы карточка не
+      // увела на неё посреди ввода следующей.
+      onSaved(keepOpen ? undefined : created);
       if (keepOpen) {
         setTitle("");
         setDescription("");
@@ -103,8 +116,27 @@ export function StaffTaskModal({
   }
 
   return (
-    <Modal open onClose={onClose} title={isEdit ? "Правка задачи цеха" : "Задача сотруднику"}>
+    <Modal
+      open
+      onClose={onClose}
+      title={
+        copyFrom
+          ? `Копия задачи ${taskNumberLabel(copyFrom)}`
+          : isEdit
+            ? "Правка задачи цеха"
+            : "Задача сотруднику"
+      }
+    >
       <div className="flex flex-col gap-3">
+        {/* Янтарь = «проверьте сейчас» (ui-guidelines): дату и исполнителя копия не унаследовала. */}
+        {copyFrom ? (
+          <p
+            data-testid="copy-hint"
+            className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+          >
+            Скопировано из задачи {taskNumberLabel(copyFrom)} — проверьте дату и исполнителя.
+          </p>
+        ) : null}
         {error ? (
           <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {error}

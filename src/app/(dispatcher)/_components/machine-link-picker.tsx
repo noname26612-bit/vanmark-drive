@@ -24,7 +24,12 @@ import {
   EQUIPMENT_KIND_SHORT,
   MACHINE_STATUS_LABEL,
   formatMachineNumber,
+  pickerLabel,
 } from "@/lib/machine-ui";
+
+// Подпись станка переехала в @/lib/machine-ui (её собирает и чистый lib/task-draft при копировании
+// заявки). Реэкспорт — чтобы соседние модули не переучивать на новый путь.
+export { pickerLabel };
 import { isHeadKind } from "@/domain/machine-status";
 import { MachineFormModal } from "../../(machines)/machines/_components/machine-form-modal";
 import { uploadMachinePhotos } from "@/lib/machine-photo-upload";
@@ -238,14 +243,4 @@ export function MachineLinkPicker({
       />
     </Modal>
   );
-}
-
-/** «77-5 · ЛБМ 200» — короткая подпись станка для чипа и строки пикера. */
-export function pickerLabel(m: {
-  ourNumber: number | null;
-  clientNumber: number | null;
-  model: string;
-}): string {
-  const number = formatMachineNumber(m);
-  return number ? `${number} · ${m.model}` : m.model;
 }

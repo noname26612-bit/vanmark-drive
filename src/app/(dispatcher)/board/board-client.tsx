@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import {
@@ -17,6 +17,7 @@ import {
   Users,
 } from "lucide-react";
 import { fetcher, apiSend } from "@/lib/fetcher";
+import { formatDuration } from "@/lib/format-duration";
 import { mergeOrder, moveTo } from "@/lib/pool-order";
 import { persistUiPref } from "@/lib/ui-prefs-client";
 import type { AttentionDTO, DriverDTO, TaskDTO, TaskTypeDTO } from "@/lib/task-dto";
@@ -198,6 +199,19 @@ export function BoardClient({
     : null;
   const attentionVisibleCount =
     (attentionVisible?.overdue.length ?? 0) + (attentionVisible?.tomorrowPasses.length ?? 0);
+
+  // Переход по ссылке «/board#attention» (22.08.2026, плашки «Требует внимания» на «Управлении»):
+  // блок рисуется после ответа сервера, поэтому к моменту загрузки якоря браузер его ещё не видит и
+  // никуда не прокручивает. Доводим сами — один раз, когда блоку есть что показать.
+  // Флаг «уже прокрутили» держим в ref, а не в состоянии: перерисовывать доску из-за него незачем
+  // (и setState в эффекте здесь был бы лишним).
+  const attentionScrolled = useRef(false);
+  useEffect(() => {
+    if (attentionScrolled.current || attentionVisibleCount === 0) return;
+    if (typeof window === "undefined" || window.location.hash !== "#attention") return;
+    attentionScrolled.current = true;
+    scrollToAttention();
+  }, [attentionVisibleCount]);
 
   const total = todays.length;
   const inWork = todays.filter((t) => t.status === "IN_PROGRESS").length;
@@ -577,14 +591,6 @@ function ShiftConfirmRow({ shift, onChange }: { shift: ShiftDTO; onChange: () =>
   );
 }
 
-// Длительность в человекочитаемом виде: «2 ч 15 мин» / «40 мин».
-function fmtDur(min: number): string {
-  if (min <= 0) return "0 мин";
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return h > 0 ? `${h} ч ${m} мин` : `${m} мин`;
-}
-
 // Чип статуса смены для блока «Смены водителей» (№5). Цвет = смысл (ui-guidelines).
 function shiftChip(shift: ShiftDTO | null): { label: string; cls: string } {
   const base = "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ";
@@ -770,7 +776,7 @@ function ShiftWorkloadRow({
           className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
           title="Пометки о простое за сегодня"
         >
-          Пометка: {fmtDur(idleNotedMinutes)}
+          Пометка: {formatDuration(idleNotedMinutes)}
         </button>
       ) : null}
       <Button variant="ghost" className="h-7 px-2 text-xs text-slate-600" onClick={onIdle}>
@@ -853,10 +859,10 @@ function ShiftWorkloadRow({
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
         <span>
-          <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-green-500 align-middle" />В работе {fmtDur(worked)}
+          <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-green-500 align-middle" />В работе {formatDuration(worked)}
         </span>
         <span>
-          <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-slate-300 align-middle" />Простой {fmtDur(idle)}
+          <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-slate-300 align-middle" />Простой {formatDuration(idle)}
         </span>
         <button
           type="button"
@@ -953,7 +959,7 @@ function ShiftWorkloadRow({
         >
           <p className="mb-1 font-medium text-slate-700">Простой смены — {name}</p>
           <p className="mb-2 text-slate-500">
-            Автоматически насчитано: простой {fmtDur(autoIdle)}. Задайте фактический простой, если он
+            Автоматически насчитано: простой {formatDuration(autoIdle)}. Задайте фактический простой, если он
             неверен — например, водитель работал, но не отметил задачу «в работе» (сел телефон).
           </p>
           <div className="flex flex-wrap items-center gap-2">
@@ -1145,7 +1151,7 @@ function IdleNotesModal({
           <ul className="divide-y divide-neutral-100 rounded-lg border border-neutral-200">
             {notes.map((n) => (
               <li key={n.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
-                <span className="font-medium text-neutral-800">{fmtDur(n.minutes)}</span>
+                <span className="font-medium text-neutral-800">{formatDuration(n.minutes)}</span>
                 <span className="min-w-0 flex-1 truncate text-neutral-500">{n.note ?? "без причины"}</span>
                 {n.kpiMarkId ? (
                   <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">

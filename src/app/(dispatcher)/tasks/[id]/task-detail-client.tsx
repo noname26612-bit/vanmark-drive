@@ -2,10 +2,11 @@
 /* eslint-disable @next/next/no-img-element -- фото отдаются через /api/attachments/:id с проверкой
    прав по сессионной куке; next/image ходил бы через свой прокси без куки и получил бы 404. */
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { Navigation, Camera, X, FileText, Banknote, Archive } from "lucide-react";
+import { Navigation, Camera, Copy, X, FileText, Banknote, Archive } from "lucide-react";
 import { PhoneLinks } from "@/components/phone-call";
 import { fetcher, apiSend, apiUpload } from "@/lib/fetcher";
 import { compressImage } from "@/lib/image-compress";
@@ -44,6 +45,8 @@ import { Modal } from "@/components/ui/modal";
 import { Field } from "@/components/ui/field";
 import { CreateTaskModal } from "../../_components/create-task-modal";
 import { StaffTaskModal } from "../../_components/staff-task-modal";
+import { useTaskDrafts } from "../../_components/task-drafts";
+import { copyHint, copyTitle, formForCopy, type FormState } from "@/lib/task-draft";
 
 // Диспетчер может вести статусы за исполнителя (в т.ч. внешнего перевозчика). Цепочка схлопнута (этап A):
 // «В работу» (взять) → «Завершить»; из паузы — «Вернуть в работу».
@@ -126,7 +129,15 @@ export function TaskDetailClient({
   const [statusTarget, setStatusTarget] = useState<TaskStatus | "">(""); // цель «Изменить статус» (п.4)
   const [newDate, setNewDate] = useState("");
   const [comment, setComment] = useState("");
-  const [editOpen, setEditOpen] = useState(false);
+  /**
+   * Режим формы заявки над карточкой (22.08.2026): правка, копия или восстановленный черновик.
+   * Одно поле вместо трёх флагов — и `key` модалки, который от него зависит, заодно чинит старую
+   * болячку: форма правки без ключа инициализировалась один раз и после mutate() показывала
+   * устаревшие поля.
+   */
+  const [formMode, setFormMode] = useState<"edit" | "copy" | "draft" | null>(null);
+  const [copyState, setCopyState] = useState<{ form: FormState; hint: string; label: string } | null>(null);
+  const [editingDraft, setEditingDraft] = useState<{ id: string; form: FormState } | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -135,6 +146,21 @@ export function TaskDetailClient({
   const [estimateInput, setEstimateInput] = useState(""); // ручная оценка времени (Фаза 2, §14)
   const [archiveOpen, setArchiveOpen] = useState(false); // переспрос перед архивацией (11.08)
   const [archiveReason, setArchiveReason] = useState("");
+
+  // Черновики свёрнутых заявок: общий стек с доской и «Всеми задачами» (провайдер в лейауте).
+  // Копия, закрытая мимо, сворачивается сюда же — а чип должен открывать её и на карточке.
+  const router = useRouter();
+  const drafts = useTaskDrafts();
+  const registerOpenHandler = drafts.registerOpenHandler;
+  useEffect(
+    () =>
+      registerOpenHandler((d) => {
+        setEditingDraft({ id: d.id, form: d.form });
+        setCopyState(null);
+        setFormMode("draft");
+      }),
+    [registerOpenHandler],
+  );
 
   if (isLoading) return <p className="p-6 text-sm text-neutral-400">Загрузка…</p>;
   if (error || !task)
@@ -146,6 +172,29 @@ export function TaskDetailClient({
         </Link>
       </div>
     );
+
+  // «Копировать» (22.08.2026): та же работа в другой день — форма создания, предзаполненная из этой
+  // заявки. Ничего не отправляется до кнопки «Создать»: копия — обычная новая заявка, номер и
+  // журнал ей выдаёт сервер. У задачи цеха своя форма (ни типа, ни адреса у неё нет).
+  function openCopy() {
+    if (!task) return;
+    if (isStaffTask(task)) {
+      setCopyState(null);
+      setEditingDraft(null);
+      setFormMode("copy");
+      return;
+    }
+    const { form, replacedTypeName } = formForCopy(task, { types, today: todayISO() });
+    setCopyState({ form, label: copyTitle(task), hint: copyHint(task, replacedTypeName) });
+    setEditingDraft(null);
+    setFormMode("copy");
+  }
+
+  function closeForm() {
+    setFormMode(null);
+    setCopyState(null);
+    setEditingDraft(null);
+  }
 
   async function run(fn: () => Promise<unknown>) {
     setActionError(null);
@@ -517,8 +566,11 @@ export function TaskDetailClient({
               На паузу
             </Button>
           ) : null}
-          <Button variant="secondary" disabled={busy} onClick={() => setEditOpen(true)}>
+          <Button variant="secondary" disabled={busy} onClick={() => setFormMode("edit")}>
             Редактировать
+          </Button>
+          <Button variant="secondary" disabled={busy} data-testid="task-copy" onClick={openCopy}>
+            <Copy className="h-4 w-4" /> Копировать
           </Button>
           <Button variant="secondary" disabled={busy} onClick={openStatusModal}>
             Изменить статус
@@ -535,8 +587,12 @@ export function TaskDetailClient({
           {/* Редактирование закрытых заявок (решение Артёма 02.07.2026): диспетчер/руководитель/админ
               правят поля завершённой/отменённой заявки. Смена исполнителя и даты недоступна.
               «Изменить статус» (24.07.2026, кейс №700): откат ошибочного «Завершено»/«Отменено». */}
-          <Button variant="secondary" disabled={busy} onClick={() => setEditOpen(true)}>
+          <Button variant="secondary" disabled={busy} onClick={() => setFormMode("edit")}>
             Редактировать
+          </Button>
+          {/* Копия закрытой заявки — самый частый повод копировать: съездили, а через месяц туда же. */}
+          <Button variant="secondary" disabled={busy} data-testid="task-copy" onClick={openCopy}>
+            <Copy className="h-4 w-4" /> Копировать
           </Button>
           <Button variant="secondary" disabled={busy} onClick={openStatusModal}>
             Изменить статус
@@ -999,25 +1055,47 @@ export function TaskDetailClient({
       </Modal>
 
       {/* Правка идёт формой своего контура (16.08.2026): у задачи цеха нет ни типа, ни адреса, ни
-          денег — форма заявки предлагала бы заполнить то, чего у неё не существует. */}
+          денег — форма заявки предлагала бы заполнить то, чего у неё не существует.
+          `key` по режиму: без него форма инициализируется один раз и во втором открытии (или после
+          mutate) показывает поля прошлой. */}
       {staff ? (
-        editOpen ? (
+        formMode === "edit" || formMode === "copy" ? (
           <StaffTaskModal
+            key={formMode}
             performers={staffPerformers}
             today={todayISO()}
-            editTask={task}
-            onClose={() => setEditOpen(false)}
-            onSaved={() => void mutate()}
+            editTask={formMode === "edit" ? task : null}
+            copyFrom={formMode === "copy" ? task : null}
+            onClose={closeForm}
+            onSaved={(created) => {
+              closeForm();
+              if (created) router.push(`/tasks/${created.id}`);
+              else void mutate();
+            }}
           />
         ) : null
       ) : (
         <CreateTaskModal
-          open={editOpen}
-          onClose={() => setEditOpen(false)}
+          key={formMode === "draft" ? `draft-${editingDraft?.id ?? "new"}` : (formMode ?? "closed")}
+          open={formMode !== null}
+          onClose={closeForm}
           types={types}
           drivers={drivers}
-          editTask={task}
-          onCreated={() => void mutate()}
+          editTask={formMode === "edit" ? task : null}
+          initialForm={formMode === "copy" ? (copyState?.form ?? null) : (editingDraft?.form ?? null)}
+          copyOf={
+            formMode === "copy" && copyState ? { label: copyState.label, hint: copyState.hint } : null
+          }
+          onCreated={(created) => {
+            // Копия создана — открываем НОВУЮ заявку: там её и назначают водителю. Правка остаётся
+            // на месте и просто перечитывает карточку.
+            if (created) router.push(`/tasks/${created.id}`);
+            else void mutate();
+          }}
+          onMinimize={(form) => drafts.upsertDraft(form, editingDraft?.id ?? null)}
+          onDiscard={() => {
+            if (editingDraft?.id) drafts.removeDraft(editingDraft.id);
+          }}
         />
       )}
     </div>

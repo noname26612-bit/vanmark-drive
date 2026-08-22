@@ -8,6 +8,7 @@
 import { prisma } from "@/lib/prisma";
 import { Errors } from "./errors";
 import { dateKeyInTz, utcDateKey, KPI_TZ } from "./kpi";
+import { getCapacitySettings } from "./capacity-service";
 import {
   assertGranularity,
   normalizeAnchor,
@@ -360,12 +361,17 @@ export async function getDriverSummary(
     idleNotedCost,
   };
 
+  // Рабочий день из настроек ёмкости — шкала графика по дням в Сводке (v3). Настройка одна на
+  // систему и уже используется календарём загрузки; своей копии у Сводки быть не должно.
+  const capacity = await getCapacitySettings();
+
   return {
     granularity: granularity as Granularity,
     anchor,
     fromKey: w.fromKey,
     toKey: w.toKey,
     payrollVisible,
+    workdayMinutes: capacity.workdayMinutes,
     drivers: driverViews,
     totals,
     money,

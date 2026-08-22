@@ -72,16 +72,23 @@ export function EquipmentClient({
   family,
   title,
   basePath,
+  initialFlag = "",
 }: {
   family: EquipmentFamily;
   title: string;
   basePath: string;
+  /**
+   * Фильтр-плитка из адреса (`?flag=duePressing`, 22.08.2026): по такой ссылке ведут плашки
+   * «Требует внимания» на «Управлении». Без неё ссылка открывала бы общий список, и человеку
+   * пришлось бы искать те самые станки руками.
+   */
+  initialFlag?: FlagKey | "";
 }) {
   const [scope, setScope] = useState<"active" | "archive">("active");
   const [category, setCategory] = useState<"" | MachineCategory>("");
   const [status, setStatus] = useState<"" | MachineStatus>("");
   const [kind, setKind] = useState<"" | EquipmentKind>("");
-  const [flag, setFlag] = useState<FlagKey | "">("");
+  const [flag, setFlag] = useState<FlagKey | "">(initialFlag);
   const [q, setQ] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [photoJob, setPhotoJob] = useState<PhotoJob | null>(null);
@@ -311,6 +318,7 @@ export function EquipmentClient({
           {FLAG_TILES.filter((t) => moreCounters || flag === t.key).map((t) => (
             <SummaryChip
               key={t.key}
+              testId={`machine-flag-${t.key}`}
               label={t.label}
               hint={t.hint}
               value={summary[t.key]}
@@ -462,6 +470,7 @@ function SummaryChip({
   active,
   accent,
   onClick,
+  testId,
 }: {
   label: string;
   value: number;
@@ -469,12 +478,16 @@ function SummaryChip({
   active?: boolean;
   accent?: boolean;
   onClick: () => void;
+  testId?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       title={hint}
+      // Плитка — переключатель фильтра: состояние «включена» читается и скринридером, и тестами.
+      aria-pressed={!!active}
+      data-testid={testId}
       className={cn(
         "inline-flex min-h-10 items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition-colors sm:min-h-11 sm:px-4 sm:text-sm",
         active
